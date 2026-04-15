@@ -28,7 +28,7 @@ curl -fsSL https://github.com/jongko54/webEmbedding/releases/latest/download/ins
 Use a specific release tag:
 
 ```bash
-curl -fsSL https://github.com/jongko54/webEmbedding/releases/download/v0.1.1/install.sh | bash
+curl -fsSL https://github.com/jongko54/webEmbedding/releases/download/v0.1.2/install.sh | bash
 ```
 
 ### After registry publish
@@ -39,6 +39,39 @@ These commands are the intended registry install surface once the package is pub
 npx web-embedding install
 uvx web-embedding install
 ```
+
+## Registry publishing
+
+This repo now includes `.github/workflows/publish.yml` for trusted publishing to npm and PyPI.
+
+Before the workflow can succeed, configure the registries to trust this repository:
+
+### npm
+
+Create the `web-embedding` package on npm and add a trusted publisher with:
+
+- GitHub user or organization: `jongko54`
+- Repository: `webEmbedding`
+- Workflow filename: `publish.yml`
+- Environment name: `npm`
+
+### PyPI
+
+Create a pending trusted publisher for `web-embedding` with:
+
+- Owner: `jongko54`
+- Repository: `webEmbedding`
+- Workflow filename: `publish.yml`
+- Environment: `pypi`
+
+After those publisher records exist, pushing a `v*` tag will publish to both registries.
+
+To avoid accidental failed publishes before the registries are configured, keep these repository variables disabled until setup is complete:
+
+- `ENABLE_NPM_PUBLISH=false`
+- `ENABLE_PYPI_PUBLISH=false`
+
+Flip each variable to `true` when that registry is ready.
 
 ## What gets installed
 

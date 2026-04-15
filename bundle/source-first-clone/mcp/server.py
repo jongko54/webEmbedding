@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 
 SERVER_NAME = "source-first-clone"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.2"
 
 URL_PATTERNS = [
     ("spline-preview", re.compile(r"https://app\.spline\.design/file/[^\"'\s>]+\?view=preview", re.I)),
@@ -147,7 +147,7 @@ def send_error(message_id: Any, code: int, message: str) -> None:
 
 
 def fetch_url(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
-    request = Request(url, headers={"User-Agent": "webEmbedding/0.1.1"})
+    request = Request(url, headers={"User-Agent": "webEmbedding/0.1.2"})
     with urlopen(request, timeout=timeout_seconds) as response:
         html = response.read().decode("utf-8", "ignore")
         return {

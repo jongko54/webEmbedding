@@ -1,8 +1,12 @@
 .DS_Store
 __pycache__/
 *.pyc
+*.tgz
 .pytest_cache/
 .venv/
+.venv-build/
 .tmp/
+build/
+*.egg-info/
 dist/
 node_modules/
