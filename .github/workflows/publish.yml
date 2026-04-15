@@ -1,0 +1,98 @@
+name: Publish Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: vars.ENABLE_NPM_PUBLISH == 'true' || vars.ENABLE_PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Python build backend
+        run: python -m pip install --upgrade build
+
+      - name: Build Python distributions
+        run: python -m build
+
+      - name: Pack npm tarball
+        run: npm pack
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: web-embedding-*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    if: vars.ENABLE_NPM_PUBLISH == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ./artifacts
+
+      - name: Publish package to npm
+        run: npm publish ./artifacts/web-embedding-*.tgz --access public
+
+  publish-pypi:
+    if: vars.ENABLE_PYPI_PUBLISH == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

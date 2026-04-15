@@ -1,9 +1,20 @@
 {
   "name": "web-embedding",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Source-first Codex plugin installer for exact web embedding and clone intake workflows.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/jongko54/webEmbedding#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jongko54/webEmbedding.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jongko54/webEmbedding/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "web-embedding": "./bin/web-embedding.mjs"
   },
