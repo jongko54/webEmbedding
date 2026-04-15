@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Prefer original embeds, previews, viewers, and remixable sources before rebuilding a reference surface.",
   "author": {
     "name": "Jongho",
@@ -41,4 +41,3 @@
     "brandColor": "#2563EB"
   }
 }
-

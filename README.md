@@ -11,9 +11,34 @@ The install flow is opinionated:
 
 The repo ships three install entrypoints that all converge on the same Python installer core:
 
+- `curl -fsSL https://github.com/jongko54/webEmbedding/releases/latest/download/install.sh | bash`
 - `npx web-embedding install`
 - `uvx web-embedding install`
-- `curl -fsSL .../install.sh | bash`
+
+## Install
+
+### Available now
+
+Use the latest GitHub release directly:
+
+```bash
+curl -fsSL https://github.com/jongko54/webEmbedding/releases/latest/download/install.sh | bash
+```
+
+Use a specific release tag:
+
+```bash
+curl -fsSL https://github.com/jongko54/webEmbedding/releases/download/v0.1.1/install.sh | bash
+```
+
+### After registry publish
+
+These commands are the intended registry install surface once the package is published to npm and PyPI:
+
+```bash
+npx web-embedding install
+uvx web-embedding install
+```
 
 ## What gets installed
 
@@ -74,7 +99,7 @@ After you publish this repo, release these artifacts:
 ### First release flow
 
 1. Commit and push `main`
-2. Create a version tag such as `v0.1.0`
+2. Create a version tag such as `v0.1.1`
 3. Push the tag
 4. Let the GitHub Actions release workflow build and upload:
    - `source-first-clone-bundle.tar.gz`

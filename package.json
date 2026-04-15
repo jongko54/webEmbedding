@@ -1,6 +1,6 @@
 {
   "name": "web-embedding",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Source-first Codex plugin installer for exact web embedding and clone intake workflows.",
   "type": "module",
   "license": "MIT",
@@ -23,4 +23,3 @@
     "pack:release": "python3 ./scripts/release_bundle.py"
   }
 }
-

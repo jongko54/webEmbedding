@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "web-embedding"
-version = "0.1.0"
+version = "0.1.1"
 description = "Source-first Codex plugin installer for exact web embedding workflows."
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,4 +22,3 @@ package-dir = { "" = "python" }
 
 [tool.setuptools.packages.find]
 where = ["python"]
-
