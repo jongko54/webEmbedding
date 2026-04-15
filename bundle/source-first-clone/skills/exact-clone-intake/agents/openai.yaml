@@ -1,0 +1,5 @@
+interface:
+  display_name: "Exact Clone Intake"
+  short_description: "Prefer original embed and preview URLs before rebuilding"
+  default_prompt: "Use $exact-clone-intake to inspect this link, find the original preview or embed path, and only rebuild if an exact source is unavailable."
+

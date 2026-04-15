@@ -1,0 +1,26 @@
+{
+  "name": "web-embedding",
+  "version": "0.1.0",
+  "description": "Source-first Codex plugin installer for exact web embedding and clone intake workflows.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "web-embedding": "./bin/web-embedding.mjs"
+  },
+  "files": [
+    "bin",
+    "bundle",
+    "python",
+    "scripts/bootstrap.sh",
+    "scripts/release_bundle.py",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "install:local": "node ./bin/web-embedding.mjs install",
+    "doctor": "node ./bin/web-embedding.mjs doctor",
+    "uninstall:local": "node ./bin/web-embedding.mjs uninstall",
+    "pack:release": "python3 ./scripts/release_bundle.py"
+  }
+}
+

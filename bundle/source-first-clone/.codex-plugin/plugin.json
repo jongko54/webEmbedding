@@ -1,0 +1,44 @@
+{
+  "name": "source-first-clone",
+  "version": "0.1.0",
+  "description": "Prefer original embeds, previews, viewers, and remixable sources before rebuilding a reference surface.",
+  "author": {
+    "name": "Jongho",
+    "email": "hello@example.com",
+    "url": "https://github.com/jongko54"
+  },
+  "homepage": "https://github.com/jongko54/webEmbedding#readme",
+  "repository": "https://github.com/jongko54/webEmbedding",
+  "license": "MIT",
+  "keywords": [
+    "codex-plugin",
+    "source-first",
+    "embed",
+    "clone",
+    "reference-intake"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Source-First Clone",
+    "shortDescription": "Find the original preview or embed before rebuilding a reference page",
+    "longDescription": "A Codex plugin for exact clone intake. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, and only falls back to rebuilding after the source-first paths are exhausted.",
+    "developerName": "Jongho",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Inspect",
+      "Research",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/jongko54/webEmbedding#readme",
+    "privacyPolicyURL": "https://github.com/jongko54/webEmbedding#readme",
+    "termsOfServiceURL": "https://github.com/jongko54/webEmbedding#readme",
+    "defaultPrompt": [
+      "Use the original embed or preview URL before recreating this reference.",
+      "Inspect this link and tell me whether it should be embedded, sourced, or rebuilt.",
+      "Find runtime preview URLs and exact clone paths for this page."
+    ],
+    "brandColor": "#2563EB"
+  }
+}
+
