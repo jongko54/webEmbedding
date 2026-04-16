@@ -807,6 +807,34 @@ function isSafeToggleCandidate(candidate) {
       return summarize(document.documentElement, 0, 5, 12);
     });
     const styleSummary = await page.evaluate(() => {
+      const normalizeValue = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+      const normalizeColor = (value) => normalizeValue(value).replace(/,\s+/g, ",");
+      const buildStyleSignature = (entry) => {
+        const styles = entry.styles || {};
+        const rect = entry.rect || {};
+        return [
+          normalizeValue(entry.tag),
+          normalizeValue(entry.role),
+          normalizeValue(entry.text).slice(0, 96),
+          normalizeValue(rect.width),
+          normalizeValue(rect.height),
+          normalizeValue(styles.display),
+          normalizeValue(styles.position),
+          normalizeColor(styles.color),
+          normalizeColor(styles.backgroundColor),
+          normalizeValue(styles.fontFamily),
+          normalizeValue(styles.fontSize),
+          normalizeValue(styles.fontWeight),
+          normalizeValue(styles.lineHeight),
+          normalizeValue(styles.letterSpacing),
+          normalizeValue(styles.textAlign),
+          normalizeValue(styles.textTransform),
+          normalizeValue(styles.borderRadius),
+          normalizeColor(styles.borderColor),
+          normalizeValue(styles.borderWidth),
+          normalizeValue(styles.gap),
+        ].join("|");
+      };
       const nodes = Array.from(document.querySelectorAll("body *"))
         .filter((element) => {
           const text = (element.textContent || "").replace(/\s+/g, " ").trim();
@@ -817,10 +845,11 @@ function isSafeToggleCandidate(candidate) {
       return nodes.map((element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
-        return {
+        const entry = {
           tag: element.tagName.toLowerCase(),
           id: element.id || null,
           className: typeof element.className === "string" && element.className ? element.className.slice(0, 120) : null,
+          role: element.getAttribute("role"),
           text: (element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
           rect: {
             x: Math.round(rect.x),
@@ -837,11 +866,19 @@ function isSafeToggleCandidate(candidate) {
             fontSize: style.fontSize,
             fontWeight: style.fontWeight,
             lineHeight: style.lineHeight,
+            letterSpacing: style.letterSpacing,
+            textAlign: style.textAlign,
+            textTransform: style.textTransform,
             borderRadius: style.borderRadius,
+            borderColor: style.borderColor,
+            borderWidth: style.borderWidth,
+            gap: style.gap,
             zIndex: style.zIndex,
             opacity: style.opacity,
           },
         };
+        entry.styleSignature = buildStyleSignature(entry);
+        return entry;
       });
     });
     const assetInventory = await page.evaluate(() => {

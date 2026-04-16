@@ -962,7 +962,14 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
         summary += f"; style-signature overlap {signature_overlap:.2f}"
     sample_score = _count_similarity(ref_stats.get("sample_count"), cand_stats.get("sample_count"))
     tag_score = _set_overlap(ref_stats.get("tags", set()), cand_stats.get("tags", set()))
-    similarity_parts = [score for score in [signature_overlap, sample_score, tag_score] if score is not None]
+    font_overlap = _set_overlap(ref_stats.get("fonts", set()), cand_stats.get("fonts", set()))
+    font_size_overlap = _set_overlap(ref_stats.get("font_sizes", set()), cand_stats.get("font_sizes", set()))
+    display_overlap = _set_overlap(ref_stats.get("displays", set()), cand_stats.get("displays", set()))
+    similarity_parts = [
+        score
+        for score in [signature_overlap, sample_score, tag_score, font_overlap, font_size_overlap, display_overlap]
+        if score is not None
+    ]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
     return {
         "name": "computed styles",
@@ -975,6 +982,9 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
         "details": {
             "sample_count_delta": _numeric_delta(ref_stats.get("sample_count"), cand_stats.get("sample_count")),
             "signature_overlap": signature_overlap,
+            "font_overlap": font_overlap,
+            "font_size_overlap": font_size_overlap,
+            "display_overlap": display_overlap,
             "common_tags": sorted(set(ref_stats.get("tags", [])) & set(cand_stats.get("tags", [])))[:8],
         },
     }
@@ -1374,7 +1384,10 @@ def _style_stats(content: Any) -> dict[str, Any]:
     entries = content if isinstance(content, list) else []
     tags: set[str] = set()
     signatures: set[str] = set()
-    for entry in entries[:24]:
+    fonts: set[str] = set()
+    sizes: set[str] = set()
+    displays: set[str] = set()
+    for entry in entries[:40]:
         if not isinstance(entry, dict):
             continue
         tag = str(entry.get("tag") or "").lower()
@@ -1382,23 +1395,44 @@ def _style_stats(content: Any) -> dict[str, Any]:
             tags.add(tag)
         rect = entry.get("rect") if isinstance(entry.get("rect"), dict) else {}
         styles = entry.get("styles") if isinstance(entry.get("styles"), dict) else {}
-        signature_parts = [
-            tag,
-            _clean_text(entry.get("text")),
-            _clean_text(rect.get("width")),
-            _clean_text(rect.get("height")),
-            _clean_text(styles.get("fontFamily")),
-            _clean_text(styles.get("fontSize")),
-            _clean_text(styles.get("fontWeight")),
-            _clean_text(styles.get("color")),
-            _clean_text(styles.get("backgroundColor")),
-        ]
-        signatures.add("|".join(signature_parts))
+        signature = _clean_text(entry.get("styleSignature"))
+        if not signature:
+            signature_parts = [
+                tag,
+                _clean_text(entry.get("role")),
+                _clean_text(entry.get("text")),
+                _clean_text(rect.get("width")),
+                _clean_text(rect.get("height")),
+                _clean_text(styles.get("display")),
+                _clean_text(styles.get("position")),
+                _clean_text(styles.get("fontFamily")),
+                _clean_text(styles.get("fontSize")),
+                _clean_text(styles.get("fontWeight")),
+                _clean_text(styles.get("lineHeight")),
+                _clean_text(styles.get("letterSpacing")),
+                _clean_text(styles.get("color")),
+                _clean_text(styles.get("backgroundColor")),
+                _clean_text(styles.get("borderRadius")),
+                _clean_text(styles.get("borderColor")),
+                _clean_text(styles.get("borderWidth")),
+                _clean_text(styles.get("gap")),
+            ]
+            signature = "|".join(signature_parts)
+        signatures.add(signature)
+        if styles.get("fontFamily"):
+            fonts.add(_clean_text(styles.get("fontFamily")))
+        if styles.get("fontSize"):
+            sizes.add(_clean_text(styles.get("fontSize")))
+        if styles.get("display"):
+            displays.add(_clean_text(styles.get("display")))
     return {
         "sample_count": len(entries),
         "tags": sorted(tags),
         "signatures": sorted(signatures),
         "sample_signatures": sorted(signatures)[:8],
+        "fonts": sorted(fonts)[:8],
+        "font_sizes": sorted(sizes)[:8],
+        "displays": sorted(displays)[:8],
     }
 
 

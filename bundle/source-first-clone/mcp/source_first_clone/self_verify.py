@@ -330,8 +330,14 @@ def _build_repair_plan(
         score = int(renderer_score or 0)
     except (TypeError, ValueError):
         score = 0
-    priority_findings = [str(item) for item in (guidance.get("priority_findings") or []) if item]
+    priority_findings = [item for item in (guidance.get("priority_findings") or []) if item]
     recommended_actions = [str(item) for item in (guidance.get("recommended_actions") or []) if item]
+    priority_text = [
+        item.get("summary") or item.get("focus") or item.get("check")
+        if isinstance(item, dict)
+        else str(item)
+        for item in priority_findings
+    ]
     breakpoint_needs_layout_attention = any(
         isinstance(report, dict)
         and report.get("available")
@@ -346,7 +352,7 @@ def _build_repair_plan(
         for name in ("screenshot", "dom snapshot", "computed styles"):
             if name not in normalized_focus_checks:
                 normalized_focus_checks.append(name)
-    if any("interaction" in item.lower() for item in priority_findings + recommended_actions):
+    if any("interaction" in str(item).lower() for item in priority_text + recommended_actions):
         for name in ("interaction states", "interaction trace"):
             if name not in normalized_focus_checks:
                 normalized_focus_checks.append(name)
@@ -356,7 +362,7 @@ def _build_repair_plan(
         "target_renderer": renderer_name,
         "score": renderer_score,
         "focus_checks": normalized_focus_checks[:6],
-        "priority_findings": priority_findings,
+        "priority_findings": priority_findings[:6],
         "recommended_actions": recommended_actions,
         "breakpoint_focus": breakpoint_focus,
         "prompt": "\n".join(
@@ -370,7 +376,7 @@ def _build_repair_plan(
                     else "screenshot, structure, and interaction parity"
                 ),
                 "Priority findings:",
-                *[f"- {item}" for item in priority_findings[:6]],
+                *[f"- {item}" for item in priority_text[:6]],
                 "Recommended actions:",
                 *[f"- {item}" for item in recommended_actions[:6]],
                 "Breakpoint focus:",
@@ -605,6 +611,8 @@ def run_rebuild_self_verify(
         "repair_plan": {
             "target_renderer": repair_plan.get("target_renderer"),
             "score": repair_plan.get("score"),
+            "focus_checks": repair_plan.get("focus_checks"),
+            "breakpoint_focus": repair_plan.get("breakpoint_focus"),
             "priority_findings": repair_plan.get("priority_findings"),
             "recommended_actions": repair_plan.get("recommended_actions"),
             "path": persisted["repair_plan"],

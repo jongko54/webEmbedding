@@ -181,6 +181,68 @@ def _looks_like_flat_reference(summary: dict[str, Any]) -> bool:
     return inspected > 0 and flat_votes >= inspected
 
 
+def _breakpoint_style_baseline(style: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(style, dict):
+        return {}
+    return {
+        "backgroundColor": style.get("backgroundColor"),
+        "color": style.get("color"),
+        "fontFamily": style.get("fontFamily"),
+        "fontSize": style.get("fontSize"),
+        "lineHeight": style.get("lineHeight"),
+        "letterSpacing": style.get("letterSpacing"),
+    }
+
+
+def _load_breakpoint_contexts(capture_bundle: dict[str, Any], repair_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    breakpoints = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
+    variants = breakpoints.get("variants", []) if isinstance(breakpoints, dict) else []
+    breakpoint_focus_entries = repair_plan.get("breakpoint_focus", []) if isinstance(repair_plan, dict) else []
+    focus_by_name = {
+        str(item.get("name") or "").strip().lower(): item
+        for item in breakpoint_focus_entries
+        if isinstance(item, dict) and item.get("name")
+    }
+    contexts: list[dict[str, Any]] = []
+    for variant in variants if isinstance(variants, list) else []:
+        if not isinstance(variant, dict) or not variant.get("available"):
+            continue
+        name = str(variant.get("name") or "").strip().lower()
+        if not name:
+            continue
+        manifest_path = variant.get("capture_manifest")
+        variant_bundle = _read_json(manifest_path) if manifest_path else {}
+        if not variant_bundle:
+            continue
+        runtime = variant_bundle.get("runtime", {}) if isinstance(variant_bundle, dict) else {}
+        captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+        styles_capture = captures.get("styles", {}) if isinstance(captures.get("styles", {}), dict) else {}
+        style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
+        css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures.get("cssAnalysis", {}), dict) else {}
+        css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
+        body_style = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis.get("bodyComputedStyle", {}), dict) else {}
+        root_style = css_analysis.get("rootComputedStyle", {}) if isinstance(css_analysis.get("rootComputedStyle", {}), dict) else {}
+        focus_entry = focus_by_name.get(name, {})
+        focus_text = str(focus_entry.get("focus") or "")
+        contexts.append(
+            {
+                "name": name,
+                "viewport": variant.get("viewport") or {},
+                "score": focus_entry.get("score"),
+                "focus": focus_entry.get("focus"),
+                "layoutSensitive": any(
+                    token in focus_text.lower()
+                    for token in ("screenshot", "layout", "spacing", "hierarchy")
+                ),
+                "bodyStyle": _breakpoint_style_baseline(body_style),
+                "rootStyle": _breakpoint_style_baseline(root_style),
+                "typography": _derive_typography(style_entries if isinstance(style_entries, list) else []),
+                "styleTokens": _derive_style_tokens(style_entries if isinstance(style_entries, list) else []),
+            }
+        )
+    return contexts
+
+
 def _render_repaired_bounded_reference_page_component() -> str:
     return "\n".join(
         [
@@ -549,6 +611,7 @@ def _repair_css(
     body_style = css_content.get("bodyComputedStyle", {}) if isinstance(css_content.get("bodyComputedStyle", {}), dict) else {}
     presentation = app_model.get("presentation", {}) if isinstance(app_model.get("presentation", {}), dict) else {}
     compact = str(presentation.get("variant") or "") == "compact-center-stage"
+    breakpoint_contexts = app_model.get("breakpoints", []) if isinstance(app_model.get("breakpoints", []), list) else []
     if not style_tokens:
         style_tokens = _derive_style_tokens(style_entries if isinstance(style_entries, list) else [])
     flat_reference = str(presentation.get("styleMode") or "") == "flat-reference"
@@ -591,6 +654,65 @@ def _repair_css(
                 ".bounded-section-grid, .bounded-compact-shell, .bounded-layout, .bounded-rail, .bounded-stack { gap: 8px; }",
             ]
         )
+    for context in breakpoint_contexts:
+        if not isinstance(context, dict):
+            continue
+        viewport_meta = context.get("viewport", {}) if isinstance(context.get("viewport", {}), dict) else {}
+        max_width = int(viewport_meta.get("width") or 0)
+        if max_width <= 0:
+            continue
+        body_style_context = context.get("bodyStyle", {}) if isinstance(context.get("bodyStyle", {}), dict) else {}
+        typography_context = context.get("typography", {}) if isinstance(context.get("typography", {}), dict) else {}
+        context_font_size = body_style_context.get("fontSize") or ((typography_context.get("sizes") or [None])[0] if isinstance(typography_context.get("sizes", []), list) else None)
+        context_line_height = body_style_context.get("lineHeight") or ((typography_context.get("line_heights") or [None])[0] if isinstance(typography_context.get("line_heights", []), list) else None)
+        context_letter_spacing = body_style_context.get("letterSpacing") or ((typography_context.get("letter_spacings") or [None])[0] if isinstance(typography_context.get("letter_spacings", []), list) else None)
+        layout_sensitive = bool(context.get("layoutSensitive"))
+        context_lines = [f"@media (max-width: {max_width}px) {{"]
+        if max_width <= 1200:
+            context_lines.extend(
+                [
+                    "  .bounded-shell { padding-inline: 20px; }",
+                    "  .bounded-layout { grid-template-columns: minmax(0, 1fr); }",
+                    "  .bounded-main, .bounded-rail { grid-column: 1 / -1; }",
+                    "  .bounded-section-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }",
+                ]
+            )
+        if max_width <= 820 or layout_sensitive:
+            context_lines.extend(
+                [
+                    "  .bounded-masthead { grid-template-columns: 1fr; align-items: flex-start; }",
+                    "  .bounded-nav { width: 100%; overflow-x: auto; justify-content: flex-start; }",
+                    "  .bounded-hero { min-height: auto; padding: 24px 18px; }",
+                    "  .bounded-hero-actions, .bounded-meta--inline { gap: 8px; }",
+                    "  .bounded-rail { gap: 12px; }",
+                ]
+            )
+        if max_width <= 480:
+            context_lines.extend(
+                [
+                    "  .bounded-shell { padding-inline: 12px; padding-top: 18px; }",
+                    "  .bounded-hero h1 { font-size: clamp(2.2rem, 14vw, 4rem); }",
+                    "  .bounded-card, .bounded-panel { padding: 16px; }",
+                    "  .bounded-chip, .bounded-chip--muted, .bounded-cta { min-height: 32px; }",
+                ]
+            )
+        if context_font_size:
+            context_lines.append(
+                "  .bounded-nav-link, .bounded-copy, .bounded-lede, .bounded-chip, .bounded-mini-card p, .bounded-outline-item p {"
+                f" font-size: {context_font_size}; }}"
+            )
+        if context_line_height:
+            context_lines.append(
+                "  .bounded-lede, .bounded-copy, .bounded-mini-card p, .bounded-outline-item p {"
+                f" line-height: {context_line_height}; }}"
+            )
+        if context_letter_spacing:
+            context_lines.append(
+                "  .bounded-hero h1, .bounded-card h2, .bounded-brand {"
+                f" letter-spacing: {context_letter_spacing}; }}"
+            )
+        context_lines.append("}")
+        lines.extend(context_lines)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -637,6 +759,7 @@ def build_repair_scaffold(
     unique_links = _unique_link_entries(capture_bundle, limit=8)
     trace_bits = _trace_signal_bits(capture_bundle, limit=4)
     outline_sample = _outline_text_sample(base_summary, limit=3)
+    breakpoint_contexts = _load_breakpoint_contexts(capture_bundle, repair_plan)
 
     if body_style.get("color"):
         palette["text"] = body_style.get("color")
@@ -676,6 +799,8 @@ def build_repair_scaffold(
     if body_style.get("letterSpacing"):
         _append_unique(typography.setdefault("letter_spacings", []), body_style.get("letterSpacing"))
         _append_unique(style_tokens.setdefault("letter_spacings", []), body_style.get("letterSpacing"))
+    if breakpoint_contexts:
+        applied_repairs.append("Applied viewport-aware layout and typography adjustments from breakpoint capture variants.")
     if unique_links:
         masthead = repaired_app_model.get("masthead", {}) if isinstance(repaired_app_model.get("masthead", {}), dict) else {}
         masthead["links"] = unique_links[:6]
@@ -707,8 +832,17 @@ def build_repair_scaffold(
     reconstruction = repaired_app_model.get("reconstruction", {}) if isinstance(repaired_app_model.get("reconstruction", {}), dict) else {}
     reconstruction["strategy"] = "auto-repaired-next-app"
     reconstruction["appliedRepairs"] = applied_repairs[:8]
-    reconstruction["repairFocus"] = focus_checks[:4]
+    reconstruction["repairFocus"] = focus_checks[:6]
     reconstruction["repairSource"] = repair_plan.get("target_renderer")
+    reconstruction["breakpointFocus"] = [
+        {
+            "name": item.get("name"),
+            "score": item.get("score"),
+            "focus": item.get("focus"),
+            "viewport": item.get("viewport"),
+        }
+        for item in breakpoint_contexts[:4]
+    ]
     repaired_app_model["reconstruction"] = reconstruction
 
     hero = repaired_app_model.get("hero", {}) if isinstance(repaired_app_model.get("hero", {}), dict) else {}
@@ -730,6 +864,7 @@ def build_repair_scaffold(
     repaired_app_model["palette"] = palette
     repaired_app_model["typography"] = typography
     repaired_app_model["styleTokens"] = style_tokens
+    repaired_app_model["breakpoints"] = breakpoint_contexts
 
     if "dom snapshot" in focus_checks or "screenshot" in focus_checks:
         repaired_app_model["bodySections"] = _compact_body_sections(base_summary, unique_links, trace_bits)
@@ -755,12 +890,13 @@ def build_repair_scaffold(
     repaired_summary["signals"]["auto_repair_available"] = True
     repaired_summary["repairPass"] = {
         "target_renderer": repair_plan.get("target_renderer"),
-        "focus_checks": focus_checks[:4],
+        "focus_checks": focus_checks[:6],
         "applied_repairs": applied_repairs[:8],
         "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
     }
     repaired_summary["styleTokens"] = style_tokens
     repaired_summary["assetManifest"] = _build_asset_manifest(repaired_summary, asset_content, css_analysis, typography, style_tokens)
+    repaired_summary["breakpointRepairs"] = breakpoint_contexts
 
     base_css = _read_text(rebuild_artifacts.get("next-app/app/globals.css"))
     repaired_css = _repair_css(base_css, repaired_app_model, repair_plan, capture_bundle)
@@ -779,10 +915,14 @@ def build_repair_scaffold(
         "next-app/components/reference-data.ts": repaired_data_ts,
         "assets/asset-manifest.json": asset_manifest,
         "assets/font-manifest.json": asset_manifest.get("fonts", {}),
+        "breakpoint-notes.json": {
+            "focus_checks": focus_checks[:6],
+            "variants": breakpoint_contexts,
+        },
         "prompt.txt": str(repair_plan.get("prompt") or "").rstrip() + "\n",
         "repair-notes.json": {
             "target_renderer": repair_plan.get("target_renderer"),
-            "focus_checks": focus_checks[:4],
+            "focus_checks": focus_checks[:6],
             "applied_repairs": applied_repairs[:8],
             "priority_findings": (repair_plan.get("priority_findings") or [])[:6],
             "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
