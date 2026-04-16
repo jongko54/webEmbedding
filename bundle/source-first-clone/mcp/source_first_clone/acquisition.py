@@ -397,6 +397,11 @@ function styleSnapshotFromComputed(style) {
   return {
     display: style.display,
     position: style.position,
+    top: style.top,
+    right: style.right,
+    bottom: style.bottom,
+    left: style.left,
+    zIndex: style.zIndex,
     color: style.color,
     backgroundColor: style.backgroundColor,
     borderColor: style.borderColor,
@@ -416,6 +421,12 @@ function styleSnapshotFromComputed(style) {
     lineHeight: style.lineHeight,
     letterSpacing: style.letterSpacing,
     textTransform: style.textTransform,
+    overflow: style.overflow,
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    scrollSnapType: style.scrollSnapType,
+    scrollSnapAlign: style.scrollSnapAlign,
+    scrollSnapStop: style.scrollSnapStop,
     paddingTop: style.paddingTop,
     paddingRight: style.paddingRight,
     paddingBottom: style.paddingBottom,
@@ -497,6 +508,28 @@ function resolveAssociatedLabel(element) {
     return normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 80);
   }
   return null;
+}
+
+function resolveDescriptionFromReferences(element) {
+  if (!element || !element.tagName) {
+    return null;
+  }
+  const describedBy = String(element.getAttribute("aria-describedby") || "")
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const parts = [];
+  for (const id of describedBy) {
+    const descriptionNode = document.getElementById(id);
+    if (descriptionNode) {
+      const text = normalizeText(descriptionNode.innerText || descriptionNode.textContent || "", 120);
+      if (text) {
+        parts.push(text);
+      }
+    }
+  }
+  return parts.length ? parts.join(" ").trim() : null;
 }
 
 function getInteractionKind(node) {
@@ -687,6 +720,10 @@ function describeScrollableElement(node, style) {
     return null;
   }
   const rect = node.getBoundingClientRect();
+  const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && node.scrollWidth > node.clientWidth + 4;
+  const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && node.scrollHeight > node.clientHeight + 4;
+  const maxScrollX = Math.max(0, Math.round((node.scrollWidth || 0) - (node.clientWidth || 0)));
+  const maxScrollY = Math.max(0, Math.round((node.scrollHeight || 0) - (node.clientHeight || 0)));
   return {
     ...captureNodeSignature(node),
     overflowX: style.overflowX,
@@ -697,8 +734,13 @@ function describeScrollableElement(node, style) {
     scrollWidth: Math.round(node.scrollWidth || 0),
     clientHeight: Math.round(node.clientHeight || 0),
     clientWidth: Math.round(node.clientWidth || 0),
-    scrollableX: /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && node.scrollWidth > node.clientWidth + 4,
-    scrollableY: /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && node.scrollHeight > node.clientHeight + 4,
+    maxScrollX,
+    maxScrollY,
+    scrollProgressX: maxScrollX ? Number((Math.min(Math.max(node.scrollLeft || 0, 0), maxScrollX) / maxScrollX).toFixed(3)) : 0,
+    scrollProgressY: maxScrollY ? Number((Math.min(Math.max(node.scrollTop || 0, 0), maxScrollY) / maxScrollY).toFixed(3)) : 0,
+    scrollableX,
+    scrollableY,
+    scrollableAxis: scrollableX && scrollableY ? "both" : scrollableY ? "y" : scrollableX ? "x" : null,
     scrollSnapType: style.scrollSnapType,
     scrollSnapAlign: style.scrollSnapAlign,
     scrollSnapStop: style.scrollSnapStop,
@@ -766,11 +808,17 @@ function captureScrollSignals(element, style) {
   };
   const elementScrollable = describeScrollableElement(element, style);
   const ancestor = findScrollableAncestor(element);
+  const primary = elementScrollable && (elementScrollable.scrollableY || elementScrollable.scrollableX)
+    ? { scope: "element", ...elementScrollable }
+    : ancestor
+      ? { scope: "ancestor", ...describeScrollableElement(ancestor.node, ancestor.style) }
+      : null;
   return {
     detected: Boolean(viewport.scrollableY || viewport.scrollableX || elementScrollable || ancestor),
     viewport,
     element: elementScrollable && (elementScrollable.scrollableY || elementScrollable.scrollableX) ? elementScrollable : null,
     ancestor: ancestor ? describeScrollableElement(ancestor.node, ancestor.style) : null,
+    primary,
   };
 }
 
@@ -797,6 +845,9 @@ function captureStickySignals(element) {
     source: sticky.node === element ? "self" : "ancestor",
     kind: String(sticky.style.position || "").toLowerCase(),
     container: captureNodeSignature(sticky.node),
+    label: getInteractionLabel(sticky.node),
+    role: sticky.node.getAttribute("role"),
+    tag: sticky.node.tagName.toLowerCase(),
     offset: {
       top: sticky.style.top,
       right: sticky.style.right,
@@ -804,6 +855,13 @@ function captureStickySignals(element) {
       left: sticky.style.left,
     },
     zIndex: sticky.style.zIndex,
+    position: sticky.style.position,
+    box: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
     pinnedToViewport: String(sticky.style.position || "").toLowerCase() === "fixed" || rect.top <= 16,
   };
 }
@@ -812,8 +870,11 @@ function captureModalSignals(element) {
   const modalSelectors = [
     "dialog[open]",
     '[role="dialog"][aria-modal="true"]',
+    '[role="alertdialog"][aria-modal="true"]',
     '[aria-modal="true"]',
     '[popover]:not([popover="manual"])',
+    '[data-state="open"][role="dialog"]',
+    '[data-state="open"][role="alertdialog"]',
   ];
   const candidates = [];
   for (const selector of modalSelectors) {
@@ -834,9 +895,20 @@ function captureModalSignals(element) {
     source: active.selector,
     kind: active.node.tagName.toLowerCase() === "dialog" ? "dialog" : active.node.getAttribute("role") || "modal",
     active: captureNodeSignature(active.node),
+    label: getInteractionLabel(active.node),
+    description: resolveDescriptionFromReferences(active.node) || normalizeText(active.node.getAttribute("data-description"), 120) || normalizeText(active.node.textContent || "", 120),
+    title:
+      normalizeText(active.node.getAttribute("aria-label"), 120) ||
+      normalizeText(active.node.getAttribute("data-title"), 120) ||
+      normalizeText(active.node.querySelector("h1, h2, h3, [role='heading']")?.textContent || "", 120),
     inside: active.node.contains(element),
     activeElementInside: active.node.contains(document.activeElement),
+    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
     candidateCount: candidates.length,
+    closeControls: Array.from(active.node.querySelectorAll('button, [role="button"], [aria-label*="close" i], [aria-label*="dismiss" i]'))
+      .filter(isVisibleElement)
+      .slice(0, 4)
+      .map((node) => captureNodeSignature(node)),
   };
 }
 
@@ -893,19 +965,24 @@ function captureCarouselSignals(element) {
   }
   const controls = Array.from(scope.querySelectorAll('button, [role="button"]')).filter(isVisibleElement).slice(0, 8);
   const activeSlide = slides.find((node) => node.getAttribute("aria-current") === "true" || /(active|current|selected)/i.test(normalizeClassName(node.className) || ""));
+  const activeSlideIndex = activeSlide ? slides.indexOf(activeSlide) : -1;
   const orientation = String(scope.getAttribute("aria-orientation") || "").toLowerCase() || (String(carousel.style.scrollSnapType || "").toLowerCase().includes("x") ? "horizontal" : String(carousel.style.scrollSnapType || "").toLowerCase().includes("y") ? "vertical" : null);
   return {
     detected: true,
     source: carousel.reason || "ancestor",
     kind: carousel.kind || "carousel",
     container: captureNodeSignature(scope),
+    label: getInteractionLabel(scope),
     orientation,
     snapType: carousel.style.scrollSnapType,
     slideCount: slides.length,
     controlCount: controls.length,
     ariaRoleDescription: scope.getAttribute("aria-roledescription"),
     ariaLive: scope.getAttribute("aria-live"),
+    currentSlideIndex: activeSlideIndex >= 0 ? activeSlideIndex : null,
     activeSlide: activeSlide ? captureNodeSignature(activeSlide) : null,
+    slideLabels: slides.slice(0, 8).map((node) => getInteractionLabel(node)),
+    controlLabels: controls.map((node) => getInteractionLabel(node)),
     controls: controls.map((node) => captureNodeSignature(node)),
   };
 }
@@ -946,11 +1023,16 @@ function captureTabpanelSignals(element) {
     source: tabpanel.reason || "ancestor",
     kind: tabpanel.kind || "tabpanel",
     tabList: captureNodeSignature(scope),
+    label: getInteractionLabel(scope),
     tabCount: tabs.length,
     panelCount: panels.length,
     activeTabs: activeTabs.map((node) => captureNodeSignature(node)),
+    activeTabLabels: activeTabs.map((node) => getInteractionLabel(node)),
     controlledPanelIds: panelIds,
     activePanels: controlledPanels.map((node) => captureNodeSignature(node)),
+    activePanelLabels: controlledPanels.map((node) => getInteractionLabel(node)),
+    tabLabels: tabs.slice(0, 8).map((node) => getInteractionLabel(node)),
+    panelLabels: panels.slice(0, 8).map((node) => getInteractionLabel(node)),
     ariaOrientation: scope.getAttribute("aria-orientation"),
   };
 }
@@ -965,8 +1047,93 @@ function captureInteractionSignals(element, style) {
   };
 }
 
+function summarizeInteractionSignals(signals) {
+  if (!signals || typeof signals !== "object") {
+    return null;
+  }
+  const summary = {};
+  const primaryScroll = signals.scroll && (signals.scroll.primary || signals.scroll.element || signals.scroll.ancestor)
+    ? (signals.scroll.primary || signals.scroll.element || signals.scroll.ancestor)
+    : null;
+  if (signals.scroll && (primaryScroll || signals.scroll.viewport.scrollableX || signals.scroll.viewport.scrollableY)) {
+    summary.scroll = {
+      scope: primaryScroll ? primaryScroll.scope || (signals.scroll.element ? "element" : signals.scroll.ancestor ? "ancestor" : "viewport") : "viewport",
+      axis:
+        primaryScroll && primaryScroll.scrollableAxis
+          ? primaryScroll.scrollableAxis
+          : signals.scroll.viewport.scrollableX && signals.scroll.viewport.scrollableY
+            ? "both"
+            : signals.scroll.viewport.scrollableY
+              ? "y"
+              : signals.scroll.viewport.scrollableX
+                ? "x"
+                : null,
+      viewportScrollableX: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableX),
+      viewportScrollableY: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableY),
+      scrollTop: primaryScroll && primaryScroll.scrollTop !== undefined ? primaryScroll.scrollTop : null,
+      scrollLeft: primaryScroll && primaryScroll.scrollLeft !== undefined ? primaryScroll.scrollLeft : null,
+      scrollHeight: primaryScroll && primaryScroll.scrollHeight !== undefined ? primaryScroll.scrollHeight : null,
+      scrollWidth: primaryScroll && primaryScroll.scrollWidth !== undefined ? primaryScroll.scrollWidth : null,
+      clientHeight: primaryScroll && primaryScroll.clientHeight !== undefined ? primaryScroll.clientHeight : null,
+      clientWidth: primaryScroll && primaryScroll.clientWidth !== undefined ? primaryScroll.clientWidth : null,
+      scrollSnapType: primaryScroll && primaryScroll.scrollSnapType !== undefined ? primaryScroll.scrollSnapType : null,
+      scrollSnapAlign: primaryScroll && primaryScroll.scrollSnapAlign !== undefined ? primaryScroll.scrollSnapAlign : null,
+      scrollSnapStop: primaryScroll && primaryScroll.scrollSnapStop !== undefined ? primaryScroll.scrollSnapStop : null,
+      tag: primaryScroll && primaryScroll.tag ? primaryScroll.tag : null,
+      role: primaryScroll && primaryScroll.role ? primaryScroll.role : null,
+      label: primaryScroll && primaryScroll.label ? primaryScroll.label : null,
+    };
+  }
+  if (signals.sticky && signals.sticky.detected) {
+    summary.sticky = {
+      kind: signals.sticky.kind || null,
+      source: signals.sticky.source || null,
+      label: signals.sticky.label || null,
+      pinnedToViewport: Boolean(signals.sticky.pinnedToViewport),
+      tag: signals.sticky.tag || null,
+      role: signals.sticky.role || null,
+      position: signals.sticky.position || null,
+    };
+  }
+  if (signals.modal && signals.modal.detected) {
+    summary.modal = {
+      kind: signals.modal.kind || null,
+      label: signals.modal.label || null,
+      description: signals.modal.description || null,
+      inside: Boolean(signals.modal.inside),
+      activeElementInside: Boolean(signals.modal.activeElementInside),
+      candidateCount: signals.modal.candidateCount || 0,
+      closeControlCount: Array.isArray(signals.modal.closeControls) ? signals.modal.closeControls.length : 0,
+    };
+  }
+  if (signals.carousel && signals.carousel.detected) {
+    summary.carousel = {
+      kind: signals.carousel.kind || null,
+      orientation: signals.carousel.orientation || null,
+      label: signals.carousel.label || null,
+      slideCount: signals.carousel.slideCount || 0,
+      controlCount: signals.carousel.controlCount || 0,
+      currentSlideIndex: signals.carousel.currentSlideIndex ?? null,
+      activeSlideLabel: signals.carousel.activeSlide ? signals.carousel.activeSlide.label || null : null,
+    };
+  }
+  if (signals.tabpanel && signals.tabpanel.detected) {
+    summary.tabpanel = {
+      kind: signals.tabpanel.kind || null,
+      label: signals.tabpanel.label || null,
+      tabCount: signals.tabpanel.tabCount || 0,
+      panelCount: signals.tabpanel.panelCount || 0,
+      activeTabLabels: Array.isArray(signals.tabpanel.activeTabLabels) ? signals.tabpanel.activeTabLabels.slice(0, 4) : [],
+      activePanelLabels: Array.isArray(signals.tabpanel.activePanelLabels) ? signals.tabpanel.activePanelLabels.slice(0, 4) : [],
+    };
+  }
+  return Object.keys(summary).length ? summary : null;
+}
+
 function captureSemanticState(element, style) {
   const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
+  const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && element.scrollWidth > element.clientWidth + 4;
+  const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && element.scrollHeight > element.clientHeight + 4;
   const semanticState = {
     text: normalizeText(element.innerText || element.textContent || "", 120),
     labelText: getInteractionLabel(element),
@@ -1006,11 +1173,26 @@ function captureSemanticState(element, style) {
     focusable: isFocusableElement(element, style),
     interactiveKind: getInteractionKind(element),
     scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+    scrollTop: Math.round(element.scrollTop || 0),
+    scrollLeft: Math.round(element.scrollLeft || 0),
+    scrollHeight: Math.round(element.scrollHeight || 0),
+    scrollWidth: Math.round(element.scrollWidth || 0),
+    clientHeight: Math.round(element.clientHeight || 0),
+    clientWidth: Math.round(element.clientWidth || 0),
+    scrollableX,
+    scrollableY,
+    scrollableAxis: scrollableX && scrollableY ? "both" : scrollableY ? "y" : scrollableX ? "x" : null,
+    scrollSnapType: style.scrollSnapType,
+    scrollSnapAlign: style.scrollSnapAlign,
+    scrollSnapStop: style.scrollSnapStop,
+    position: style.position,
+    zIndex: style.zIndex,
     interactionSignals: captureInteractionSignals(element, style),
   };
   if (style) {
     semanticState.styleSnapshot = styleSnapshotFromComputed(style);
   }
+  semanticState.stateSummary = summarizeInteractionSignals(semanticState.interactionSignals);
   return semanticState;
 }
 
@@ -1020,6 +1202,7 @@ function captureToggleState(selector) {
     return { available: false, selector };
   }
   const style = window.getComputedStyle(element);
+  const semanticState = captureSemanticState(element, style);
   const ids = String(element.getAttribute("aria-controls") || "")
     .split(/\s+/)
     .map((value) => value.trim())
@@ -1063,7 +1246,8 @@ function captureToggleState(selector) {
     labelText: getInteractionLabel(element),
     targetSummary: describeInteractionTarget(element, style),
     controlledTargets,
-    semanticState: captureSemanticState(element, style),
+    semanticState,
+    stateSummary: semanticState.stateSummary,
   };
 }
 
@@ -1080,10 +1264,13 @@ function captureControlledTargetState(element) {
     }
     const style = window.getComputedStyle(target);
     const rect = target.getBoundingClientRect();
+    const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && target.scrollWidth > target.clientWidth + 4;
+    const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && target.scrollHeight > target.clientHeight + 4;
     return {
       id,
       tag: target.tagName.toLowerCase(),
       role: target.getAttribute("role"),
+      label: getInteractionLabel(target),
       open: target.open === true,
       hidden: Boolean(target.hidden),
       ariaHidden: target.getAttribute("aria-hidden"),
@@ -1091,13 +1278,28 @@ function captureControlledTargetState(element) {
       ariaSelected: target.getAttribute("aria-selected"),
       display: style.display,
       visibility: style.visibility,
+      position: style.position,
+      zIndex: style.zIndex,
+      scrollTop: Math.round(target.scrollTop || 0),
+      scrollLeft: Math.round(target.scrollLeft || 0),
+      scrollHeight: Math.round(target.scrollHeight || 0),
+      scrollWidth: Math.round(target.scrollWidth || 0),
+      clientHeight: Math.round(target.clientHeight || 0),
+      clientWidth: Math.round(target.clientWidth || 0),
+      scrollableX,
+      scrollableY,
+      scrollableAxis: scrollableX && scrollableY ? "both" : scrollableY ? "y" : scrollableX ? "x" : null,
+      scrollSnapType: style.scrollSnapType,
+      scrollSnapAlign: style.scrollSnapAlign,
+      scrollSnapStop: style.scrollSnapStop,
       rect: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
       },
       text: normalizeText(target.innerText || target.textContent || "", 120),
+      styleSnapshot: styleSnapshotFromComputed(style),
     };
   });
 }
@@ -1108,6 +1310,7 @@ function captureInteractionState(selector) {
     return { available: false, selector };
   }
   const style = window.getComputedStyle(element);
+  const semanticState = captureSemanticState(element, style);
   return {
     available: true,
     selector,
@@ -1116,7 +1319,8 @@ function captureInteractionState(selector) {
     labelText: getInteractionLabel(element),
     targetSummary: describeInteractionTarget(element, style),
     controlledTargets: captureControlledTargetState(element),
-    semanticState: captureSemanticState(element, style),
+    semanticState,
+    stateSummary: semanticState.stateSummary,
     baseStyles: styleSnapshotFromComputed(style),
   };
 }
@@ -1127,7 +1331,32 @@ function summarizeInteractionState(state) {
   }
   const semantic = state.semanticState && typeof state.semanticState === "object" ? state.semanticState : state;
   const signals = semantic.interactionSignals || state.interactionSignals || null;
+  const signalSummary = summarizeInteractionSignals(signals);
   const pick = (key) => (Object.prototype.hasOwnProperty.call(semantic, key) ? semantic[key] : null);
+  const summaryBits = [
+    pick("interactiveKind") || state.interactionKind || null,
+    pick("labelText") || state.labelText || pick("text") || state.text || null,
+  ]
+  .filter(Boolean)
+  .map((value) => normalizeText(value, 96) || null)
+  .filter(Boolean);
+  if (signalSummary) {
+    if (signalSummary.scroll) {
+      summaryBits.push(`scroll:${signalSummary.scroll.axis || signalSummary.scroll.scope}`);
+    }
+    if (signalSummary.sticky) {
+      summaryBits.push(`sticky:${signalSummary.sticky.kind || "surface"}`);
+    }
+    if (signalSummary.modal) {
+      summaryBits.push(`modal:${signalSummary.modal.kind || "surface"}`);
+    }
+    if (signalSummary.carousel) {
+      summaryBits.push(`carousel:${signalSummary.carousel.orientation || "surface"}`);
+    }
+    if (signalSummary.tabpanel) {
+      summaryBits.push(`tabs:${signalSummary.tabpanel.tabCount || 0}`);
+    }
+  }
   return {
     tag: pick("tag") ?? state.tag ?? null,
     role: pick("role") ?? state.role ?? null,
@@ -1150,24 +1379,26 @@ function summarizeInteractionState(state) {
     disabled: pick("disabled"),
     hidden: pick("hidden"),
     scrollY: pick("scrollY"),
+    scrollTop: pick("scrollTop"),
+    scrollLeft: pick("scrollLeft"),
+    scrollHeight: pick("scrollHeight"),
+    scrollWidth: pick("scrollWidth"),
+    clientHeight: pick("clientHeight"),
+    clientWidth: pick("clientWidth"),
+    scrollableX: pick("scrollableX"),
+    scrollableY: pick("scrollableY"),
+    scrollableAxis: pick("scrollableAxis"),
+    scrollSnapType: pick("scrollSnapType"),
+    scrollSnapAlign: pick("scrollSnapAlign"),
+    scrollSnapStop: pick("scrollSnapStop"),
+    position: pick("position"),
+    zIndex: pick("zIndex"),
     activeElementTag: pick("activeElementTag") ?? state.activeElementTag ?? null,
     kind: pick("interactiveKind") ?? state.interactionKind ?? null,
     focusable: pick("focusable") ?? state.focusable ?? null,
-    signals: signals
-      ? {
-          scroll: signals.scroll && (signals.scroll.element || signals.scroll.ancestor || signals.scroll.viewport.scrollableY || signals.scroll.viewport.scrollableX)
-            ? {
-                scrollable: Boolean(signals.scroll.element || signals.scroll.ancestor),
-                viewportScrollableY: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableY),
-                viewportScrollableX: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableX),
-              }
-            : null,
-          sticky: signals.sticky && signals.sticky.detected ? { kind: signals.sticky.kind, pinnedToViewport: signals.sticky.pinnedToViewport } : null,
-          modal: signals.modal && signals.modal.detected ? { kind: signals.modal.kind, inside: signals.modal.inside } : null,
-          carousel: signals.carousel && signals.carousel.detected ? { kind: signals.carousel.kind, orientation: signals.carousel.orientation, slideCount: signals.carousel.slideCount } : null,
-          tabpanel: signals.tabpanel && signals.tabpanel.detected ? { kind: signals.tabpanel.kind, tabCount: signals.tabpanel.tabCount, panelCount: signals.tabpanel.panelCount } : null,
-        }
-      : null,
+    summaryLabel: summaryBits.join(" · ") || null,
+    stateSummary: semantic.stateSummary || state.stateSummary || null,
+    signals: signalSummary,
   };
 }
 
@@ -1192,6 +1423,20 @@ function diffInteractionStates(before, after) {
     "hidden",
     "disabled",
     "scrollY",
+    "scrollTop",
+    "scrollLeft",
+    "scrollHeight",
+    "scrollWidth",
+    "clientHeight",
+    "clientWidth",
+    "scrollableX",
+    "scrollableY",
+    "scrollableAxis",
+    "scrollSnapType",
+    "scrollSnapAlign",
+    "scrollSnapStop",
+    "position",
+    "zIndex",
     "activeElementTag",
     "labelText",
     "title",
@@ -1668,6 +1913,11 @@ function isSafeToggleCandidate(candidate) {
       const styleSnapshotFromComputed = (style) => ({
         display: style.display,
         position: style.position,
+        top: style.top,
+        right: style.right,
+        bottom: style.bottom,
+        left: style.left,
+        zIndex: style.zIndex,
         color: style.color,
         backgroundColor: style.backgroundColor,
         borderColor: style.borderColor,
@@ -1681,6 +1931,26 @@ function isSafeToggleCandidate(candidate) {
         outline: style.outline,
         outlineOffset: style.outlineOffset,
         cursor: style.cursor,
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        lineHeight: style.lineHeight,
+        letterSpacing: style.letterSpacing,
+        textTransform: style.textTransform,
+        overflow: style.overflow,
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        scrollSnapType: style.scrollSnapType,
+        scrollSnapAlign: style.scrollSnapAlign,
+        scrollSnapStop: style.scrollSnapStop,
+        paddingTop: style.paddingTop,
+        paddingRight: style.paddingRight,
+        paddingBottom: style.paddingBottom,
+        paddingLeft: style.paddingLeft,
+        marginTop: style.marginTop,
+        marginRight: style.marginRight,
+        marginBottom: style.marginBottom,
+        marginLeft: style.marginLeft,
       });
       const describeInteractionTarget = (element, style) => {
         const rect = element.getBoundingClientRect();
@@ -1745,18 +2015,100 @@ function isSafeToggleCandidate(candidate) {
         '[contenteditable="true"]',
         '[tabindex]:not([tabindex="-1"])'
       ].join(',');
-      const nodes = Array.from(document.querySelectorAll(selector))
-        .filter((element) => {
-          const rect = element.getBoundingClientRect();
-          const style = window.getComputedStyle(element);
-          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-        })
-        .slice(0, 16);
-      return nodes.map((element, index) => {
+      const surfaceSelector = [
+        'dialog[open]',
+        '[role="dialog"]',
+        '[role="alertdialog"]',
+        '[aria-modal="true"]',
+        '[popover]:not([popover="manual"])',
+        '[role="tablist"]',
+        '[role="tabpanel"]',
+        '[role="carousel"]',
+        '[aria-roledescription*="carousel" i]',
+        '[aria-roledescription*="slider" i]',
+        '[aria-roledescription*="slideshow" i]',
+      ].join(',');
+      const isVisibleCandidate = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const classifySurfaceKinds = (element, style) => {
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const roledescription = String(element.getAttribute("aria-roledescription") || "").toLowerCase();
+        const classText = normalizeClassName(element.className) || "";
+        const position = String(style.position || "").toLowerCase();
+        const overflowX = String(style.overflowX || style.overflow || "").toLowerCase();
+        const overflowY = String(style.overflowY || style.overflow || "").toLowerCase();
+        const scrollableX = /auto|scroll|overlay/.test(overflowX) && element.scrollWidth > element.clientWidth + 4;
+        const scrollableY = /auto|scroll|overlay/.test(overflowY) && element.scrollHeight > element.clientHeight + 4;
+        const kinds = [];
+        if (element.tagName.toLowerCase() === 'dialog' || role === 'dialog' || role === 'alertdialog' || element.getAttribute('aria-modal') === 'true') {
+          kinds.push('modal');
+        }
+        if (role === 'tablist' || role === 'tabpanel' || role === 'tab' || /(^|[\s_-])(tablist|tabpanel|tabs)([\s_-]|$)/.test(classText)) {
+          kinds.push('tab');
+        }
+        if (role === 'carousel' || roledescription.includes('carousel') || roledescription.includes('slider') || roledescription.includes('slideshow') || roledescription.includes('gallery') || /(^|[\s_-])(carousel|slider|swiper|slick|splide|embla|glide)([\s_-]|$)/.test(classText)) {
+          kinds.push('carousel');
+        }
+        if (scrollableX || scrollableY) {
+          kinds.push('scroll');
+        }
+        if (position === 'sticky' || position === 'fixed') {
+          kinds.push('sticky');
+        }
+        return {
+          kinds,
+          scrollableX,
+          scrollableY,
+          scrollableAxis: scrollableX && scrollableY ? 'both' : scrollableY ? 'y' : scrollableX ? 'x' : null,
+          position,
+          zIndex: style.zIndex,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          scrollSnapType: style.scrollSnapType,
+          scrollSnapAlign: style.scrollSnapAlign,
+          scrollSnapStop: style.scrollSnapStop,
+        };
+      };
+      const seen = new Set();
+      const nodes = [];
+      const pushNode = (element) => {
+        if (!element || seen.has(element) || !isVisibleCandidate(element)) {
+          return;
+        }
+        seen.add(element);
+        nodes.push(element);
+      };
+      for (const element of Array.from(document.querySelectorAll(selector))) {
+        pushNode(element);
+      }
+      for (const element of Array.from(document.querySelectorAll(surfaceSelector))) {
+        pushNode(element);
+      }
+      for (const element of Array.from(document.querySelectorAll("body *")).slice(0, 1200)) {
+        const style = window.getComputedStyle(element);
+        const classification = classifySurfaceKinds(element, style);
+        if (classification.kinds.length) {
+          pushNode(element);
+        }
+        if (nodes.length >= 24) {
+          break;
+        }
+      }
+      return nodes.slice(0, 24).map((element, index) => {
         const id = `web-embedding-${index}`;
         element.setAttribute('data-web-embedding-interaction-id', id);
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
+        const classification = classifySurfaceKinds(element, style);
+        const summaryLabel = [
+          getInteractionLabel(element),
+          classification.kinds.length ? classification.kinds.join("+") : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
         return {
           id,
           selector: `[data-web-embedding-interaction-id="${id}"]`,
@@ -1770,7 +2122,11 @@ function isSafeToggleCandidate(candidate) {
           ariaExpanded: element.getAttribute('aria-expanded'),
           ariaPressed: element.getAttribute('aria-pressed'),
           ariaSelected: element.getAttribute('aria-selected'),
+          ariaCurrent: element.getAttribute('aria-current'),
           ariaControls: element.getAttribute('aria-controls'),
+          ariaHasPopup: element.getAttribute('aria-haspopup'),
+          ariaModal: element.getAttribute('aria-modal'),
+          ariaRoleDescription: element.getAttribute('aria-roledescription'),
           inForm: Boolean(element.closest('form')),
           inputCapable: (
             element.isContentEditable ||
@@ -1780,6 +2136,22 @@ function isSafeToggleCandidate(candidate) {
               !['hidden', 'password', 'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'range', 'color', 'date', 'datetime-local', 'month', 'time', 'week'].includes((element.getAttribute('type') || 'text').toLowerCase())
             )
           ),
+          scrollableX: classification.scrollableX,
+          scrollableY: classification.scrollableY,
+          scrollableAxis: classification.scrollableAxis,
+          scrollTop: Math.round(element.scrollTop || 0),
+          scrollLeft: Math.round(element.scrollLeft || 0),
+          scrollHeight: Math.round(element.scrollHeight || 0),
+          scrollWidth: Math.round(element.scrollWidth || 0),
+          clientHeight: Math.round(element.clientHeight || 0),
+          clientWidth: Math.round(element.clientWidth || 0),
+          scrollSnapType: classification.scrollSnapType,
+          scrollSnapAlign: classification.scrollSnapAlign,
+          scrollSnapStop: classification.scrollSnapStop,
+          position: classification.position,
+          zIndex: classification.zIndex,
+          surfaceKinds: classification.kinds,
+          summaryLabel,
           clickCapable: (
             !element.getAttribute('href') &&
             (
@@ -1802,6 +2174,12 @@ function isSafeToggleCandidate(candidate) {
           label: getInteractionLabel(element),
           focusable: isFocusableElement(element, style),
           targetSummary: describeInteractionTarget(element, style),
+          surfaceSummary: {
+            kinds: classification.kinds,
+            scrollableAxis: classification.scrollableAxis,
+            position: classification.position,
+            zIndex: classification.zIndex,
+          },
         };
       });
     });
@@ -1867,9 +2245,11 @@ function isSafeToggleCandidate(candidate) {
       }
     }
     await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), pageMetrics.initialScrollY || 0);
+    let scrollSurfaceReplayCount = 0;
     for (const candidate of interactiveCandidates) {
       const x = Math.max(1, Math.round(candidate.rect.x + Math.min(candidate.rect.width / 2, Math.max(candidate.rect.width - 1, 1))));
       const y = Math.max(1, Math.round(candidate.rect.y + Math.min(candidate.rect.height / 2, Math.max(candidate.rect.height - 1, 1))));
+      const traceLabel = candidate.summaryLabel || candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag;
       let hoverStyles = null;
       let focusStyles = null;
       let hoverState = null;
@@ -1949,7 +2329,7 @@ function isSafeToggleCandidate(candidate) {
         safeToExecute: true,
         targetId: candidate.id,
         selector: candidate.selector,
-        label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+        label: traceLabel,
         interactionKind: "hover",
       });
       pushExecution({
@@ -1965,7 +2345,7 @@ function isSafeToggleCandidate(candidate) {
         safeToExecute: true,
         targetId: candidate.id,
         selector: candidate.selector,
-        label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+        label: traceLabel,
         interactionKind: "focus",
       });
       pushExecution({
@@ -1977,6 +2357,73 @@ function isSafeToggleCandidate(candidate) {
         error: focusError,
       });
 
+      if (scrollSurfaceReplayCount < 4 && Array.isArray(candidate.surfaceKinds) && candidate.surfaceKinds.includes("scroll") && candidate.scrollableAxis) {
+        scrollSurfaceReplayCount += 1;
+        const scrollStep = pushTraceStep({
+          kind: "scroll",
+          safeToExecute: true,
+          targetId: candidate.id,
+          selector: candidate.selector,
+          label: `${traceLabel} scroll ${candidate.scrollableAxis}`,
+          interactionKind: "scroll-surface",
+        });
+        let beforeScrollState = null;
+        let afterScrollState = null;
+        try {
+          beforeScrollState = await page.evaluate(captureInteractionState, candidate.selector);
+          const scrollDeltaX = candidate.scrollableAxis === "x" || candidate.scrollableAxis === "both" ? Math.max(40, Math.round((candidate.clientWidth || 0) * 0.4)) : 0;
+          const scrollDeltaY = candidate.scrollableAxis === "y" || candidate.scrollableAxis === "both" ? Math.max(40, Math.round((candidate.clientHeight || 0) * 0.4)) : 0;
+          const beforeScroll = await page.evaluate((selector) => {
+            const element = document.querySelector(selector);
+            if (!element) return null;
+            return {
+              scrollTop: Math.round(element.scrollTop || 0),
+              scrollLeft: Math.round(element.scrollLeft || 0),
+            };
+          }, candidate.selector);
+          await page.evaluate(({ selector, deltaX, deltaY }) => {
+            const element = document.querySelector(selector);
+            if (!element) return;
+            element.scrollLeft = Math.max(0, (element.scrollLeft || 0) + deltaX);
+            element.scrollTop = Math.max(0, (element.scrollTop || 0) + deltaY);
+          }, { selector: candidate.selector, deltaX: scrollDeltaX, deltaY: scrollDeltaY });
+          await page.waitForTimeout(80);
+          afterScrollState = await page.evaluate(captureInteractionState, candidate.selector);
+          await page.evaluate(({ selector, scrollTop, scrollLeft }) => {
+            const element = document.querySelector(selector);
+            if (!element) return;
+            element.scrollTop = scrollTop;
+            element.scrollLeft = scrollLeft;
+          }, {
+            selector: candidate.selector,
+            scrollTop: beforeScroll && typeof beforeScroll.scrollTop === "number" ? beforeScroll.scrollTop : 0,
+            scrollLeft: beforeScroll && typeof beforeScroll.scrollLeft === "number" ? beforeScroll.scrollLeft : 0,
+          });
+          pushExecution({
+            stepId: scrollStep.id,
+            kind: scrollStep.kind,
+            status: "executed",
+            changedKeys: Object.keys(diffInteractionStates(beforeScrollState, afterScrollState)),
+            stateSummary: {
+              before: summarizeInteractionState(beforeScrollState),
+              after: summarizeInteractionState(afterScrollState),
+            },
+            observed: {
+              scrollableAxis: candidate.scrollableAxis,
+              deltaX: scrollDeltaX,
+              deltaY: scrollDeltaY,
+            },
+          });
+        } catch (error) {
+          pushExecution({
+            stepId: scrollStep.id,
+            kind: scrollStep.kind,
+            status: "failed",
+            error: error.message,
+          });
+        }
+      }
+
       if (candidate.inputCapable) {
         const typeValue = safeReplayValue(candidate);
         let beforeTypeState = null;
@@ -1986,7 +2433,7 @@ function isSafeToggleCandidate(candidate) {
           safeToExecute: true,
           targetId: candidate.id,
           selector: candidate.selector,
-          label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+          label: traceLabel,
           value: typeValue,
           interactionKind: "type",
         });
@@ -2026,7 +2473,7 @@ function isSafeToggleCandidate(candidate) {
           safeToExecute: safeToggleLike,
           targetId: candidate.id,
           selector: candidate.selector,
-          label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+          label: traceLabel,
           interactionKind: safeToggleLike ? "click-toggle" : "click-planned",
         });
         if (!safeToggleLike) {
@@ -2097,7 +2544,9 @@ function isSafeToggleCandidate(candidate) {
       }
       interactionStates.push({
         ...candidate,
-        interactionLabel: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+        interactionLabel: traceLabel,
+        summaryLabel: traceLabel,
+        stateSummary: summarizeInteractionState(focusState || hoverState),
         hoverStyles,
         hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
         hoverState,

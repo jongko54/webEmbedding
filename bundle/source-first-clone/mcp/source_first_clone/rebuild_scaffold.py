@@ -855,11 +855,50 @@ def _block_copy(block: dict[str, Any]) -> str:
 
 
 def _interaction_label(entry: dict[str, Any], index: int) -> str:
-    text = _clean_text(entry.get("text"), 56)
+    text = _clean_text(
+        entry.get("labelText")
+        or entry.get("label")
+        or ((entry.get("targetSummary") or {}).get("label") if isinstance(entry.get("targetSummary"), dict) else None)
+        or entry.get("text"),
+        56,
+    )
     if text:
         return text
     tag = _clean_text(entry.get("tag"), 24) or "element"
     return f"{tag.title()} interaction {index + 1}"
+
+
+def _interaction_kind(entry: dict[str, Any]) -> str:
+    target = entry.get("targetSummary", {}) if isinstance(entry.get("targetSummary"), dict) else {}
+    kind = _clean_text(entry.get("kind") or target.get("kind"), 32)
+    return str(kind or "action")
+
+
+def _interaction_placeholder(entry: dict[str, Any]) -> str | None:
+    target = entry.get("targetSummary", {}) if isinstance(entry.get("targetSummary"), dict) else {}
+    return _clean_text(target.get("placeholder"), 80) or None
+
+
+def _interaction_type(entry: dict[str, Any]) -> str | None:
+    target = entry.get("targetSummary", {}) if isinstance(entry.get("targetSummary"), dict) else {}
+    value = _clean_text(entry.get("type") or target.get("type"), 24)
+    return value or None
+
+
+def _interaction_control_tag(entry: dict[str, Any]) -> str:
+    tag = str(entry.get("tag") or "").lower()
+    kind = _interaction_kind(entry)
+    if entry.get("href") or kind == "link":
+        return "a"
+    if entry.get("inputCapable") or kind == "text-entry":
+        if tag in {"textarea", "input"}:
+            return tag
+        return "input"
+    if kind in {"select"} or tag == "select":
+        return "select"
+    if tag in {"button", "summary"}:
+        return tag
+    return "button"
 
 
 def _viewport_side(summary: dict[str, Any], key: str, fallback: int) -> int:
@@ -951,7 +990,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
     section_cards: list[dict[str, Any]] = []
-    for index, block in enumerate(blocks[:8]):
+    for index, block in enumerate(blocks[:10]):
         if not isinstance(block, dict):
             continue
         rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
@@ -996,26 +1035,33 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         )
 
     interaction_cards: list[dict[str, Any]] = []
-    for index, entry in enumerate(interactions[:6] if isinstance(interactions, list) else []):
+    for index, entry in enumerate(interactions[:12] if isinstance(interactions, list) else []):
         if not isinstance(entry, dict):
             continue
         states: list[str] = []
         hover_keys = entry.get("hoverDeltaKeys", [])
         focus_keys = entry.get("focusDeltaKeys", [])
         if hover_keys:
-            states.append(f"hover: {', '.join(str(key) for key in hover_keys)}")
+            states.append(f"hover {len(hover_keys)} deltas")
         if focus_keys:
-            states.append(f"focus: {', '.join(str(key) for key in focus_keys)}")
+            states.append(f"focus {len(focus_keys)} deltas")
         click_keys = entry.get("clickStateDeltaKeys", [])
         if click_keys:
-            states.append(f"click: {', '.join(str(key) for key in click_keys)}")
+            states.append(f"click {len(click_keys)} deltas")
         interaction_cards.append(
             {
                 "id": f"interaction-{index + 1}",
                 "label": _interaction_label(entry, index),
                 "copy": _clean_text(entry.get("text"), 140) or "Interactive element sampled from runtime capture.",
                 "tag": str(entry.get("tag") or "element"),
+                "role": entry.get("role"),
                 "href": entry.get("href"),
+                "kind": _interaction_kind(entry),
+                "controlTag": _interaction_control_tag(entry),
+                "placeholder": _interaction_placeholder(entry),
+                "inputType": _interaction_type(entry),
+                "inputCapable": bool(entry.get("inputCapable")),
+                "clickCapable": bool(entry.get("clickCapable")),
                 "states": states or ["interaction detected"],
                 "styleSnapshot": _style_snapshot_from_styles(entry.get("baseStyles")),
                 "rect": entry.get("rect"),
@@ -1264,6 +1310,22 @@ def _render_bounded_reference_page_tsx() -> str:
             "export function BoundedReferencePage({ data }: Props) {",
             "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot);",
             "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot);",
+            "  const renderInteractionControl = (entry: (typeof data.interactions)[number]) => {",
+            "    const controlStyle = styleFromSnapshot(entry.styleSnapshot);",
+            "    if (entry.controlTag === \"a\") {",
+            '      return <a className=\"bounded-control bounded-control--link\" href={entry.href ?? \"#\"} style={controlStyle}>{entry.label}</a>;',
+            "    }",
+            "    if (entry.controlTag === \"textarea\") {",
+            '      return <textarea className=\"bounded-control bounded-control--input\" defaultValue={entry.copy} placeholder={entry.placeholder ?? entry.label} style={controlStyle} />;',
+            "    }",
+            "    if (entry.controlTag === \"input\") {",
+            '      return <input className=\"bounded-control bounded-control--input\" defaultValue={entry.kind === \"text-entry\" ? entry.copy : undefined} placeholder={entry.placeholder ?? entry.label} type={entry.inputType ?? \"text\"} style={controlStyle} />;',
+            "    }",
+            "    if (entry.controlTag === \"select\") {",
+            '      return <select className=\"bounded-control bounded-control--input\" defaultValue=\"sample\" style={controlStyle}><option value=\"sample\">{entry.label}</option><option value=\"alt\">Captured option</option></select>;',
+            "    }",
+            '    return <button className=\"bounded-control bounded-control--button\" type=\"button\" style={controlStyle}>{entry.label}</button>;',
+            "  };",
             "  return (",
             '    <main className="bounded-shell">',
             '      <header className="bounded-masthead bounded-panel" style={mastheadStyle}>',
@@ -1365,14 +1427,15 @@ def _render_bounded_reference_page_tsx() -> str:
             "",
             '          <section className="bounded-panel bounded-stack">',
             '            <p className="bounded-kicker">Interaction samples</p>',
-            '            <div className="bounded-stack">',
+            '            <div className="bounded-stack bounded-control-grid">',
             "              {data.interactions.length ? (",
             "                data.interactions.map((entry) => (",
             '                  <article className="bounded-mini-card" key={entry.id}>',
             '                    <strong>{entry.label}</strong>',
             '                    <p>{entry.copy}</p>',
+            "                    {renderInteractionControl(entry)}",
             '                    <div className="bounded-meta bounded-meta--inline">',
-            "                      {entry.states.map((state) => (",
+            "                      {entry.states.slice(0, 3).map((state) => (",
             '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
             "                          {state}",
             "                        </span>",
@@ -1421,6 +1484,33 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
     masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"))
     hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"))
+
+    def render_interaction_control(entry: dict[str, Any]) -> str:
+        control_style = _style_attr_from_snapshot(entry.get("styleSnapshot"))
+        label = escape(str(entry.get("label") or "Captured interaction"))
+        placeholder = escape(str(entry.get("placeholder") or entry.get("label") or "Captured input"))
+        input_type = escape(str(entry.get("inputType") or "text"))
+        href = escape(str(entry.get("href") or "#"))
+        tag = str(entry.get("controlTag") or "button")
+        kind = str(entry.get("kind") or "")
+        if tag == "a":
+            return f'                  <a class="bounded-control bounded-control--link" href="{href}"{control_style}>{label}</a>'
+        if tag == "textarea":
+            value = escape(str(entry.get("copy") or ""))
+            return f'                  <textarea class="bounded-control bounded-control--input" placeholder="{placeholder}"{control_style}>{value}</textarea>'
+        if tag == "input":
+            value = escape(str(entry.get("copy") or "")) if kind == "text-entry" else ""
+            return f'                  <input class="bounded-control bounded-control--input" type="{input_type}" value="{value}" placeholder="{placeholder}"{control_style} />'
+        if tag == "select":
+            return "\n".join(
+                [
+                    f'                  <select class="bounded-control bounded-control--input"{control_style}>',
+                    f'                    <option>{label}</option>',
+                    "                    <option>Captured option</option>",
+                    "                  </select>",
+                ]
+            )
+        return f'                  <button class="bounded-control bounded-control--button" type="button"{control_style}>{label}</button>'
 
     nav_items = []
     for link in masthead.get("links", []) if isinstance(masthead.get("links", []), list) else []:
@@ -1487,7 +1577,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         if not isinstance(entry, dict):
             continue
         state_bits = []
-        for state in entry.get("states", []) if isinstance(entry.get("states", []), list) else []:
+        for state in (entry.get("states", [])[:3] if isinstance(entry.get("states", []), list) else []):
             state_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">{escape(str(state))}</span>')
         interaction_cards.append(
             "\n".join(
@@ -1495,6 +1585,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     '                <article class="bounded-mini-card">',
                     f'                  <strong>{escape(str(entry.get("label") or "Captured interaction"))}</strong>',
                     f'                  <p>{escape(str(entry.get("copy") or ""))}</p>',
+                    render_interaction_control(entry),
                     '                  <div class="bounded-meta bounded-meta--inline">',
                     *(state_bits or ['                      <span class="bounded-chip bounded-chip--muted">interaction detected</span>']),
                     "                  </div>",
@@ -1588,7 +1679,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "        </section>",
             '        <section class="bounded-panel bounded-stack">',
             '          <p class="bounded-kicker">Interaction samples</p>',
-            '          <div class="bounded-stack">',
+            '          <div class="bounded-stack bounded-control-grid">',
             *interaction_cards,
             "          </div>",
             "        </section>",
@@ -1659,13 +1750,17 @@ def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
 def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    css_analysis = summary.get("cssAnalysis", {}) if isinstance(summary, dict) else {}
+    body_computed = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis, dict) else {}
     base_font = (typography.get("fonts") or ["Inter, system-ui, sans-serif"])[0]
-    text_color = palette.get("text") or "#e5e7eb"
-    surface_color = palette.get("surface") or "#0f172a"
-    surface_alt = palette.get("surface_alt") or "#172033"
+    text_color = body_computed.get("color") or palette.get("text") or "#e5e7eb"
+    surface_color = body_computed.get("backgroundColor") or palette.get("surface") or "#0f172a"
+    surface_alt = palette.get("surface_alt") or palette.get("surfaceAlt") or "#172033"
     accent = palette.get("accent") or "#7c3aed"
-    line_height = (typography.get("line_heights") or ["1.5"])[0]
+    line_height = body_computed.get("lineHeight") or (typography.get("line_heights") or ["1.5"])[0]
     letter_spacing = (typography.get("letter_spacings") or ["-0.01em"])[0]
+    body_font_size = body_computed.get("fontSize") or (typography.get("sizes") or ["14px"])[0]
+    base_font = body_computed.get("fontFamily") or base_font
     return "\n".join(
         [
             ":root {",
@@ -1686,6 +1781,8 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin: 0;",
             "  color: var(--bounded-text);",
             "  font-family: var(--bounded-font-sans);",
+            f"  font-size: {body_font_size};",
+            f"  line-height: {line_height};",
             "  background:",
             "    radial-gradient(circle at top left, color-mix(in srgb, var(--bounded-accent) 18%, transparent), transparent 34%),",
             "    linear-gradient(180deg, #060911 0%, var(--bounded-bg) 100%);",
@@ -1836,6 +1933,32 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin-bottom: 6px;",
             "}",
             ".bounded-mini-card p, .bounded-outline-item p { margin: 0; }",
+            ".bounded-control-grid {",
+            "  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));",
+            "  max-height: 420px;",
+            "  overflow: auto;",
+            "  align-content: start;",
+            "}",
+            ".bounded-control {",
+            "  width: 100%;",
+            "  min-height: 40px;",
+            "  margin-top: 12px;",
+            "  border-radius: 14px;",
+            "  border: 1px solid var(--bounded-border);",
+            "  background: rgba(255, 255, 255, 0.04);",
+            "  color: inherit;",
+            "  font: inherit;",
+            "}",
+            ".bounded-control--button, .bounded-control--link {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  padding: 0 14px;",
+            "  text-decoration: none;",
+            "}",
+            ".bounded-control--input {",
+            "  padding: 10px 12px;",
+            "}",
             ".bounded-status-row {",
             "  display: flex;",
             "  align-items: center;",
@@ -1888,15 +2011,24 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
 
     interaction_entries = interactions_capture.get("content", []) if isinstance(interactions_capture, dict) else []
     interaction_sample: list[dict[str, Any]] = []
-    for entry in interaction_entries[:4] if isinstance(interaction_entries, list) else []:
+    for entry in interaction_entries[:12] if isinstance(interaction_entries, list) else []:
         if not isinstance(entry, dict):
             continue
         interaction_sample.append(
             {
                 "tag": entry.get("tag"),
+                "role": entry.get("role"),
+                "kind": entry.get("kind"),
                 "text": _clean_text(entry.get("text"), 120) or None,
+                "labelText": _clean_text(entry.get("labelText"), 80) or None,
+                "label": _clean_text(entry.get("interactionLabel") or entry.get("label"), 80) or None,
                 "href": entry.get("href"),
+                "type": entry.get("type"),
+                "inputCapable": bool(entry.get("inputCapable")),
+                "clickCapable": bool(entry.get("clickCapable")),
                 "rect": entry.get("rect"),
+                "baseStyles": entry.get("baseStyles") if isinstance(entry.get("baseStyles"), dict) else {},
+                "targetSummary": entry.get("targetSummary") if isinstance(entry.get("targetSummary"), dict) else {},
                 "hoverDeltaKeys": sorted((entry.get("hoverDelta") or {}).keys()) if isinstance(entry.get("hoverDelta"), dict) else [],
                 "focusDeltaKeys": sorted((entry.get("focusDelta") or {}).keys()) if isinstance(entry.get("focusDelta"), dict) else [],
                 "clickStateDeltaKeys": sorted((((entry.get("clickState") or {}).get("stateDelta")) or {}).keys())
