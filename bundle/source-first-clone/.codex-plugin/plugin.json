@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.1.2",
+  "version": "0.3.1",
   "description": "Prefer original embeds, previews, viewers, and remixable sources before rebuilding a reference surface.",
   "author": {
     "name": "Jongho",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Source-First Clone",
-    "shortDescription": "Find the original preview or embed before rebuilding a reference page",
-    "longDescription": "A Codex plugin for exact clone intake. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, and only falls back to rebuilding after the source-first paths are exhausted.",
+    "shortDescription": "Find reuse paths, attach session-aware capture, and avoid fake-exact rebuilds",
+    "longDescription": "A Codex plugin for source-first webpage intake. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, adds session-aware runtime capture scaffolds with Playwright-style options, and only falls back to rebuilding after the source-first paths are exhausted.",
     "developerName": "Jongho",
     "category": "Developer Tools",
     "capabilities": [
@@ -35,8 +35,9 @@
     "termsOfServiceURL": "https://github.com/jongko54/webEmbedding#readme",
     "defaultPrompt": [
       "Use the original embed or preview URL before recreating this reference.",
+      "If the original page itself is frameable, use direct iframe reuse instead of rebuilding it.",
       "Inspect this link and tell me whether it should be embedded, sourced, or rebuilt.",
-      "Find runtime preview URLs and exact clone paths for this page."
+      "Run the full clone_reference_url workflow for this link, attach session-aware capture if needed, and plan the exact clone path for this page."
     ],
     "brandColor": "#2563EB"
   }
