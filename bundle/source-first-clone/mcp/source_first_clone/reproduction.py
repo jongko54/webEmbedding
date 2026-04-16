@@ -224,6 +224,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
     dom_capture = captures.get("dom", {}) if isinstance(captures, dict) else {}
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
+    css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
     interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
@@ -281,6 +282,40 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
             ).strip()
             if descriptor:
                 prompt_lines.append(f"- {descriptor}")
+
+    css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
+    linked_stylesheets = css_analysis.get("linkedStylesheets", []) if isinstance(css_analysis.get("linkedStylesheets", []), list) else []
+    inline_style_blocks = css_analysis.get("inlineStyleBlocks", []) if isinstance(css_analysis.get("inlineStyleBlocks", []), list) else []
+    if linked_stylesheets or inline_style_blocks:
+        prompt_lines.append("CSS analysis sample:")
+        if isinstance(css_analysis, dict):
+            prompt_lines.append(
+                f"- stylesheets: {css_analysis.get('stylesheetCount', 0)} total / {css_analysis.get('accessibleStylesheetCount', 0)} accessible"
+            )
+            prompt_lines.append(
+                f"- inline style blocks: {css_analysis.get('inlineStyleTagCount', 0)} / style attributes: {css_analysis.get('styleAttributeCount', 0)}"
+            )
+        for sheet in linked_stylesheets[:4]:
+            if not isinstance(sheet, dict):
+                continue
+            descriptor = " ".join(
+                value
+                for value in [
+                    sheet.get("ownerTag"),
+                    sheet.get("href") or "inline-sheet",
+                    f"rules={sheet.get('ruleCount')}" if sheet.get("ruleCount") is not None else "",
+                    "restricted" if sheet.get("crossOriginRestricted") else "",
+                ]
+                if value
+            ).strip()
+            if descriptor:
+                prompt_lines.append(f"- {descriptor}")
+        for block in inline_style_blocks[:2]:
+            if not isinstance(block, dict):
+                continue
+            sample = str(block.get("textSample") or "").strip()
+            if sample:
+                prompt_lines.append(f"- inline style sample: {sample}")
 
     asset_content = assets_capture.get("content", {}) if isinstance(assets_capture, dict) else {}
     iframe_count = len(asset_content.get("iframes", []) or []) if isinstance(asset_content, dict) else 0

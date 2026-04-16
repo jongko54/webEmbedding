@@ -811,6 +811,90 @@ function isSafeToggleCandidate(candidate) {
         iframes: uniq(Array.from(document.querySelectorAll("iframe"), (node) => normalize(node.src))),
       };
     });
+    const cssAnalysis = await page.evaluate(() => {
+      const normalize = (value) => {
+        if (!value) return null;
+        try {
+          return new URL(value, document.baseURI).href;
+        } catch (error) {
+          return value;
+        }
+      };
+      const trimText = (value, maxLength = 240) => {
+        if (!value) return "";
+        const normalized = String(value).replace(/\s+/g, " ").trim();
+        return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+      };
+      const styleSheets = Array.from(document.styleSheets || []).slice(0, 24).map((sheet, index) => {
+        const ownerNode = sheet.ownerNode;
+        const href = normalize(sheet.href);
+        const ownerTag = ownerNode && ownerNode.tagName ? ownerNode.tagName.toLowerCase() : null;
+        const mediaText = sheet.media && typeof sheet.media.mediaText === "string" ? sheet.media.mediaText : null;
+        const payload = {
+          index,
+          href,
+          ownerTag,
+          disabled: Boolean(sheet.disabled),
+          media: mediaText,
+          accessible: false,
+          ruleCount: null,
+          sampleRules: [],
+          sampleSelectors: [],
+          crossOriginRestricted: false,
+        };
+        try {
+          const rules = Array.from(sheet.cssRules || []);
+          payload.accessible = true;
+          payload.ruleCount = rules.length;
+          payload.sampleRules = rules.slice(0, 8).map((rule) => trimText(rule.cssText, 220));
+          payload.sampleSelectors = rules
+            .map((rule) => trimText(rule.selectorText || rule.conditionText || rule.name || "", 120))
+            .filter(Boolean)
+            .slice(0, 8);
+        } catch (error) {
+          payload.crossOriginRestricted = true;
+          payload.error = error && error.message ? String(error.message) : "Unable to read cssRules";
+        }
+        return payload;
+      });
+      const inlineStyleBlocks = Array.from(document.querySelectorAll("style")).slice(0, 12).map((node, index) => ({
+        index,
+        textLength: (node.textContent || "").length,
+        textSample: trimText(node.textContent || "", 320),
+        media: node.getAttribute("media"),
+        nonce: node.getAttribute("nonce") ? "present" : null,
+      }));
+      const styleAttributeNodes = Array.from(document.querySelectorAll("[style]")).slice(0, 20).map((element, index) => ({
+        index,
+        tag: element.tagName.toLowerCase(),
+        id: element.id || null,
+        className: typeof element.className === "string" && element.className ? trimText(element.className, 120) : null,
+        style: trimText(element.getAttribute("style") || "", 200),
+      }));
+      const rootStyle = window.getComputedStyle(document.documentElement);
+      const bodyStyle = window.getComputedStyle(document.body || document.documentElement);
+      return {
+        stylesheetCount: styleSheets.length,
+        accessibleStylesheetCount: styleSheets.filter((sheet) => sheet.accessible).length,
+        inlineStyleTagCount: inlineStyleBlocks.length,
+        styleAttributeCount: document.querySelectorAll("[style]").length,
+        linkedStylesheets: styleSheets,
+        inlineStyleBlocks,
+        styleAttributeSample: styleAttributeNodes,
+        rootComputedStyle: {
+          color: rootStyle.color,
+          backgroundColor: rootStyle.backgroundColor,
+          fontFamily: rootStyle.fontFamily,
+          fontSize: rootStyle.fontSize,
+        },
+        bodyComputedStyle: {
+          color: bodyStyle.color,
+          backgroundColor: bodyStyle.backgroundColor,
+          fontFamily: bodyStyle.fontFamily,
+          fontSize: bodyStyle.fontSize,
+        },
+      };
+    });
     const pageMetrics = await page.evaluate(() => ({
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
@@ -1256,6 +1340,14 @@ function isSafeToggleCandidate(candidate) {
           available: true,
           entryCount: styleSummary.length,
           content: styleSummary,
+        },
+        cssAnalysis: {
+          available: true,
+          stylesheetCount: cssAnalysis.stylesheetCount,
+          accessibleStylesheetCount: cssAnalysis.accessibleStylesheetCount,
+          inlineStyleTagCount: cssAnalysis.inlineStyleTagCount,
+          styleAttributeCount: cssAnalysis.styleAttributeCount,
+          content: cssAnalysis,
         },
         network: {
           available: true,

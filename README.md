@@ -224,6 +224,7 @@ When runtime capture succeeds, the bundle can now persist:
 - `dom/snapshot.json`
 - `dom/runtime.html`
 - `styles/computed-summary.json`
+- `styles/css-analysis.json`
 - `network/manifest.json`
 - `assets/inventory.json`
 - `interactions/states.json`
@@ -325,6 +326,11 @@ The capture bundle now includes two interaction layers for visible interactive e
   - ordered replay steps for `scroll`, `hover`, `focus`, `type`, and conservative toggle `click`
   - execution results for safe replay steps
   - viewport and page metrics for downstream reconstruction
+- `styles/css-analysis.json`
+  - linked stylesheet inventory
+  - accessible CSS rule counts and sample selectors
+  - inline `<style>` block samples
+  - `[style]` attribute sample plus root/body computed-style baseline
 - `breakpoints/*/capture.json`
   - additional desktop/tablet/mobile capture bundles for responsive reconstruction and later self-verify loops
 
@@ -361,6 +367,7 @@ When exact reuse is available, `reproduce` also writes:
 The new tools are still scaffolds for the next phase:
 
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
+- it now captures full runtime HTML plus explicit CSS analysis artifacts from the live page, not only DOM and computed-style summaries
 - `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded role-inferred `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
 - `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downsampled pixel-diff signals and interaction-trace coverage as a core exact-clone readiness signal

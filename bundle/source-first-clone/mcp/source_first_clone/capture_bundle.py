@@ -203,6 +203,7 @@ def _build_capture_bundle(
     dom_capture = capture_state.get("dom", {}) if isinstance(capture_state, dict) else {}
     accessibility_capture = capture_state.get("accessibility", {}) if isinstance(capture_state, dict) else {}
     styles_capture = capture_state.get("styles", {}) if isinstance(capture_state, dict) else {}
+    css_analysis_capture = capture_state.get("cssAnalysis", {}) if isinstance(capture_state, dict) else {}
     network_capture = capture_state.get("network", {}) if isinstance(capture_state, dict) else {}
     assets_capture = capture_state.get("assets", {}) if isinstance(capture_state, dict) else {}
     interactions_capture = capture_state.get("interactions", {}) if isinstance(capture_state, dict) else {}
@@ -212,6 +213,7 @@ def _build_capture_bundle(
         "DOM snapshot",
         "accessibility tree",
         "computed styles",
+        "stylesheet analysis",
         "network manifest",
         "interaction states",
         "interaction replay trace",
@@ -225,6 +227,8 @@ def _build_capture_bundle(
         gaps = [gap for gap in gaps if gap != "accessibility tree"]
     if styles_capture.get("available"):
         gaps = [gap for gap in gaps if gap != "computed styles"]
+    if css_analysis_capture.get("available"):
+        gaps = [gap for gap in gaps if gap != "stylesheet analysis"]
     if network_capture.get("available"):
         gaps = [gap for gap in gaps if gap != "network manifest"]
     if assets_capture.get("available"):
@@ -257,6 +261,7 @@ def _build_capture_bundle(
                 "dom_snapshot": bool(dom_capture.get("available")),
                 "accessibility_tree": bool(accessibility_capture.get("available")),
                 "computed_styles": bool(styles_capture.get("available")),
+                "css_analysis": bool(css_analysis_capture.get("available")),
                 "network_manifest": bool(network_capture.get("available")),
                 "assets": bool(assets_capture.get("available")),
                 "interaction_states": bool(interactions_capture.get("available")),
@@ -267,6 +272,7 @@ def _build_capture_bundle(
                 "dom": dom_capture if dom_capture.get("available") else None,
                 "accessibility": accessibility_capture if accessibility_capture.get("available") else None,
                 "styles": styles_capture if styles_capture.get("available") else None,
+                "css_analysis": css_analysis_capture if css_analysis_capture.get("available") else None,
                 "network": network_capture if network_capture.get("available") else None,
                 "assets": assets_capture if assets_capture.get("available") else None,
                 "interactions": interactions_capture if interactions_capture.get("available") else None,
@@ -360,6 +366,20 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "available": True,
             "entry_count": styles_capture.get("entryCount"),
             "path": str(styles_path),
+        }
+
+    css_analysis_capture = runtime_capture.get("cssAnalysis", {}) if isinstance(runtime_capture, dict) else {}
+    if css_analysis_capture.get("available") and css_analysis_capture.get("content") is not None:
+        css_analysis_path = output_dir / "styles" / "css-analysis.json"
+        css_analysis_path.write_text(json.dumps(css_analysis_capture["content"], indent=2) + "\n")
+        persisted["files"]["css_analysis"] = str(css_analysis_path)
+        bundle_payload["bundle"]["captured_artifacts"]["css_analysis"] = {
+            "available": True,
+            "stylesheet_count": css_analysis_capture.get("stylesheetCount"),
+            "accessible_stylesheet_count": css_analysis_capture.get("accessibleStylesheetCount"),
+            "inline_style_tag_count": css_analysis_capture.get("inlineStyleTagCount"),
+            "style_attribute_count": css_analysis_capture.get("styleAttributeCount"),
+            "path": str(css_analysis_path),
         }
 
     network_capture = runtime_capture.get("network", {}) if isinstance(runtime_capture, dict) else {}
