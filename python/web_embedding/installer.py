@@ -300,6 +300,9 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
     interactions_capture = captures.get("interactions")
     if isinstance(interactions_capture, dict):
         interactions_capture.pop("content", None)
+    interaction_trace_capture = captures.get("interactionTrace")
+    if isinstance(interaction_trace_capture, dict):
+        interaction_trace_capture.pop("content", None)
     screenshot_capture = captures.get("screenshot")
     if isinstance(screenshot_capture, dict) and screenshot_capture.get("available"):
         screenshot_capture.pop("base64", None)
@@ -308,6 +311,9 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
     artifact_html = captured_artifacts.get("html")
     if isinstance(artifact_html, dict):
         artifact_html.pop("content", None)
+    artifact_trace = captured_artifacts.get("interaction_trace")
+    if isinstance(artifact_trace, dict):
+        artifact_trace.pop("content", None)
     return summary
 
 
