@@ -452,12 +452,362 @@ function safeReplayValue(candidate) {
   return "web embedding";
 }
 
+function normalizeClassName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, 120) || null;
+}
+
+function classTokens(value) {
+  return String(value || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+function captureNodeSignature(node) {
+  if (!node || !node.tagName) {
+    return null;
+  }
+  const rect = node.getBoundingClientRect();
+  return {
+    tag: node.tagName.toLowerCase(),
+    role: node.getAttribute("role"),
+    id: node.id || null,
+    className: normalizeClassName(node.className),
+    text: (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    ariaLabel: node.getAttribute("aria-label"),
+    ariaDescription: node.getAttribute("aria-description"),
+    ariaCurrent: node.getAttribute("aria-current"),
+    ariaControls: node.getAttribute("aria-controls"),
+    ariaExpanded: node.getAttribute("aria-expanded"),
+    ariaSelected: node.getAttribute("aria-selected"),
+    ariaModal: node.getAttribute("aria-modal"),
+    ariaRoleDescription: node.getAttribute("aria-roledescription"),
+    ariaLive: node.getAttribute("aria-live"),
+    open: node.open === true,
+    hidden: Boolean(node.hidden),
+    disabled: Boolean(node.disabled),
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
+  };
+}
+
+function isVisibleElement(node) {
+  if (!node || !node.tagName) {
+    return false;
+  }
+  const rect = node.getBoundingClientRect();
+  const style = window.getComputedStyle(node);
+  return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+}
+
+function isScrollableElement(node, style) {
+  if (!node || !node.tagName || !style) {
+    return false;
+  }
+  const overflowX = String(style.overflowX || style.overflow || "").toLowerCase();
+  const overflowY = String(style.overflowY || style.overflow || "").toLowerCase();
+  const horizontal = /auto|scroll|overlay/.test(overflowX) && node.scrollWidth > node.clientWidth + 4;
+  const vertical = /auto|scroll|overlay/.test(overflowY) && node.scrollHeight > node.clientHeight + 4;
+  return horizontal || vertical;
+}
+
+function describeScrollableElement(node, style) {
+  if (!node || !node.tagName || !style) {
+    return null;
+  }
+  const rect = node.getBoundingClientRect();
+  return {
+    ...captureNodeSignature(node),
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    scrollTop: Math.round(node.scrollTop || 0),
+    scrollLeft: Math.round(node.scrollLeft || 0),
+    scrollHeight: Math.round(node.scrollHeight || 0),
+    scrollWidth: Math.round(node.scrollWidth || 0),
+    clientHeight: Math.round(node.clientHeight || 0),
+    clientWidth: Math.round(node.clientWidth || 0),
+    scrollableX: /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && node.scrollWidth > node.clientWidth + 4,
+    scrollableY: /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && node.scrollHeight > node.clientHeight + 4,
+    scrollSnapType: style.scrollSnapType,
+    scrollSnapAlign: style.scrollSnapAlign,
+    scrollSnapStop: style.scrollSnapStop,
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
+  };
+}
+
+function findMatchingAncestor(element, matcher, maxDepth = 8) {
+  let current = element;
+  let depth = 0;
+  while (current && depth <= maxDepth) {
+    if (current.tagName) {
+      const style = window.getComputedStyle(current);
+      const match = matcher(current, style, depth);
+      if (match) {
+        return {
+          node: current,
+          style,
+          depth,
+          reason: typeof match === "string" ? match : match.reason || null,
+          kind: typeof match === "object" ? match.kind || null : null,
+        };
+      }
+    }
+    if (current === document.body || current === document.documentElement) {
+      break;
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+  return null;
+}
+
+function findScrollableAncestor(element) {
+  return findMatchingAncestor(element, (node, style) => {
+    if (node === element) {
+      return null;
+    }
+    if (isScrollableElement(node, style)) {
+      return "scrollable ancestor";
+    }
+    return null;
+  });
+}
+
+function captureScrollSignals(element, style) {
+  const viewport = {
+    x: Math.round(window.scrollX || window.pageXOffset || 0),
+    y: Math.round(window.scrollY || window.pageYOffset || 0),
+    width: Math.round(window.innerWidth || 0),
+    height: Math.round(window.innerHeight || 0),
+    scrollHeight: Math.round(document.documentElement.scrollHeight || document.body.scrollHeight || 0),
+    scrollWidth: Math.round(document.documentElement.scrollWidth || document.body.scrollWidth || 0),
+    scrollableY:
+      (document.documentElement.scrollHeight || 0) > (window.innerHeight || 0) + 4 ||
+      (document.body && (document.body.scrollHeight || 0) > (window.innerHeight || 0) + 4),
+    scrollableX:
+      (document.documentElement.scrollWidth || 0) > (window.innerWidth || 0) + 4 ||
+      (document.body && (document.body.scrollWidth || 0) > (window.innerWidth || 0) + 4),
+  };
+  const elementScrollable = describeScrollableElement(element, style);
+  const ancestor = findScrollableAncestor(element);
+  return {
+    detected: Boolean(viewport.scrollableY || viewport.scrollableX || elementScrollable || ancestor),
+    viewport,
+    element: elementScrollable && (elementScrollable.scrollableY || elementScrollable.scrollableX) ? elementScrollable : null,
+    ancestor: ancestor ? describeScrollableElement(ancestor.node, ancestor.style) : null,
+  };
+}
+
+function captureStickySignals(element) {
+  const sticky = findMatchingAncestor(element, (node, style) => {
+    const position = String(style.position || "").toLowerCase();
+    if (position === "sticky") {
+      return "sticky";
+    }
+    if (position === "fixed") {
+      return "fixed";
+    }
+    return null;
+  });
+  if (!sticky) {
+    return {
+      detected: false,
+      reason: "No sticky or fixed surface detected in the element ancestry.",
+    };
+  }
+  const rect = sticky.node.getBoundingClientRect();
+  return {
+    detected: true,
+    source: sticky.node === element ? "self" : "ancestor",
+    kind: String(sticky.style.position || "").toLowerCase(),
+    container: captureNodeSignature(sticky.node),
+    offset: {
+      top: sticky.style.top,
+      right: sticky.style.right,
+      bottom: sticky.style.bottom,
+      left: sticky.style.left,
+    },
+    zIndex: sticky.style.zIndex,
+    pinnedToViewport: String(sticky.style.position || "").toLowerCase() === "fixed" || rect.top <= 16,
+  };
+}
+
+function captureModalSignals(element) {
+  const modalSelectors = [
+    "dialog[open]",
+    '[role="dialog"][aria-modal="true"]',
+    '[aria-modal="true"]',
+    '[popover]:not([popover="manual"])',
+  ];
+  const candidates = [];
+  for (const selector of modalSelectors) {
+    const matches = Array.from(document.querySelectorAll(selector)).filter(isVisibleElement).slice(0, 4);
+    for (const node of matches) {
+      candidates.push({ node, selector });
+    }
+  }
+  if (!candidates.length) {
+    return {
+      detected: false,
+      reason: "No active modal-like surface detected.",
+    };
+  }
+  const active = candidates.find(({ node }) => node.contains(element)) || candidates[0];
+  return {
+    detected: true,
+    source: active.selector,
+    kind: active.node.tagName.toLowerCase() === "dialog" ? "dialog" : active.node.getAttribute("role") || "modal",
+    active: captureNodeSignature(active.node),
+    inside: active.node.contains(element),
+    activeElementInside: active.node.contains(document.activeElement),
+    candidateCount: candidates.length,
+  };
+}
+
+function captureCarouselSignals(element) {
+  const carouselMatcher = (node, style) => {
+    const role = String(node.getAttribute("role") || "").toLowerCase();
+    const roledescription = String(node.getAttribute("aria-roledescription") || "").toLowerCase();
+    const tokens = classTokens(node.className);
+    const classText = tokens.join(" ");
+    const snapType = String(style.scrollSnapType || "").toLowerCase();
+    const scrollable = isScrollableElement(node, style);
+    if (role === "carousel" || roledescription.includes("carousel") || roledescription.includes("slider") || roledescription.includes("slideshow") || roledescription.includes("gallery")) {
+      return "aria carousel";
+    }
+    if (/(^|[\s_-])(carousel|slider|swiper|slick|splide|embla|glide)([\s_-]|$)/.test(classText)) {
+      return "class carousel";
+    }
+    if (scrollable && snapType && snapType !== "none") {
+      return "scroll snap carousel";
+    }
+    return null;
+  };
+  const carousel = findMatchingAncestor(element, carouselMatcher, 10);
+  if (!carousel) {
+    return {
+      detected: false,
+      reason: "No carousel-like container detected.",
+    };
+  }
+  const scope = carousel.node;
+  const slideSelectors = [
+    '[aria-roledescription="slide"]',
+    '[role="group"]',
+    '[role="tabpanel"]',
+    ".swiper-slide",
+    ".slick-slide",
+    ".splide__slide",
+    ".embla__slide",
+  ];
+  const slides = [];
+  for (const selector of slideSelectors) {
+    const matches = Array.from(scope.querySelectorAll(selector)).filter(isVisibleElement);
+    for (const node of matches) {
+      if (slides.length >= 24) {
+        break;
+      }
+      if (!slides.includes(node)) {
+        slides.push(node);
+      }
+    }
+    if (slides.length >= 24) {
+      break;
+    }
+  }
+  const controls = Array.from(scope.querySelectorAll('button, [role="button"]')).filter(isVisibleElement).slice(0, 8);
+  const activeSlide = slides.find((node) => node.getAttribute("aria-current") === "true" || /(active|current|selected)/i.test(normalizeClassName(node.className) || ""));
+  const orientation = String(scope.getAttribute("aria-orientation") || "").toLowerCase() || (String(carousel.style.scrollSnapType || "").toLowerCase().includes("x") ? "horizontal" : String(carousel.style.scrollSnapType || "").toLowerCase().includes("y") ? "vertical" : null);
+  return {
+    detected: true,
+    source: carousel.reason || "ancestor",
+    kind: carousel.kind || "carousel",
+    container: captureNodeSignature(scope),
+    orientation,
+    snapType: carousel.style.scrollSnapType,
+    slideCount: slides.length,
+    controlCount: controls.length,
+    ariaRoleDescription: scope.getAttribute("aria-roledescription"),
+    ariaLive: scope.getAttribute("aria-live"),
+    activeSlide: activeSlide ? captureNodeSignature(activeSlide) : null,
+    controls: controls.map((node) => captureNodeSignature(node)),
+  };
+}
+
+function captureTabpanelSignals(element) {
+  const tabpanelMatcher = (node) => {
+    const role = String(node.getAttribute("role") || "").toLowerCase();
+    const tokens = classTokens(node.className);
+    const classText = tokens.join(" ");
+    if (role === "tablist" || role === "tabpanel" || role === "tab") {
+      return role;
+    }
+    if (/(^|[\s_-])(tablist|tabpanel|tabs)([\s_-]|$)/.test(classText)) {
+      return "class tabpanel";
+    }
+    if (node.querySelector('[role="tab"], [role="tabpanel"]')) {
+      return "descendant tabpanel";
+    }
+    return null;
+  };
+  const tabpanel = findMatchingAncestor(element, tabpanelMatcher, 10);
+  if (!tabpanel) {
+    return {
+      detected: false,
+      reason: "No tabpanel-like container detected.",
+    };
+  }
+  const scope = tabpanel.node.getAttribute("role") === "tablist"
+    ? tabpanel.node
+    : tabpanel.node.closest('[role="tablist"]') || tabpanel.node.parentElement || tabpanel.node;
+  const tabs = Array.from(scope.querySelectorAll('[role="tab"]')).filter(isVisibleElement).slice(0, 20);
+  const panels = Array.from(scope.querySelectorAll('[role="tabpanel"]')).filter(isVisibleElement).slice(0, 20);
+  const activeTabs = tabs.filter((node) => node.getAttribute("aria-selected") === "true" || node.getAttribute("tabindex") === "0" || /(active|selected|current)/i.test(normalizeClassName(node.className) || "")).slice(0, 4);
+  const panelIds = tabs.map((node) => node.getAttribute("aria-controls")).filter(Boolean).slice(0, 8);
+  const controlledPanels = panelIds.map((id) => document.getElementById(id)).filter(Boolean).slice(0, 8);
+  return {
+    detected: true,
+    source: tabpanel.reason || "ancestor",
+    kind: tabpanel.kind || "tabpanel",
+    tabList: captureNodeSignature(scope),
+    tabCount: tabs.length,
+    panelCount: panels.length,
+    activeTabs: activeTabs.map((node) => captureNodeSignature(node)),
+    controlledPanelIds: panelIds,
+    activePanels: controlledPanels.map((node) => captureNodeSignature(node)),
+    ariaOrientation: scope.getAttribute("aria-orientation"),
+  };
+}
+
+function captureInteractionSignals(element, style) {
+  return {
+    scroll: captureScrollSignals(element, style),
+    sticky: captureStickySignals(element, style),
+    modal: captureModalSignals(element),
+    carousel: captureCarouselSignals(element),
+    tabpanel: captureTabpanelSignals(element),
+  };
+}
+
 function captureSemanticState(element, style) {
   const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
   const semanticState = {
     text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
     ariaLabel: element.getAttribute("aria-label"),
     ariaDescription: element.getAttribute("aria-description"),
+    ariaRoleDescription: element.getAttribute("aria-roledescription"),
+    ariaLive: element.getAttribute("aria-live"),
     ariaExpanded: element.getAttribute("aria-expanded"),
     ariaPressed: element.getAttribute("aria-pressed"),
     ariaSelected: element.getAttribute("aria-selected"),
@@ -484,6 +834,7 @@ function captureSemanticState(element, style) {
     activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
     activeElementMatches: document.activeElement === element,
     scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+    interactionSignals: captureInteractionSignals(element, style),
   };
   if (style) {
     semanticState.styleSnapshot = styleSnapshotFromComputed(style);
@@ -594,6 +945,7 @@ function summarizeInteractionState(state) {
     return null;
   }
   const semantic = state.semanticState && typeof state.semanticState === "object" ? state.semanticState : state;
+  const signals = semantic.interactionSignals || state.interactionSignals || null;
   const pick = (key) => (Object.prototype.hasOwnProperty.call(semantic, key) ? semantic[key] : null);
   return {
     tag: pick("tag") ?? state.tag ?? null,
@@ -612,6 +964,21 @@ function summarizeInteractionState(state) {
     hidden: pick("hidden"),
     scrollY: pick("scrollY"),
     activeElementTag: pick("activeElementTag") ?? state.activeElementTag ?? null,
+    signals: signals
+      ? {
+          scroll: signals.scroll && (signals.scroll.element || signals.scroll.ancestor || signals.scroll.viewport.scrollableY || signals.scroll.viewport.scrollableX)
+            ? {
+                scrollable: Boolean(signals.scroll.element || signals.scroll.ancestor),
+                viewportScrollableY: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableY),
+                viewportScrollableX: Boolean(signals.scroll.viewport && signals.scroll.viewport.scrollableX),
+              }
+            : null,
+          sticky: signals.sticky && signals.sticky.detected ? { kind: signals.sticky.kind, pinnedToViewport: signals.sticky.pinnedToViewport } : null,
+          modal: signals.modal && signals.modal.detected ? { kind: signals.modal.kind, inside: signals.modal.inside } : null,
+          carousel: signals.carousel && signals.carousel.detected ? { kind: signals.carousel.kind, orientation: signals.carousel.orientation, slideCount: signals.carousel.slideCount } : null,
+          tabpanel: signals.tabpanel && signals.tabpanel.detected ? { kind: signals.tabpanel.kind, tabCount: signals.tabpanel.tabCount, panelCount: signals.tabpanel.panelCount } : null,
+        }
+      : null,
   };
 }
 
@@ -660,6 +1027,14 @@ function diffInteractionStates(before, after) {
     diff.styleSnapshot = {
       before: beforeSemantic.styleSnapshot || before.baseStyles || {},
       after: afterSemantic.styleSnapshot || after.baseStyles || {},
+    };
+  }
+  const beforeSignals = beforeSemantic.interactionSignals || before.interactionSignals || null;
+  const afterSignals = afterSemantic.interactionSignals || after.interactionSignals || null;
+  if (JSON.stringify(beforeSignals || {}) !== JSON.stringify(afterSignals || {})) {
+    diff.interactionSignals = {
+      before: beforeSignals || null,
+      after: afterSignals || null,
     };
   }
   return diff;

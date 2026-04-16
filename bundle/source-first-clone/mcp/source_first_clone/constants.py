@@ -30,8 +30,8 @@ URL_PATTERNS = [
     ("youtube-embed", re.compile(r"https://www\.youtube\.com/embed/[^\"'\s>]+", re.I)),
     ("vimeo-embed", re.compile(r"https://player\.vimeo\.com/video/[^\"'\s>]+", re.I)),
     ("codepen-embed", re.compile(r"https://codepen\.io/[^\"'\s>]+/embed/[^\"'\s>]+", re.I)),
-    ("framer-asset", re.compile(r"https://[^\"'\s>]*(?:framerusercontent|framer\.app|framer\.website)[^\"'\s>]*", re.I)),
-    ("webflow-asset", re.compile(r"https://[^\"'\s>]*(?:website-files\.com|cdn\.prod\.website-files\.com)[^\"'\s>]*", re.I)),
+    ("framer-publish", re.compile(r"https://(?:[a-z0-9-]+\.)?(?:framer\.app|framer\.website)(?:/[^\"'\s>]*)?", re.I)),
+    ("webflow-publish", re.compile(r"https://(?:[a-z0-9-]+\.)?webflow\.io(?:/[^\"'\s>]*)?", re.I)),
     ("iframe-src", re.compile(r"<iframe[^>]+src=[\"']([^\"']+)", re.I)),
     ("generic-embed", re.compile(r"https://[^\"'\s>]*(?:embed|preview|viewer)[^\"'\s>]*", re.I)),
 ]
