@@ -91,6 +91,42 @@ def _is_transparent(color: str | None) -> bool:
     return lowered in {"transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)", "none"}
 
 
+def _color_channels(color: str | None) -> tuple[int, int, int] | None:
+    if not color:
+        return None
+    cleaned = color.strip().lower()
+    if cleaned.startswith("rgb(") or cleaned.startswith("rgba("):
+        inside = cleaned[cleaned.find("(") + 1 : cleaned.rfind(")")]
+        parts = [part.strip() for part in inside.split(",")]
+        if len(parts) < 3:
+            return None
+        channels: list[int] = []
+        for part in parts[:3]:
+            try:
+                channels.append(int(float(part)))
+            except ValueError:
+                return None
+        return tuple(channels)  # type: ignore[return-value]
+    if cleaned.startswith("#") and len(cleaned) in {4, 7}:
+        hex_value = cleaned[1:]
+        if len(hex_value) == 3:
+            hex_value = "".join(char * 2 for char in hex_value)
+        try:
+            return tuple(int(hex_value[index : index + 2], 16) for index in (0, 2, 4))  # type: ignore[return-value]
+        except ValueError:
+            return None
+    return None
+
+
+def _is_light_color(color: str | None, threshold: float = 168.0) -> bool:
+    channels = _color_channels(color)
+    if not channels:
+        return False
+    red, green, blue = channels
+    luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return luma >= threshold
+
+
 def _append_unique(items: list[str], value: str | None) -> None:
     if not value:
         return
@@ -460,6 +496,37 @@ def _derive_palette(style_entries: list[dict[str, Any]]) -> dict[str, str | None
     }
 
 
+def _normalize_palette(
+    palette: dict[str, str | None],
+    css_analysis: dict[str, Any],
+) -> dict[str, str | None]:
+    normalized = dict(palette)
+    body_computed = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis, dict) else {}
+    root_computed = css_analysis.get("rootComputedStyle", {}) if isinstance(css_analysis, dict) else {}
+
+    body_background = body_computed.get("backgroundColor") if isinstance(body_computed, dict) else None
+    root_background = root_computed.get("backgroundColor") if isinstance(root_computed, dict) else None
+    if not _is_transparent(body_background):
+        normalized["surface"] = str(body_background)
+    elif not _is_transparent(root_background):
+        normalized["surface"] = str(root_background)
+
+    surface = normalized.get("surface")
+    surface_alt = normalized.get("surface_alt")
+    text = normalized.get("text")
+    if _is_light_color(text) and _is_light_color(surface):
+        if surface_alt and not _is_light_color(surface_alt):
+            normalized["surface"] = surface_alt
+        else:
+            normalized["surface"] = "#202124"
+            normalized["surface_alt"] = "#171717"
+    if not normalized.get("surface"):
+        normalized["surface"] = "#202124" if _is_light_color(text) else "#ffffff"
+    if not normalized.get("surface_alt"):
+        normalized["surface_alt"] = "#171717" if _is_light_color(normalized.get("surface")) else "#f3f4f6"
+    return normalized
+
+
 def _derive_typography(style_entries: list[dict[str, Any]]) -> dict[str, Any]:
     fonts: list[str | None] = []
     sizes: list[str | None] = []
@@ -648,7 +715,7 @@ def _render_css(summary: dict[str, Any]) -> str:
             "}",
             "",
             "* { box-sizing: border-box; }",
-            "html, body { min-height: 100%; }",
+            "html, body { min-height: 100%; height: 100%; overflow: hidden; }",
             "body {",
             "  margin: 0;",
             "  color: var(--text);",
@@ -1016,12 +1083,14 @@ def _infer_section_role(
 
     if tag in {"header", "nav"}:
         return "masthead"
+    if y <= max(120, viewport_height // 8) and width >= int(viewport_width * 0.45) and height <= max(96, viewport_height // 8):
+        return "masthead"
     if tag in {"a", "button", "input", "textarea"} or text.lower() in interaction_labels:
         return "action"
-    if height >= int(viewport_height * 0.18) or width >= int(viewport_width * 0.76):
+    if tag == "form":
         return "hero"
-    if y <= max(120, viewport_height // 8) and width >= int(viewport_width * 0.55):
-        return "masthead"
+    if height >= int(viewport_height * 0.18) or (width >= int(viewport_width * 0.76) and y > max(120, viewport_height // 8)):
+        return "hero"
     if width >= int(viewport_width * 0.5) and height <= max(140, viewport_height // 10):
         return "band"
     return "content"
@@ -1056,7 +1125,7 @@ def _remaining_gaps(summary: dict[str, Any]) -> list[str]:
 
 def _generic_section_title(title: str) -> bool:
     lowered = title.strip().lower()
-    return lowered.startswith("div block") or lowered.startswith("section ")
+    return lowered.startswith("div block") or lowered.startswith("section ") or lowered.startswith("form block")
 
 
 def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1205,7 +1274,14 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         summary.get("description")
         or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
     )
-    hero_section = next((section for section in section_cards if section.get("role") == "hero"), section_cards[0])
+    hero_section = next(
+        (
+            section
+            for section in section_cards
+            if section.get("tag") == "form" and section.get("role") in {"hero", "band", "content"}
+        ),
+        next((section for section in section_cards if section.get("role") == "hero"), section_cards[0]),
+    )
     masthead_section = next((section for section in section_cards if section.get("role") == "masthead"), None)
     hero_title = hero_section.get("title") or str(summary.get("title") or "Captured reference")
     if _generic_section_title(str(hero_title)):
@@ -1213,11 +1289,15 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     hero_copy = hero_section.get("copy") or str(subtitle)
     if hero_copy == "Captured layout block derived from the source page structure.":
         hero_copy = str(subtitle)
+    layout_mode = "centered-focus" if str(hero_section.get("tag") or "").lower() in {"form", "main"} else "structured-grid"
+    if layout_mode == "centered-focus":
+        hero_title = str(summary.get("title") or hero_title)
+        hero_copy = ""
     masthead_links = [
         {"label": card["label"], "href": card["href"]}
         for card in interaction_cards
         if card.get("href")
-    ][:4]
+    ][:6]
     action_items = [
         {
             "label": card["label"],
@@ -1271,9 +1351,12 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "styleTokens": summary.get("styleTokens") or {},
         "assetManifest": summary.get("assetManifest") or {},
         "sections": section_cards,
+        "layoutMode": layout_mode,
         "masthead": {
             "brand": str(summary.get("title") or "Captured reference"),
             "links": masthead_links,
+            "leadingLinks": masthead_links[:2],
+            "trailingLinks": masthead_links[2:6],
             "styleSnapshot": (masthead_section or hero_section).get("styleSnapshot") if isinstance((masthead_section or hero_section), dict) else {},
         },
         "hero": {
@@ -1411,6 +1494,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "export function BoundedReferencePage({ data }: Props) {",
             "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot);",
             "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot);",
+            '  const centeredFocus = data.layoutMode === "centered-focus";',
             "  const renderInteractionControl = (entry: (typeof data.interactions)[number]) => {",
             "    const controlStyle = styleFromSnapshot(entry.styleSnapshot);",
             "    if (entry.controlTag === \"a\") {",
@@ -1429,13 +1513,32 @@ def _render_bounded_reference_page_tsx() -> str:
             "  };",
             "  return (",
             '    <main className="bounded-shell">',
-            '      <header className="bounded-masthead bounded-panel" style={mastheadStyle}>',
-            '        <div className="bounded-brand-block">',
-            '          <p className="bounded-eyebrow" style={mastheadStyle}>Captured reference</p>',
-            '          <strong className="bounded-brand" style={mastheadStyle}>{data.masthead.brand}</strong>',
-            "        </div>",
-            '        <nav className="bounded-nav" aria-label="Captured navigation sample" style={mastheadStyle}>',
-            "          {data.masthead.links.length ? (",
+            '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
+            '        {!centeredFocus ? (',
+            '          <div className="bounded-brand-block">',
+            '            <p className="bounded-eyebrow" style={mastheadStyle}>Captured reference</p>',
+            '            <strong className="bounded-brand" style={mastheadStyle}>{data.masthead.brand}</strong>',
+            "          </div>",
+            "        ) : null}",
+            '        <nav className={`bounded-nav${centeredFocus ? " bounded-nav--split" : ""}`} aria-label="Captured navigation sample" style={mastheadStyle}>',
+            "          {centeredFocus ? (",
+            "            <>",
+            '              <div className="bounded-nav-cluster">',
+            "                {data.masthead.leadingLinks.map((link) => (",
+            '                  <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
+            "                    {link.label}",
+            "                  </a>",
+            "                ))}",
+            "              </div>",
+            '              <div className="bounded-nav-cluster bounded-nav-cluster--end">',
+            "                {data.masthead.trailingLinks.map((link) => (",
+            '                  <a className={`bounded-nav-link${/로그인|login/i.test(link.label) ? " bounded-nav-link--cta" : ""}`} href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
+            "                    {link.label}",
+            "                  </a>",
+            "                ))}",
+            "              </div>",
+            "            </>",
+            "          ) : data.masthead.links.length ? (",
             "            data.masthead.links.map((link) => (",
             '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
             "                {link.label}",
@@ -1447,33 +1550,52 @@ def _render_bounded_reference_page_tsx() -> str:
             "        </nav>",
             "      </header>",
             "",
-            '      <section className="bounded-hero bounded-panel" style={heroStyle}>',
-            '        <p className="bounded-eyebrow" style={heroStyle}>{data.hero.eyebrow}</p>',
+            '      <section className={`bounded-hero bounded-panel${centeredFocus ? " bounded-hero--centered bounded-hero--focus" : ""}`} style={heroStyle}>',
+            '        {!centeredFocus ? <p className="bounded-eyebrow" style={heroStyle}>{data.hero.eyebrow}</p> : null}',
             '        <h1 style={heroStyle}>{data.hero.title}</h1>',
-            '        <p className="bounded-lede" style={heroStyle}>{data.hero.copy}</p>',
-            '        <div className="bounded-meta">',
-            "          {data.metaBits.map((bit) => (",
-            '            <span className="bounded-chip" key={bit} style={heroStyle}>',
-            "              {bit}",
-            "            </span>",
-            "          ))}",
-            "        </div>",
-            '        <div className="bounded-hero-actions">',
-            '          <span className="bounded-chip bounded-chip--muted" style={heroStyle}>{data.hero.meta}</span>',
-            "          {data.hero.details.slice(0, 3).map((detail) => (",
-            '            <span className="bounded-chip bounded-chip--muted" key={detail} style={heroStyle}>',
-            "              {detail}",
-            "            </span>",
-            "          ))}",
-            "          {data.hero.actions.map((action) => (",
-            '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`} style={styleFromSnapshot(action.styleSnapshot)}>',
-            "              {action.label}",
-            "            </a>",
-            "          ))}",
-            "        </div>",
+            '        {!centeredFocus && data.hero.copy ? <p className="bounded-lede" style={heroStyle}>{data.hero.copy}</p> : null}',
+            '        {centeredFocus ? (',
+            '          <>',
+            '            <div className="bounded-focus-shell">',
+            '              <span className="bounded-focus-icon" aria-hidden="true">⌕</span>',
+            '              <input className="bounded-focus-input" defaultValue="" placeholder={data.title} type="text" />',
+            '              <span className="bounded-focus-icon" aria-hidden="true">◎</span>',
+            '            </div>',
+            '            <div className="bounded-focus-actions">',
+            '              {(data.hero.actions.length ? data.hero.actions : [{ label: "Search", href: "#" }, { label: "Explore", href: "#" }]).slice(0, 2).map((action) => (',
+            '                <a className="bounded-focus-button" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`}>',
+            '                  {action.label}',
+            '                </a>',
+            '              ))}',
+            '            </div>',
+            '          </>',
+            '        ) : (',
+            '          <>',
+            '            <div className="bounded-meta">',
+            "              {data.metaBits.map((bit) => (",
+            '                <span className="bounded-chip" key={bit} style={heroStyle}>',
+            "                  {bit}",
+            "                </span>",
+            "              ))}",
+            "            </div>",
+            '            <div className="bounded-hero-actions">',
+            '              <span className="bounded-chip bounded-chip--muted" style={heroStyle}>{data.hero.meta}</span>',
+            "              {data.hero.details.slice(0, 3).map((detail) => (",
+            '                <span className="bounded-chip bounded-chip--muted" key={detail} style={heroStyle}>',
+            "                  {detail}",
+            "                </span>",
+            "              ))}",
+            "              {data.hero.actions.map((action) => (",
+            '                <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`} style={styleFromSnapshot(action.styleSnapshot)}>',
+            "                  {action.label}",
+            "                </a>",
+            "              ))}",
+            "            </div>",
+            "          </>",
+            "        )}",
             "      </section>",
             "",
-            '      <section className="bounded-stage bounded-panel">',
+            '      <section className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}`}>',
             '        <div className="bounded-stage-canvas">',
             "          {data.sections.slice(0, 8).map((section) => (",
             '            <article',
@@ -1490,7 +1612,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "        </div>",
             "      </section>",
             "",
-            '      <section className="bounded-layout">',
+            '      <section className={`bounded-layout${centeredFocus ? " bounded-layout--centered" : ""}`}>',
             '        <div className="bounded-main">',
             '          <section className="bounded-section-grid">',
             "            {data.bodySections.map((section) => (",
@@ -1512,9 +1634,35 @@ def _render_bounded_reference_page_tsx() -> str:
             "              </article>",
             "            ))}",
             "          </section>",
+            '          <section className="bounded-panel bounded-stack bounded-visible-interactions">',
+            '            <p className="bounded-kicker">Interaction samples</p>',
+            '            <div className="bounded-stack bounded-control-grid">',
+            "              {data.interactions.length ? (",
+            "                data.interactions.map((entry) => (",
+            '                  <article className="bounded-mini-card" key={entry.id}>',
+            '                    <strong>{entry.label}</strong>',
+            '                    <p>{entry.copy}</p>',
+            "                    {renderInteractionControl(entry)}",
+            '                    <div className="bounded-meta bounded-meta--inline">',
+            "                      {entry.states.slice(0, 3).map((state) => (",
+            '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
+            "                          {state}",
+            "                        </span>",
+            "                      ))}",
+            "                    </div>",
+            "                  </article>",
+            "                ))",
+            "              ) : (",
+            '                <article className="bounded-mini-card">',
+            "                  <strong>No sampled interactions</strong>",
+            "                  <p>Interaction data was not available in the capture bundle.</p>",
+            "                </article>",
+            "              )}",
+            "            </div>",
+            "          </section>",
             "        </div>",
             "",
-            '        <aside className="bounded-rail">',
+            '        <aside className="bounded-rail bounded-telemetry" aria-hidden="true">',
             '          <section className="bounded-panel bounded-stack">',
             '            <p className="bounded-kicker">Renderer status</p>',
             '            <div className="bounded-status-row">',
@@ -1539,33 +1687,6 @@ def _render_bounded_reference_page_tsx() -> str:
             "                ))",
             "              ) : (",
             '                <span className="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>',
-            "              )}",
-            "            </div>",
-            "          </section>",
-            "",
-            '          <section className="bounded-panel bounded-stack">',
-            '            <p className="bounded-kicker">Interaction samples</p>',
-            '            <div className="bounded-stack bounded-control-grid">',
-            "              {data.interactions.length ? (",
-            "                data.interactions.map((entry) => (",
-            '                  <article className="bounded-mini-card" key={entry.id}>',
-            '                    <strong>{entry.label}</strong>',
-            '                    <p>{entry.copy}</p>',
-            "                    {renderInteractionControl(entry)}",
-            '                    <div className="bounded-meta bounded-meta--inline">',
-            "                      {entry.states.slice(0, 3).map((state) => (",
-            '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
-            "                          {state}",
-            "                        </span>",
-            "                      ))}",
-            "                    </div>",
-            "                  </article>",
-            "                ))",
-            "              ) : (",
-            '                <article className="bounded-mini-card">',
-            "                  <strong>No sampled interactions</strong>",
-            "                  <p>Interaction data was not available in the capture bundle.</p>",
-            "                </article>",
             "              )}",
             "            </div>",
             "          </section>",
@@ -1602,6 +1723,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
     masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"))
     hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"))
+    layout_mode = str(app_model.get("layoutMode") or "structured-grid")
+    centered_focus = layout_mode == "centered-focus"
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
     viewport_height = max(int(viewport.get("height") or 1200), 1)
@@ -1661,6 +1784,23 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         nav_items.append(f'              <a class="bounded-nav-link" href="{href}"{masthead_style}>{label}</a>')
     if not nav_items:
         nav_items.append('              <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
+
+    leading_nav_items = []
+    for link in masthead.get("leadingLinks", []) if isinstance(masthead.get("leadingLinks", []), list) else []:
+        if not isinstance(link, dict):
+            continue
+        label = escape(str(link.get("label") or "Captured link"))
+        href = escape(str(link.get("href") or "#"))
+        leading_nav_items.append(f'            <a class="bounded-nav-link" href="{href}"{masthead_style}>{label}</a>')
+    trailing_nav_items = []
+    for link in masthead.get("trailingLinks", []) if isinstance(masthead.get("trailingLinks", []), list) else []:
+        if not isinstance(link, dict):
+            continue
+        label_text = str(link.get("label") or "Captured link")
+        label = escape(label_text)
+        href = escape(str(link.get("href") or "#"))
+        extra_class = " bounded-nav-link--cta" if ("로그인" in label_text or "login" in label_text.lower()) else ""
+        trailing_nav_items.append(f'            <a class="bounded-nav-link{extra_class}" href="{href}"{masthead_style}>{label}</a>')
 
     hero_detail_bits = [f'          <span class="bounded-chip bounded-chip--muted"{hero_style}>{escape(str(hero.get("meta") or ""))}</span>'] if hero.get("meta") else []
     for detail in hero.get("details", [])[:3] if isinstance(hero.get("details", []), list) else []:
@@ -1790,38 +1930,86 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "</head>",
             "<body>",
             '  <main class="bounded-shell">',
-            f'    <header class="bounded-masthead bounded-panel"{masthead_style}>',
-            '      <div class="bounded-brand-block">',
-            f'        <p class="bounded-eyebrow"{masthead_style}>Captured reference</p>',
-            f'        <strong class="bounded-brand"{masthead_style}>{escape(str(masthead.get("brand") or app_model.get("title") or "Captured reference"))}</strong>',
-            "      </div>",
-            f'      <nav class="bounded-nav" aria-label="Captured navigation sample"{masthead_style}>',
-            *nav_items,
+            f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
+            *(
+                []
+                if centered_focus
+                else [
+                    '      <div class="bounded-brand-block">',
+                    f'        <p class="bounded-eyebrow"{masthead_style}>Captured reference</p>',
+                    f'        <strong class="bounded-brand"{masthead_style}>{escape(str(masthead.get("brand") or app_model.get("title") or "Captured reference"))}</strong>',
+                    "      </div>",
+                ]
+            ),
+            f'      <nav class="bounded-nav{" bounded-nav--split" if centered_focus else ""}" aria-label="Captured navigation sample"{masthead_style}>',
+            *(
+                [
+                    '        <div class="bounded-nav-cluster">',
+                    *(leading_nav_items or ['          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>']),
+                    "        </div>",
+                    '        <div class="bounded-nav-cluster bounded-nav-cluster--end">',
+                    *(trailing_nav_items or ['          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>']),
+                    "        </div>",
+                ]
+                if centered_focus
+                else nav_items
+            ),
             "      </nav>",
             "    </header>",
-            f'    <section class="bounded-hero bounded-panel"{hero_style}>',
-            f'      <p class="bounded-eyebrow"{hero_style}>{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>',
+            f'    <section class="bounded-hero bounded-panel{" bounded-hero--centered bounded-hero--focus" if centered_focus else ""}"{hero_style}>',
+            *( [] if centered_focus else [f'      <p class="bounded-eyebrow"{hero_style}>{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>'] ),
             f'      <h1{hero_style}>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>',
-            f'      <p class="bounded-lede"{hero_style}>{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>',
-            '      <div class="bounded-meta">',
-            *[f'        <span class="bounded-chip">{escape(str(bit))}</span>' for bit in meta_bits],
-            "      </div>",
-            '      <div class="bounded-hero-actions">',
-            *hero_detail_bits,
-            "      </div>",
+            *( [f'      <p class="bounded-lede"{hero_style}>{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>'] if (not centered_focus and (hero.get("copy") or app_model.get("subtitle"))) else [] ),
+            *(
+                [
+                    '      <div class="bounded-focus-shell">',
+                    '        <span class="bounded-focus-icon" aria-hidden="true">⌕</span>',
+                    f'        <input class="bounded-focus-input" type="text" value="" placeholder="{escape(str(app_model.get("title") or "Search"))}" />',
+                    '        <span class="bounded-focus-icon" aria-hidden="true">◎</span>',
+                    "      </div>",
+                    '      <div class="bounded-focus-actions">',
+                    *(
+                        [
+                            f'        <a class="bounded-focus-button" href="{escape(str(action.get("href") or "#"))}">{escape(str(action.get("label") or "Captured action"))}</a>'
+                            for action in (hero.get("actions", [])[:2] if isinstance(hero.get("actions", []), list) else [])
+                            if isinstance(action, dict)
+                        ]
+                        or [
+                            '        <a class="bounded-focus-button" href="#">Search</a>',
+                            '        <a class="bounded-focus-button" href="#">Explore</a>',
+                        ]
+                    ),
+                    "      </div>",
+                ]
+                if centered_focus
+                else [
+                    '      <div class="bounded-meta">',
+                    *[f'        <span class="bounded-chip">{escape(str(bit))}</span>' for bit in meta_bits],
+                    "      </div>",
+                    '      <div class="bounded-hero-actions">',
+                    *hero_detail_bits,
+                    "      </div>",
+                ]
+            ),
             "    </section>",
-            '    <section class="bounded-stage bounded-panel">',
+            f'    <section class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}">',
             '      <div class="bounded-stage-canvas">',
             *stage_cards,
             "      </div>",
             "    </section>",
-            '    <section class="bounded-layout">',
+            f'    <section class="bounded-layout{" bounded-layout--centered" if centered_focus else ""}">',
             '      <div class="bounded-main">',
             '        <section class="bounded-section-grid">',
             *section_cards,
             "        </section>",
+            '        <section class="bounded-panel bounded-stack bounded-visible-interactions">',
+            '          <p class="bounded-kicker">Interaction samples</p>',
+            '          <div class="bounded-stack bounded-control-grid">',
+            *interaction_cards,
+            "          </div>",
+            "        </section>",
             "      </div>",
-            '      <aside class="bounded-rail">',
+            '      <aside class="bounded-rail bounded-telemetry" aria-hidden="true">',
             '        <section class="bounded-panel bounded-stack">',
             '          <p class="bounded-kicker">Renderer status</p>',
             '          <div class="bounded-status-row">',
@@ -1836,12 +2024,6 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             '          <p class="bounded-kicker">Signals</p>',
             '          <div class="bounded-meta bounded-meta--inline">',
             *([f'            <span class="bounded-chip bounded-chip--muted">{escape(str(signal))}</span>' for signal in signal_bits] or ['            <span class="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>']),
-            "          </div>",
-            "        </section>",
-            '        <section class="bounded-panel bounded-stack">',
-            '          <p class="bounded-kicker">Interaction samples</p>',
-            '          <div class="bounded-stack bounded-control-grid">',
-            *interaction_cards,
             "          </div>",
             "        </section>",
             '        <section class="bounded-panel bounded-stack">',
@@ -1953,6 +2135,9 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin: 0 auto;",
             "  padding: 40px 20px 72px;",
             "  min-height: 100vh;",
+            "  height: 100vh;",
+            "  display: flex;",
+            "  flex-direction: column;",
             "  overflow: hidden;",
             "}",
             ".bounded-masthead {",
@@ -1962,6 +2147,13 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  gap: 20px;",
             "  padding: 18px 22px;",
             "  margin-bottom: 16px;",
+            "}",
+            ".bounded-masthead--minimal {",
+            "  border: 0;",
+            "  background: transparent;",
+            "  box-shadow: none;",
+            "  backdrop-filter: none;",
+            "  padding: 6px 0 0;",
             "}",
             ".bounded-brand-block { min-width: 0; }",
             ".bounded-brand {",
@@ -1975,24 +2167,64 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  justify-content: flex-end;",
             "  gap: 12px;",
             "}",
+            ".bounded-nav--split {",
+            "  width: 100%;",
+            "  justify-content: space-between;",
+            "  align-items: center;",
+            "}",
+            ".bounded-nav-cluster {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  align-items: center;",
+            "  gap: 14px;",
+            "}",
+            ".bounded-nav-cluster--end { justify-content: flex-end; }",
             ".bounded-nav-link {",
             "  color: inherit;",
             "  text-decoration: none;",
             "  font-size: 0.95rem;",
             "}",
+            ".bounded-nav-link--cta {",
+            "  min-height: 36px;",
+            "  padding: 0 16px;",
+            "  border-radius: 999px;",
+            "  background: rgb(194, 231, 255);",
+            "  color: rgb(0, 29, 53);",
+            "}",
             ".bounded-nav-link--muted { opacity: 0.72; }",
             ".bounded-layout {",
             "  display: grid;",
-            "  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);",
+            "  grid-template-columns: minmax(0, 1fr);",
             "  gap: 20px;",
             "  align-items: start;",
-            "  min-height: calc(100vh - 240px);",
+            "  min-height: 0;",
+            "  flex: 1 1 auto;",
             "}",
-            ".bounded-main, .bounded-rail {",
+            ".bounded-layout--centered .bounded-main {",
+            "  display: grid;",
+            "  gap: 20px;",
+            "  max-width: 1040px;",
+            "  width: 100%;",
+            "  margin: 0 auto;",
+            "}",
+            ".bounded-main {",
             "  min-width: 0;",
-            "  max-height: calc(100vh - 260px);",
+            "  min-height: 0;",
+            "  max-height: 100%;",
             "  overflow: auto;",
             "  padding-right: 4px;",
+            "}",
+            ".bounded-telemetry {",
+            "  position: absolute !important;",
+            "  width: 1px;",
+            "  height: 1px;",
+            "  padding: 0;",
+            "  margin: -1px;",
+            "  overflow: hidden;",
+            "  clip: rect(0 0 0 0);",
+            "  clip-path: inset(50%);",
+            "  white-space: nowrap;",
+            "  border: 0;",
             "}",
             ".bounded-section-grid {",
             "  display: grid;",
@@ -2010,16 +2242,83 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  padding: 28px;",
             "  margin-bottom: 20px;",
             "}",
+            ".bounded-hero--centered {",
+            "  display: grid;",
+            "  justify-items: center;",
+            "  text-align: center;",
+            "}",
+            ".bounded-hero--centered .bounded-meta, .bounded-hero--centered .bounded-hero-actions {",
+            "  justify-content: center;",
+            "}",
+            ".bounded-hero--focus {",
+            "  border: 0;",
+            "  background: transparent;",
+            "  box-shadow: none;",
+            "  backdrop-filter: none;",
+            "  flex: 1 1 auto;",
+            "  align-content: center;",
+            "  gap: 22px;",
+            "  padding: 80px 0 0;",
+            "}",
+            ".bounded-hero--focus h1 {",
+            "  font-size: clamp(4rem, 8vw, 6.2rem);",
+            "  line-height: 0.92;",
+            "}",
+            ".bounded-focus-shell {",
+            "  display: grid;",
+            "  grid-template-columns: auto minmax(0, 1fr) auto;",
+            "  align-items: center;",
+            "  gap: 14px;",
+            "  width: min(720px, calc(100vw - 64px));",
+            "  min-height: 58px;",
+            "  padding: 0 18px;",
+            "  border-radius: 999px;",
+            "  background: rgba(95, 99, 104, 0.62);",
+            "  border: 1px solid rgba(255, 255, 255, 0.06);",
+            "}",
+            ".bounded-focus-input {",
+            "  width: 100%;",
+            "  border: 0;",
+            "  outline: none;",
+            "  background: transparent;",
+            "  color: inherit;",
+            "  font: inherit;",
+            "}",
+            ".bounded-focus-icon {",
+            "  color: rgba(255, 255, 255, 0.72);",
+            "  font-size: 14px;",
+            "}",
+            ".bounded-focus-actions {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  justify-content: center;",
+            "  gap: 12px;",
+            "}",
+            ".bounded-focus-button {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  min-height: 36px;",
+            "  padding: 0 16px;",
+            "  border-radius: 4px;",
+            "  border: 0;",
+            "  background: rgba(48, 49, 52, 1);",
+            "  color: inherit;",
+            "  text-decoration: none;",
+            "  font-size: 14px;",
+            "}",
             ".bounded-stage {",
             "  position: relative;",
-            "  min-height: 420px;",
+            "  min-height: 280px;",
             "  margin-bottom: 20px;",
             "  overflow: hidden;",
             "}",
+            ".bounded-stage--compact { display: none; }",
             ".bounded-stage-canvas {",
             "  position: relative;",
-            "  min-height: 420px;",
+            "  min-height: 280px;",
             "}",
+            ".bounded-stage--compact .bounded-stage-canvas { min-height: 240px; }",
             ".bounded-stage-block {",
             "  position: absolute;",
             "  padding: 12px 14px;",
@@ -2102,7 +2401,6 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             ".bounded-card[data-role=\"hero\"], .bounded-card[data-role=\"band\"] {",
             "  grid-column: 1 / -1;",
             "}",
-            ".bounded-rail { display: grid; gap: 16px; }",
             ".bounded-stack { display: grid; gap: 14px; }",
             ".bounded-stack--tight { gap: 10px; }",
             ".bounded-list {",
@@ -2123,10 +2421,11 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             ".bounded-mini-card p, .bounded-outline-item p { margin: 0; }",
             ".bounded-control-grid {",
             "  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));",
-            "  max-height: 420px;",
-            "  overflow: auto;",
+            "  max-height: none;",
+            "  overflow: visible;",
             "  align-content: start;",
             "}",
+            ".bounded-layout--centered { display: none; }",
             ".bounded-control {",
             "  width: 100%;",
             "  min-height: 40px;",
@@ -2165,7 +2464,6 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "    align-items: flex-start;",
             "  }",
             "  .bounded-nav { justify-content: flex-start; }",
-            "  .bounded-layout { grid-template-columns: 1fr; }",
             "}",
         ]
     )
@@ -2238,6 +2536,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
     typography = _derive_typography(style_entries)
     style_tokens = _derive_style_tokens(style_entries)
+    palette = _normalize_palette(_derive_palette(style_entries), css_analysis)
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
@@ -2273,7 +2572,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         },
         "outline": outline[:12],
         "blocks": blocks,
-        "palette": _derive_palette(style_entries),
+        "palette": palette,
         "typography": typography,
         "styleTokens": style_tokens,
         "assets": {
