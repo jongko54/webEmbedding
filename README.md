@@ -194,6 +194,19 @@ The installed plugin includes:
 
 `trace_runtime_sources` is optional and works best when the host has `node` plus `playwright` or `playwright-core`.
 
+The inspection layer now includes initial platform adapters for:
+
+- `Spline`
+  - preview/viewer candidate normalization
+  - community/remix signal extraction
+- `Figma`
+  - generated `figma-embed` reuse target from share/community URLs
+  - duplicate/community source signals
+- `Framer`
+  - published-site detection via host/generator hints
+- `Webflow`
+  - publish-surface detection via host/generator hints
+
 The current v0.3 baseline adds session-aware runtime options:
 
 - `user_data_dir`
