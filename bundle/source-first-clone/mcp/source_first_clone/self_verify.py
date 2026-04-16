@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import subprocess
 import threading
+import time
+import urllib.request
 from contextlib import contextmanager
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +37,180 @@ def _serve_directory(directory: Path) -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[5]
+
+
+def _runtime_package_json() -> dict[str, Any]:
+    return {
+        "name": "web-embedding-next-runtime",
+        "private": True,
+        "version": "0.0.0",
+        "scripts": {
+            "build": "next build",
+            "start": "next start",
+        },
+        "dependencies": {
+            "next": "16.2.4",
+            "react": "19.2.5",
+            "react-dom": "19.2.5",
+        },
+    }
+
+
+def _runtime_tsconfig() -> dict[str, Any]:
+    return {
+        "compilerOptions": {
+            "target": "ES2022",
+            "lib": ["dom", "dom.iterable", "es2022"],
+            "allowJs": False,
+            "skipLibCheck": True,
+            "strict": False,
+            "noEmit": True,
+            "esModuleInterop": True,
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "resolveJsonModule": True,
+            "isolatedModules": True,
+            "jsx": "preserve",
+            "incremental": True,
+            "plugins": [{"name": "next"}],
+        },
+        "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+        "exclude": ["node_modules"],
+    }
+
+
+def _runtime_next_config() -> str:
+    return "\n".join(
+        [
+            "/** @type {import('next').NextConfig} */",
+            "const nextConfig = {",
+            "  eslint: { ignoreDuringBuilds: true },",
+            "  typescript: { ignoreBuildErrors: true },",
+            "};",
+            "",
+            "export default nextConfig;",
+        ]
+    )
+
+
+def _ensure_runtime_base(runtime_root: Path) -> None:
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (runtime_root / "package.json").write_text(json.dumps(_runtime_package_json(), indent=2) + "\n")
+    (runtime_root / "tsconfig.json").write_text(json.dumps(_runtime_tsconfig(), indent=2) + "\n")
+    (runtime_root / "next.config.mjs").write_text(_runtime_next_config().rstrip() + "\n")
+    (runtime_root / "next-env.d.ts").write_text(
+        "\n".join(
+            [
+                '/// <reference types="next" />',
+                '/// <reference types="next/image-types/global" />',
+                "",
+            ]
+        )
+    )
+
+
+def _copy_runtime_artifact(source: str | None, target: Path) -> None:
+    if not source:
+        return
+    candidate = Path(source)
+    if not candidate.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(candidate.read_text())
+
+
+def _materialize_next_runtime_project(rebuild_artifacts: dict[str, str], runtime_root: Path) -> None:
+    _ensure_runtime_base(runtime_root)
+    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/layout.tsx"), runtime_root / "app" / "layout.tsx")
+    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/page.tsx"), runtime_root / "app" / "page.tsx")
+    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/globals.css"), runtime_root / "app" / "globals.css")
+    _copy_runtime_artifact(
+        rebuild_artifacts.get("next-app/components/BoundedReferencePage.tsx"),
+        runtime_root / "components" / "BoundedReferencePage.tsx",
+    )
+    _copy_runtime_artifact(
+        rebuild_artifacts.get("next-app/components/reference-data.ts"),
+        runtime_root / "components" / "reference-data.ts",
+    )
+
+
+def _run_checked(command: list[str], cwd: Path, log_path: Path, timeout: int = 300) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["NPM_CONFIG_CACHE"] = str(cwd / ".npm-cache")
+    with log_path.open("w") as handle:
+        process = subprocess.run(
+            command,
+            cwd=str(cwd),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+    if process.returncode != 0:
+        raise RuntimeError(f"Command failed ({process.returncode}): {' '.join(command)}")
+
+
+def _reserve_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_http(url: str, timeout_seconds: int = 45) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if int(response.status) < 500:
+                    return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+        time.sleep(1)
+    if last_error is not None:
+        raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
+    raise RuntimeError(f"Timed out waiting for {url}")
+
+
+@contextmanager
+def _serve_next_runtime(runtime_root: Path, renderer_dir: Path) -> Iterator[str]:
+    install_log = renderer_dir / "runtime-install.log"
+    build_log = renderer_dir / "runtime-build.log"
+    start_log = renderer_dir / "runtime-start.log"
+    env = os.environ.copy()
+    env["NPM_CONFIG_CACHE"] = str(runtime_root / ".npm-cache")
+    if not (runtime_root / "node_modules").exists():
+        _run_checked(["npm", "install", "--no-fund", "--no-audit"], runtime_root, install_log, timeout=600)
+    _run_checked(["npm", "run", "build"], runtime_root, build_log, timeout=600)
+    port = _reserve_port()
+    start_log.parent.mkdir(parents=True, exist_ok=True)
+    with start_log.open("w") as handle:
+        process = subprocess.Popen(
+            ["npm", "run", "start", "--", "--hostname", "127.0.0.1", "--port", str(port)],
+            cwd=str(runtime_root),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+    url = f"http://127.0.0.1:{port}"
+    try:
+        _wait_for_http(url)
+        yield url
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def _load_json_file(path: str | None) -> dict[str, Any] | None:
@@ -71,6 +250,7 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
             {
                 "name": "starter",
                 "entrypoint": starter_html_path,
+                "kind": "static",
                 "note": "Low-level starter scaffold derived directly from captured block summaries.",
             }
         )
@@ -80,7 +260,26 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
             {
                 "name": "role-inferred-app",
                 "entrypoint": app_preview_path,
+                "kind": "static",
                 "note": "Role-inferred app-model preview that mirrors the bounded Next renderer more closely.",
+            }
+        )
+    if all(
+        rebuild_artifacts.get(key)
+        for key in (
+            "next-app/app/layout.tsx",
+            "next-app/app/page.tsx",
+            "next-app/app/globals.css",
+            "next-app/components/BoundedReferencePage.tsx",
+            "next-app/components/reference-data.ts",
+        )
+    ):
+        candidates.append(
+            {
+                "name": "next-runtime-app",
+                "entrypoint": rebuild_artifacts["next-app/app/page.tsx"],
+                "kind": "next-runtime",
+                "note": "Booted Next runtime using the generated next-app scaffold for higher-fidelity verification.",
             }
         )
     return candidates
@@ -178,6 +377,7 @@ def run_rebuild_self_verify(
     self_verify_dir = output_dir / "reproduction" / Path(stage_path)
     persisted: dict[str, Any] = {"renderers": {}}
     renderer_results: list[dict[str, Any]] = []
+    runtime_cache_root = output_dir / "reproduction" / "_next-runtime-cache"
 
     with _serve_directory(rebuild_root) as base_url:
         for renderer in renderer_candidates:
@@ -185,20 +385,70 @@ def run_rebuild_self_verify(
             entrypoint = Path(renderer["entrypoint"]).expanduser().resolve()
             renderer_dir = self_verify_dir / "renderers" / name
             rendered_capture_dir = renderer_dir / "rendered-capture"
-            preview_url = f"{base_url}/{entrypoint.relative_to(rebuild_root).as_posix()}"
-            rendered_bundle = capture_reference_bundle(
-                url=preview_url,
-                timeout_seconds=10,
-                wait_seconds=4,
-                include_runtime_trace=True,
-                capture_html=True,
-                capture_screenshot=True,
-                viewport_width=int(primary_request.get("viewport_width") or 1440),
-                viewport_height=int(primary_request.get("viewport_height") or 1200),
-                breakpoint_profiles=breakpoint_profiles if isinstance(breakpoint_profiles, list) else [],
-                output_dir=str(rendered_capture_dir),
-                exact_requested=False,
-            )
+            preview_url: str | None = None
+            rendered_bundle: dict[str, Any] | None = None
+            runtime_error: str | None = None
+            try:
+                if renderer.get("kind") == "next-runtime":
+                    _materialize_next_runtime_project(rebuild_artifacts, runtime_cache_root)
+                    with _serve_next_runtime(runtime_cache_root, renderer_dir) as runtime_url:
+                        preview_url = runtime_url
+                        rendered_bundle = capture_reference_bundle(
+                            url=runtime_url,
+                            timeout_seconds=10,
+                            wait_seconds=4,
+                            include_runtime_trace=True,
+                            capture_html=True,
+                            capture_screenshot=True,
+                            viewport_width=int(primary_request.get("viewport_width") or 1440),
+                            viewport_height=int(primary_request.get("viewport_height") or 1200),
+                            breakpoint_profiles=breakpoint_profiles if isinstance(breakpoint_profiles, list) else [],
+                            output_dir=str(rendered_capture_dir),
+                            exact_requested=False,
+                        )
+                else:
+                    preview_url = f"{base_url}/{entrypoint.relative_to(rebuild_root).as_posix()}"
+                    rendered_bundle = capture_reference_bundle(
+                        url=preview_url,
+                        timeout_seconds=10,
+                        wait_seconds=4,
+                        include_runtime_trace=True,
+                        capture_html=True,
+                        capture_screenshot=True,
+                        viewport_width=int(primary_request.get("viewport_width") or 1440),
+                        viewport_height=int(primary_request.get("viewport_height") or 1200),
+                        breakpoint_profiles=breakpoint_profiles if isinstance(breakpoint_profiles, list) else [],
+                        output_dir=str(rendered_capture_dir),
+                        exact_requested=False,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                runtime_error = str(exc)
+
+            if not rendered_bundle or not preview_url:
+                renderer_result = {
+                    "name": name,
+                    "entrypoint": str(entrypoint),
+                    "preview_url": preview_url,
+                    "note": renderer.get("note"),
+                    "score": 0,
+                    "ready_for_exact_clone": False,
+                    "root_report": {
+                        "verdict": "skipped",
+                        "score": 0,
+                        "ready_for_exact_clone": False,
+                        "report_path": None,
+                        "error": runtime_error,
+                    },
+                    "breakpoints": {"compared": 0, "reports": []},
+                    "runtime_error": runtime_error,
+                }
+                renderer_results.append(renderer_result)
+                persisted["renderers"][name] = {
+                    "root_report": None,
+                    "breakpoint_reports": {},
+                    "runtime_error": runtime_error,
+                }
+                continue
 
             root_report = verify_fidelity_report(
                 reference_bundle=reference_bundle,
@@ -251,6 +501,7 @@ def run_rebuild_self_verify(
                 "entrypoint": str(entrypoint),
                 "preview_url": preview_url,
                 "note": renderer.get("note"),
+                "kind": renderer.get("kind"),
                 "report": root_report,
                 "score": score,
                 "ready_for_exact_clone": overall_ready,
@@ -305,6 +556,7 @@ def run_rebuild_self_verify(
         "renderers": [
             {
                 "name": item.get("name"),
+                "kind": item.get("kind"),
                 "score": item.get("score"),
                 "ready_for_exact_clone": item.get("ready_for_exact_clone"),
                 "entrypoint": item.get("entrypoint"),
@@ -325,7 +577,7 @@ def run_rebuild_self_verify(
             "prompt_path": persisted["repair_prompt"],
         },
         "persisted": persisted,
-        "note": "This self-verify loop renders bounded scaffold previews, compares them back to the reference bundle, and emits a repair plan. It still does not boot a full Next.js runtime.",
+        "note": "This self-verify loop renders bounded scaffold previews, and when a generated next-app scaffold is present it also attempts a booted Next runtime candidate before emitting a repair plan.",
     }
     _persist_report(self_verify_dir / "summary.json", result)
     persisted["summary"] = str(self_verify_dir / "summary.json")
