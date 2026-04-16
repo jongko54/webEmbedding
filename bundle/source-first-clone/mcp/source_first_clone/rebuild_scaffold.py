@@ -146,7 +146,7 @@ def _collect_dom_outline(node: dict[str, Any] | None, bucket: list[dict[str, Any
             bucket.append({"depth": depth, "tag": "#text", "text": text})
 
 
-def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 24) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     for index, entry in enumerate(style_entries):
         if not isinstance(entry, dict):
@@ -236,6 +236,90 @@ def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 8) -
         if len(blocks) >= limit:
             break
     return blocks
+
+
+def _select_representative_blocks(
+    blocks: list[dict[str, Any]],
+    viewport_width: int,
+    viewport_height: int,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    if not blocks:
+        return []
+
+    def area(block: dict[str, Any]) -> int:
+        rect = block.get("rect", {}) if isinstance(block.get("rect"), dict) else {}
+        try:
+            return int(rect.get("width") or 0) * int(rect.get("height") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def text_score(block: dict[str, Any]) -> int:
+        text = _clean_text(block.get("text"), 140)
+        if not text:
+            return 0
+        return min(max(len(text.split()), 1), 12)
+
+    seen_keys: set[tuple[int, int, int, int, str]] = set()
+    candidates: list[dict[str, Any]] = []
+    viewport_area = max(viewport_width * viewport_height, 1)
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        rect = block.get("rect", {}) if isinstance(block.get("rect"), dict) else {}
+        width = int(rect.get("width") or 0)
+        height = int(rect.get("height") or 0)
+        x = int(rect.get("x") or 0)
+        y = int(rect.get("y") or 0)
+        tag = str(block.get("tag") or "div").lower()
+        text = _clean_text(block.get("text"), 140)
+        if width <= 0 or height <= 0:
+            continue
+        if not text and width * height >= int(viewport_area * 0.82):
+            continue
+        key = (x, y, width, height, text or tag)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        block_area = width * height
+        score = 0.0
+        score += min(block_area / viewport_area, 0.45)
+        score += min(text_score(block) / 12.0, 0.35)
+        if tag in {"header", "nav", "main", "section", "form", "footer", "input", "button", "a"}:
+            score += 0.15
+        if y <= max(96, viewport_height // 8):
+            score += 0.08
+        if width < 48 or height < 18:
+            score -= 0.2
+        if block_area >= int(viewport_area * 0.95):
+            score -= 0.4
+        candidates.append({"score": score, "block": block})
+
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            area(item["block"]),
+            -int(((item["block"].get("rect") or {}).get("y") or 0)),
+        ),
+        reverse=True,
+    )
+
+    selected: list[dict[str, Any]] = []
+    occupied_bands: set[int] = set()
+    for item in candidates:
+        block = item["block"]
+        rect = block.get("rect", {}) if isinstance(block.get("rect"), dict) else {}
+        band = int((int(rect.get("y") or 0) / max(viewport_height, 1)) * 8)
+        if band in occupied_bands and len(selected) >= max(limit // 2, 4):
+            continue
+        selected.append(block)
+        occupied_bands.add(band)
+        if len(selected) >= limit:
+            break
+
+    selected.sort(key=lambda block: (int((block.get("rect") or {}).get("y") or 0), int((block.get("rect") or {}).get("x") or 0)))
+    return selected[:limit]
 
 
 def _style_snapshot_from_styles(styles: dict[str, Any] | None) -> dict[str, str]:
@@ -1307,6 +1391,23 @@ def _render_bounded_reference_page_tsx() -> str:
             "  return Object.keys(style).length ? style : undefined;",
             "}",
             "",
+            "function stageRectStyle(",
+            "  rect: { x?: number | null; y?: number | null; width?: number | null; height?: number | null } | null | undefined,",
+            "  viewport: { width?: number | null; height?: number | null } | null | undefined,",
+            "): CSSProperties | undefined {",
+            "  if (!rect || !viewport || !viewport.width || !viewport.height) {",
+            "    return undefined;",
+            "  }",
+            "  const width = Number(viewport.width) || 1;",
+            "  const height = Number(viewport.height) || 1;",
+            "  return {",
+            "    left: `${((Number(rect.x) || 0) / width) * 100}%`,",
+            "    top: `${((Number(rect.y) || 0) / height) * 100}%`,",
+            "    width: `${((Number(rect.width) || 0) / width) * 100}%`,",
+            "    minHeight: `${Math.max(((Number(rect.height) || 0) / height) * 100, 3)}%`,",
+            "  };",
+            "}",
+            "",
             "export function BoundedReferencePage({ data }: Props) {",
             "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot);",
             "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot);",
@@ -1368,6 +1469,23 @@ def _render_bounded_reference_page_tsx() -> str:
             '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`} style={styleFromSnapshot(action.styleSnapshot)}>',
             "              {action.label}",
             "            </a>",
+            "          ))}",
+            "        </div>",
+            "      </section>",
+            "",
+            '      <section className="bounded-stage bounded-panel">',
+            '        <div className="bounded-stage-canvas">',
+            "          {data.sections.slice(0, 8).map((section) => (",
+            '            <article',
+            '              className="bounded-stage-block bounded-panel"',
+            "              data-role={section.role}",
+            "              key={`stage-${section.id}`}",
+            "              style={{ ...stageRectStyle(section.rect, data.viewport), ...styleFromSnapshot(section.styleSnapshot) }}",
+            "            >",
+            '              <p className="bounded-kicker">{section.role}</p>',
+            "              <strong>{section.title}</strong>",
+            "              <p className=\"bounded-copy\">{section.copy}</p>",
+            "            </article>",
             "          ))}",
             "        </div>",
             "      </section>",
@@ -1484,6 +1602,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
     masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"))
     hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"))
+    viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
+    viewport_width = max(int(viewport.get("width") or 1440), 1)
+    viewport_height = max(int(viewport.get("height") or 1200), 1)
 
     def render_interaction_control(entry: dict[str, Any]) -> str:
         control_style = _style_attr_from_snapshot(entry.get("styleSnapshot"))
@@ -1511,6 +1632,25 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 ]
             )
         return f'                  <button class="bounded-control bounded-control--button" type="button"{control_style}>{label}</button>'
+
+    def render_stage_style(section: dict[str, Any]) -> str:
+        rect = section.get("rect", {}) if isinstance(section.get("rect"), dict) else {}
+        x = int(rect.get("x") or 0)
+        y = int(rect.get("y") or 0)
+        width = int(rect.get("width") or 0)
+        height = int(rect.get("height") or 0)
+        style_bits = [
+            f"left:{(x / viewport_width) * 100:.2f}%",
+            f"top:{(y / viewport_height) * 100:.2f}%",
+            f"width:{(width / viewport_width) * 100:.2f}%",
+            f"min-height:{max((height / viewport_height) * 100, 3):.2f}%",
+        ]
+        attr = _style_attr_from_snapshot(section.get("styleSnapshot"))
+        if attr:
+            inline = attr.removeprefix(' style="').removesuffix('"')
+            if inline:
+                style_bits.append(inline)
+        return f' style="{escape("; ".join(bit for bit in style_bits if bit))}"'
 
     nav_items = []
     for link in masthead.get("links", []) if isinstance(masthead.get("links", []), list) else []:
@@ -1568,6 +1708,22 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     "                <h2>No sampled body sections</h2>",
                     '                <p class="bounded-copy">The capture bundle did not expose enough structure for a richer body layout.</p>',
                     "              </article>",
+                ]
+            )
+        )
+
+    stage_cards = []
+    for section in app_model.get("sections", [])[:8] if isinstance(app_model.get("sections", []), list) else []:
+        if not isinstance(section, dict):
+            continue
+        stage_cards.append(
+            "\n".join(
+                [
+                    f'        <article class="bounded-stage-block bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{render_stage_style(section)}>',
+                    f'          <p class="bounded-kicker">{escape(str(section.get("role") or "content"))}</p>',
+                    f'          <strong>{escape(str(section.get("title") or "Captured section"))}</strong>',
+                    f'          <p class="bounded-copy">{escape(str(section.get("copy") or ""))}</p>',
+                    "        </article>",
                 ]
             )
         )
@@ -1652,6 +1808,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "      </div>",
             '      <div class="bounded-hero-actions">',
             *hero_detail_bits,
+            "      </div>",
+            "    </section>",
+            '    <section class="bounded-stage bounded-panel">',
+            '      <div class="bounded-stage-canvas">',
+            *stage_cards,
             "      </div>",
             "    </section>",
             '    <section class="bounded-layout">',
@@ -1849,6 +2010,25 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  padding: 28px;",
             "  margin-bottom: 20px;",
             "}",
+            ".bounded-stage {",
+            "  position: relative;",
+            "  min-height: 420px;",
+            "  margin-bottom: 20px;",
+            "  overflow: hidden;",
+            "}",
+            ".bounded-stage-canvas {",
+            "  position: relative;",
+            "  min-height: 420px;",
+            "}",
+            ".bounded-stage-block {",
+            "  position: absolute;",
+            "  padding: 12px 14px;",
+            "  overflow: hidden;",
+            "}",
+            ".bounded-stage-block strong {",
+            "  display: block;",
+            "  margin-bottom: 6px;",
+            "}",
             ".bounded-eyebrow, .bounded-kicker {",
             "  margin: 0 0 10px;",
             "  text-transform: uppercase;",
@@ -2007,7 +2187,13 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
     if not isinstance(style_entries, list):
         style_entries = []
-    blocks = _collect_style_blocks(style_entries)
+    viewport_width = int(session_request.get("viewport_width") or 1440)
+    viewport_height = int(session_request.get("viewport_height") or 1200)
+    blocks = _select_representative_blocks(
+        _collect_style_blocks(style_entries),
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+    )
     outline: list[dict[str, Any]] = []
     if dom_capture.get("available"):
         _collect_dom_outline(dom_capture.get("content"), outline)
@@ -2068,8 +2254,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "candidate_count": len(static.get("candidate_urls") or []),
         "candidate_sample": (static.get("candidate_urls") or [])[:6],
         "viewport": {
-            "width": session_request.get("viewport_width"),
-            "height": session_request.get("viewport_height"),
+            "width": viewport_width,
+            "height": viewport_height,
         },
         "signals": {
             "dom_available": bool(dom_capture.get("available")),
