@@ -289,8 +289,12 @@ The persisted output directory will include:
 - `reproduction/rebuild/next-app/components/BoundedReferencePage.tsx`
 - `reproduction/rebuild/next-app/components/reference-data.ts`
 - `reproduction/rebuild/manifest.json`
+- `reproduction/self-verify/verification.json`
+- `reproduction/self-verify/summary.json`
 
 When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical role-inferred `next-app/` renderer skeleton to continue from.
+
+When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now also renders `starter.html`, captures that rendered preview back into a bundle, and writes a self-verify report under `reproduction/self-verify/`. That closes the loop from `reference -> scaffold -> rendered preview -> verify`, even though it still does not boot a full Next.js runtime.
 
 The capture bundle now includes two interaction layers for visible interactive elements:
 
@@ -324,6 +328,7 @@ web-embedding clone \
 web-embedding reproduce \
   --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
   --user-data-dir "$PWD/.tmp/browser-profile" \
+  --breakpoints tablet mobile \
   --output-dir "$PWD/.tmp/reproductions/spline-community"
 ```
 
@@ -340,6 +345,7 @@ The new tools are still scaffolds for the next phase:
 - `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded role-inferred `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
 - `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus interaction-trace coverage as a core exact-clone readiness signal
+- `build_reproduction_bundle` now closes a bounded self-verify loop for rebuild paths by rendering the starter scaffold, recapturing it, and comparing the rendered preview against the original bundle across the primary viewport plus any requested breakpoint variants
 
 ## Guardrails
 
