@@ -1400,9 +1400,9 @@ def _style_stats(content: Any) -> dict[str, Any]:
             signature_parts = [
                 tag,
                 _clean_text(entry.get("role")),
-                _clean_text(entry.get("text")),
-                _clean_text(rect.get("width")),
-                _clean_text(rect.get("height")),
+                _text_profile(entry.get("text")),
+                _dimension_bucket(rect.get("width")),
+                _dimension_bucket(rect.get("height")),
                 _clean_text(styles.get("display")),
                 _clean_text(styles.get("position")),
                 _clean_text(styles.get("fontFamily")),
@@ -1434,6 +1434,41 @@ def _style_stats(content: Any) -> dict[str, Any]:
         "font_sizes": sorted(sizes)[:8],
         "displays": sorted(displays)[:8],
     }
+
+
+def _dimension_bucket(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    if numeric <= 0:
+        return "0"
+    if numeric >= 1200:
+        return "viewport"
+    if numeric >= 720:
+        return "xxl"
+    if numeric >= 420:
+        return "xl"
+    if numeric >= 240:
+        return "lg"
+    if numeric >= 120:
+        return "md"
+    if numeric >= 48:
+        return "sm"
+    return "xs"
+
+
+def _text_profile(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return "empty"
+    if len(text) <= 8:
+        return "short"
+    if len(text) <= 32:
+        return "medium"
+    if len(text) <= 96:
+        return "long"
+    return "block"
 
 
 def _interaction_stats(content: Any) -> dict[str, Any]:

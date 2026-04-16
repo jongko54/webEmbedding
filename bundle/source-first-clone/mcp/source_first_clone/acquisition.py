@@ -809,15 +809,34 @@ function isSafeToggleCandidate(candidate) {
     const styleSummary = await page.evaluate(() => {
       const normalizeValue = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
       const normalizeColor = (value) => normalizeValue(value).replace(/,\s+/g, ",");
+      const bucketDimension = (value) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) return "0";
+        if (numeric >= 1200) return "viewport";
+        if (numeric >= 720) return "xxl";
+        if (numeric >= 420) return "xl";
+        if (numeric >= 240) return "lg";
+        if (numeric >= 120) return "md";
+        if (numeric >= 48) return "sm";
+        return "xs";
+      };
+      const textProfile = (value) => {
+        const text = normalizeValue(value);
+        if (!text) return "empty";
+        if (text.length <= 8) return "short";
+        if (text.length <= 32) return "medium";
+        if (text.length <= 96) return "long";
+        return "block";
+      };
       const buildStyleSignature = (entry) => {
         const styles = entry.styles || {};
         const rect = entry.rect || {};
         return [
           normalizeValue(entry.tag),
           normalizeValue(entry.role),
-          normalizeValue(entry.text).slice(0, 96),
-          normalizeValue(rect.width),
-          normalizeValue(rect.height),
+          textProfile(entry.text),
+          bucketDimension(rect.width),
+          bucketDimension(rect.height),
           normalizeValue(styles.display),
           normalizeValue(styles.position),
           normalizeColor(styles.color),
