@@ -14,6 +14,12 @@ DEFAULT_BROWSER_PATHS = [
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
 ]
 
+BREAKPOINT_PROFILES = {
+    "desktop": {"width": 1440, "height": 1200},
+    "tablet": {"width": 1024, "height": 1366},
+    "mobile": {"width": 390, "height": 844},
+}
+
 URL_PATTERNS = [
     ("spline-preview", re.compile(r"https://app\.spline\.design/file/[^\"'\s>]+\?view=preview", re.I)),
     ("spline-viewer", re.compile(r"https://viewer\.spline\.design/[^\"'\s>]+", re.I)),

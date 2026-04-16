@@ -37,6 +37,13 @@ def compact_capture_bundle(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     for artifact in captured_artifacts.values():
         if isinstance(artifact, dict):
             artifact.pop("content", None)
+    breakpoint_summary = summary.get("breakpoints")
+    if isinstance(breakpoint_summary, dict):
+        variants = breakpoint_summary.get("variants")
+        if isinstance(variants, list):
+            breakpoint_summary["variant_count"] = len(variants)
+            breakpoint_summary["variant_sample"] = variants[:3]
+            breakpoint_summary.pop("variants", None)
 
     return summary
 
@@ -52,6 +59,7 @@ def clone_reference_url(
     capture_screenshot: bool = True,
     viewport_width: int = 1440,
     viewport_height: int = 1200,
+    breakpoint_profiles: list[str] | None = None,
     output_dir: str | None = None,
     exact_requested: bool = True,
     license_text: str | None = None,
@@ -70,6 +78,7 @@ def clone_reference_url(
         capture_screenshot=capture_screenshot,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
+        breakpoint_profiles=breakpoint_profiles,
         output_dir=output_dir,
         exact_requested=exact_requested,
         license_text=license_text,
