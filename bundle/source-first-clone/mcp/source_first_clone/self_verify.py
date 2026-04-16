@@ -296,6 +296,108 @@ def _comparison_score(report: dict[str, Any]) -> int:
         return 0
 
 
+def _report_score(report: dict[str, Any] | None) -> int:
+    if not isinstance(report, dict):
+        return 0
+    for value in (report.get("score"), (report.get("comparison_summary") or {}).get("score")):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _breakpoint_ready_count(self_verify: dict[str, Any] | None) -> int:
+    if not isinstance(self_verify, dict):
+        return 0
+    reports = ((self_verify.get("breakpoints") or {}).get("reports") or [])
+    return sum(1 for report in reports if isinstance(report, dict) and report.get("available") and report.get("ready_for_exact_clone"))
+
+
+def _renderer_summary(renderer: dict[str, Any] | None) -> dict[str, Any]:
+    renderer = renderer or {}
+    root_report = renderer.get("root_report") if isinstance(renderer, dict) else {}
+    breakpoints = renderer.get("breakpoints") if isinstance(renderer, dict) else {}
+    reports = (breakpoints or {}).get("reports") or []
+    return {
+        "name": renderer.get("name"),
+        "kind": renderer.get("kind"),
+        "entrypoint": renderer.get("entrypoint"),
+        "preview_url": renderer.get("preview_url"),
+        "score": renderer.get("score"),
+        "ready_for_exact_clone": renderer.get("ready_for_exact_clone"),
+        "report_path": (root_report or {}).get("report_path"),
+        "rendered_capture_manifest": renderer.get("rendered_capture_manifest"),
+        "breakpoint_count": (breakpoints or {}).get("compared"),
+        "breakpoint_ready_count": sum(1 for report in reports if isinstance(report, dict) and report.get("available") and report.get("ready_for_exact_clone")),
+    }
+
+
+def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
+    self_verify = self_verify or {}
+    root_report = self_verify.get("root_report", {}) if isinstance(self_verify, dict) else {}
+    preferred_renderer = self_verify.get("preferred_renderer", {}) if isinstance(self_verify, dict) else {}
+    renderers = self_verify.get("renderers", []) if isinstance(self_verify, dict) else []
+    breakpoint_reports = ((self_verify.get("breakpoints") or {}).get("reports") or [])
+    renderer_scores = [
+        int(item.get("score") or 0)
+        for item in renderers
+        if isinstance(item, dict)
+    ]
+    root_score = _report_score(root_report)
+    preferred_score = 0
+    try:
+        preferred_score = int(preferred_renderer.get("score") or 0)
+    except (TypeError, ValueError):
+        preferred_score = 0
+    breakpoint_scores = [
+        int(report.get("score") or 0)
+        for report in breakpoint_reports
+        if isinstance(report, dict) and report.get("available")
+    ]
+    breakpoint_ready_count = _breakpoint_ready_count(self_verify)
+    available_breakpoints = [
+        report
+        for report in breakpoint_reports
+        if isinstance(report, dict) and report.get("available")
+    ]
+    score = max([root_score, preferred_score, *renderer_scores]) if renderer_scores or preferred_score or root_score else 0
+    if breakpoint_scores:
+        score = int(round((score * 0.8) + ((sum(breakpoint_scores) / len(breakpoint_scores)) * 0.2)))
+    score = max(score, root_score)
+    return {
+        "score": score,
+        "root_score": root_score,
+        "preferred_renderer_score": preferred_score,
+        "renderer_count": len(renderers),
+        "breakpoint_count": len(available_breakpoints),
+        "breakpoint_ready_count": breakpoint_ready_count,
+        "breakpoint_score_average": round(sum(breakpoint_scores) / len(breakpoint_scores), 2) if breakpoint_scores else 0,
+        "preferred_renderer": {
+            "name": preferred_renderer.get("name"),
+            "kind": preferred_renderer.get("kind"),
+            "score": preferred_renderer.get("score"),
+            "ready_for_exact_clone": preferred_renderer.get("ready_for_exact_clone"),
+            "report_path": preferred_renderer.get("report_path"),
+        },
+        "renderers": [_renderer_summary(item) for item in renderers if isinstance(item, dict)],
+        "root_ready_for_exact_clone": bool((root_report or {}).get("ready_for_exact_clone")),
+    }
+
+
+def _self_verify_rank(self_verify: dict[str, Any] | None) -> tuple[int, int, int, int, int, int]:
+    summary = _self_verify_summary(self_verify)
+    preferred = summary.get("preferred_renderer", {}) if isinstance(summary, dict) else {}
+    return (
+        1 if bool((self_verify or {}).get("overall_ready_for_exact_clone")) else 0,
+        1 if str(preferred.get("kind") or "") == "next-runtime" else 0,
+        1 if bool(preferred.get("ready_for_exact_clone")) else 0,
+        int(summary.get("breakpoint_ready_count") or 0),
+        int(summary.get("preferred_renderer_score") or 0),
+        int(summary.get("score") or 0),
+    )
+
+
 def _renderer_ready(report: dict[str, Any]) -> bool:
     return bool(((report.get("downstream_guidance") or {}).get("ready_for_exact_clone")))
 
@@ -581,11 +683,23 @@ def run_rebuild_self_verify(
     repair_prompt_path = self_verify_dir / "repair-prompt.txt"
     repair_prompt_path.write_text(str(repair_plan.get("prompt") or "").rstrip() + "\n")
     persisted["repair_prompt"] = str(repair_prompt_path)
+    renderer_summaries = [_renderer_summary(item) for item in renderer_results]
+    preferred_renderer_summary = _renderer_summary(preferred_renderer)
+    self_verify_summary = _self_verify_summary(
+        {
+            "root_report": (preferred_renderer or {}).get("root_report"),
+            "preferred_renderer": preferred_renderer or {},
+            "renderers": renderer_results,
+            "breakpoints": (preferred_renderer or {}).get("breakpoints") or {"compared": 0, "reports": []},
+            "overall_ready_for_exact_clone": overall_ready,
+        }
+    )
 
     result = {
         "available": True,
         "status": "completed",
         "renderer_count": len(renderer_results),
+        "renderer_summaries": renderer_summaries,
         "preferred_renderer": {
             "name": (preferred_renderer or {}).get("name"),
             "entrypoint": (preferred_renderer or {}).get("entrypoint"),
@@ -593,6 +707,7 @@ def run_rebuild_self_verify(
             "ready_for_exact_clone": (preferred_renderer or {}).get("ready_for_exact_clone"),
             "report_path": (((preferred_renderer or {}).get("root_report") or {}).get("report_path")),
         },
+        "preferred_renderer_summary": preferred_renderer_summary,
         "renderers": [
             {
                 "name": item.get("name"),
@@ -608,6 +723,9 @@ def run_rebuild_self_verify(
         "root_report": (preferred_renderer or {}).get("root_report"),
         "breakpoints": (preferred_renderer or {}).get("breakpoints") or {"compared": 0, "reports": []},
         "overall_ready_for_exact_clone": overall_ready,
+        "score": self_verify_summary.get("score"),
+        "breakpoint_ready_count": self_verify_summary.get("breakpoint_ready_count"),
+        "breakpoint_score_average": self_verify_summary.get("breakpoint_score_average"),
         "repair_plan": {
             "target_renderer": repair_plan.get("target_renderer"),
             "score": repair_plan.get("score"),

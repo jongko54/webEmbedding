@@ -9,7 +9,12 @@ from typing import Any
 from .planning import plan_reproduction_path
 from .repair_scaffold import build_repair_scaffold
 from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
-from .self_verify import run_rebuild_self_verify
+from .self_verify import (
+    _breakpoint_ready_count,
+    _self_verify_rank,
+    _self_verify_summary,
+    run_rebuild_self_verify,
+)
 
 
 ANALYTICS_HOST_HINTS = (
@@ -407,19 +412,40 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
 def _self_verify_score(self_verify: dict[str, Any] | None) -> int:
     if not isinstance(self_verify, dict):
         return 0
-    root_report = self_verify.get("root_report", {})
-    if isinstance(root_report, dict):
-        try:
-            return int(root_report.get("score") or 0)
-        except (TypeError, ValueError):
-            pass
-    preferred_renderer = self_verify.get("preferred_renderer", {})
-    if isinstance(preferred_renderer, dict):
-        try:
-            return int(preferred_renderer.get("score") or 0)
-        except (TypeError, ValueError):
-            return 0
-    return 0
+    return int(_self_verify_summary(self_verify).get("score") or 0)
+
+
+def _repair_pass_summary(
+    pass_index: int,
+    current_score: int,
+    current_rank: tuple[int, int, int, int, int, int],
+    repair_verify: dict[str, Any],
+    next_score: int,
+    next_rank: tuple[int, int, int, int, int, int],
+) -> dict[str, Any]:
+    preferred = repair_verify.get("preferred_renderer") or {}
+    summary = _self_verify_summary(repair_verify)
+    return {
+        "index": pass_index,
+        "source_score": current_score,
+        "score": next_score,
+        "score_delta": next_score - current_score,
+        "improved": next_score > current_score or next_rank > current_rank,
+        "meets_minimum_delta": (next_score - current_score) >= MIN_AUTO_REPAIR_SCORE_DELTA,
+        "overall_ready_for_exact_clone": bool(repair_verify.get("overall_ready_for_exact_clone")),
+        "stage_path": None,
+        "preferred_renderer": {
+            "name": preferred.get("name"),
+            "kind": preferred.get("kind"),
+            "score": preferred.get("score"),
+            "ready_for_exact_clone": preferred.get("ready_for_exact_clone"),
+            "report_path": preferred.get("report_path"),
+        },
+        "renderer_count": repair_verify.get("renderer_count"),
+        "breakpoint_count": summary.get("breakpoint_count"),
+        "breakpoint_ready_count": summary.get("breakpoint_ready_count"),
+        "rank": list(next_rank),
+    }
 
 
 def _build_repair_loop(
@@ -445,7 +471,9 @@ def _build_repair_loop(
     current_rebuild_artifacts = rebuild_artifacts
     current_self_verify = initial_self_verify
     current_score = _self_verify_score(initial_self_verify)
+    current_rank = _self_verify_rank(initial_self_verify)
     best_score = current_score
+    best_rank = current_rank
     best_pass: dict[str, Any] | None = None
     attempted_passes: list[dict[str, Any]] = []
     persisted_passes: list[dict[str, Any]] = []
@@ -470,53 +498,68 @@ def _build_repair_loop(
             stage_path=str(stage_path / "self-verify"),
         )
         next_score = _self_verify_score(repair_verify)
+        next_rank = _self_verify_rank(repair_verify)
         score_delta = next_score - current_score
-        pass_summary = {
-            "index": pass_index,
-            "source_score": current_score,
-            "score": next_score,
-            "score_delta": score_delta,
-            "improved": score_delta > 0,
-            "meets_minimum_delta": score_delta >= MIN_AUTO_REPAIR_SCORE_DELTA,
-            "overall_ready_for_exact_clone": bool(repair_verify.get("overall_ready_for_exact_clone")),
-            "stage_path": str(stage_path),
-        }
+        pass_summary = _repair_pass_summary(
+            pass_index=pass_index,
+            current_score=current_score,
+            current_rank=current_rank,
+            repair_verify=repair_verify,
+            next_score=next_score,
+            next_rank=next_rank,
+        )
+        pass_summary["stage_path"] = str(stage_path)
         repair_pass["persisted"] = persisted_repair
         repair_pass["self_verify"] = repair_verify
         repair_pass["iteration"] = pass_summary
+        repair_summary = _self_verify_summary(repair_verify)
+        repair_pass["renderer_summary"] = repair_summary.get("preferred_renderer")
+        repair_pass["self_verify_summary"] = repair_summary
         attempted_passes.append(repair_pass)
         persisted_passes.append(
             {
                 "index": pass_index,
                 "artifacts": persisted_repair,
                 "self_verify": repair_verify.get("persisted"),
+                "self_verify_summary": repair_pass["self_verify_summary"],
+                "renderer_summary": repair_pass["renderer_summary"],
             }
         )
 
-        if next_score > best_score:
+        if next_rank > best_rank or next_score > best_score:
             best_score = next_score
+            best_rank = next_rank
             best_pass = repair_pass
 
         if repair_verify.get("overall_ready_for_exact_clone"):
             best_pass = repair_pass
             stop_reason = "ready-for-exact-clone"
             break
-        if score_delta <= 0:
-            stop_reason = "no-improvement"
+        next_ready_breakpoints = _breakpoint_ready_count(repair_verify)
+        current_ready_breakpoints = _breakpoint_ready_count(current_self_verify)
+        made_progress = (
+            score_delta >= MIN_AUTO_REPAIR_SCORE_DELTA
+            or next_rank > current_rank
+            or next_ready_breakpoints > current_ready_breakpoints
+        )
+        if not made_progress:
+            stop_reason = "no-improvement" if score_delta <= 0 else "insufficient-score-delta"
             break
-        if score_delta < MIN_AUTO_REPAIR_SCORE_DELTA:
+        if score_delta < MIN_AUTO_REPAIR_SCORE_DELTA and next_ready_breakpoints <= current_ready_breakpoints and next_rank <= current_rank:
             stop_reason = "insufficient-score-delta"
             break
 
         current_rebuild_artifacts = persisted_repair
         current_self_verify = repair_verify
         current_score = next_score
+        current_rank = next_rank
     else:
         stop_reason = "max-passes-reached"
 
     if best_pass is None and attempted_passes:
         best_pass = attempted_passes[0]
         best_score = _self_verify_score(best_pass.get("self_verify"))
+        best_rank = _self_verify_rank(best_pass.get("self_verify"))
 
     if best_pass is None:
         return {
@@ -534,6 +577,7 @@ def _build_repair_loop(
         "minimum_score_delta": MIN_AUTO_REPAIR_SCORE_DELTA,
         "initial_score": _self_verify_score(initial_self_verify),
         "best_score": best_score,
+        "best_rank": list(best_rank),
         "best_pass_index": best_iteration.get("index"),
         "overall_ready_for_exact_clone": bool((best_pass.get("self_verify") or {}).get("overall_ready_for_exact_clone")),
         "stop_reason": stop_reason,
