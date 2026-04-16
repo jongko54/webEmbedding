@@ -199,6 +199,7 @@ The inspection layer now includes initial platform adapters for:
 - `Spline`
   - preview/viewer candidate normalization
   - community/remix signal extraction
+  - raw `file` and `community/file` links now prefer `?view=preview` reuse targets over shell iframes
 - `Figma`
   - generated `figma-embed` reuse target from share/community URLs
   - duplicate/community source signals

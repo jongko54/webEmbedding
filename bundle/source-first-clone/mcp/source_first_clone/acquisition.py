@@ -29,9 +29,9 @@ def is_candidate_noise(url: str) -> bool:
 def should_promote_direct_iframe(final_url: str, platform_adapter: dict[str, Any] | None) -> bool:
     platform = str((platform_adapter or {}).get("platform") or "").lower()
     lowered_url = (final_url or "").lower()
-    if platform == "spline" and "/community/file/" in lowered_url:
+    if platform == "spline" and ("app.spline.design/file/" in lowered_url or "/community/file/" in lowered_url):
         return False
-    if platform == "figma" and "/community/" in lowered_url:
+    if platform == "figma" and "figma.com/embed" not in lowered_url:
         return False
     return True
 
