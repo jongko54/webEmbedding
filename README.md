@@ -201,6 +201,7 @@ The current v0.3 baseline adds session-aware runtime options:
 - `storage_state_output_path`
 - `capture_html`
 - `capture_screenshot`
+- `breakpoint_profiles`
 - `output_dir` for writing a canonical on-disk capture bundle
 
 When runtime capture succeeds, the bundle can now persist:
@@ -215,6 +216,12 @@ When runtime capture succeeds, the bundle can now persist:
 - `screenshots/runtime.png`
 - `session/storage-state.json`
 - `capture.json`
+
+When `breakpoint_profiles` are requested, the root bundle also links per-profile captures under:
+
+- `breakpoints/tablet/capture.json`
+- `breakpoints/mobile/capture.json`
+- `breakpoints/desktop/capture.json`
 
 Example local capture flow:
 
@@ -231,6 +238,7 @@ capture_reference_bundle(
     user_data_dir=str(repo / ".tmp/browser-profile"),
     capture_html=True,
     capture_screenshot=True,
+    breakpoint_profiles=["tablet", "mobile"],
     output_dir=str(repo / ".tmp/captures/spline-community"),
 )
 PY
@@ -241,6 +249,7 @@ Example one-shot clone flow:
 ```bash
 node ./bin/web-embedding.mjs clone \
   --url "https://example.com" \
+  --breakpoints tablet mobile \
   --output-dir "$PWD/.tmp/reproductions/example-clone"
 ```
 
@@ -293,6 +302,8 @@ The capture bundle now includes two interaction layers for visible interactive e
   - ordered replay steps for `scroll`, `hover`, `focus`, `type`, and planned `click`
   - execution results for safe replay steps
   - viewport and page metrics for downstream reconstruction
+- `breakpoints/*/capture.json`
+  - additional desktop/tablet/mobile capture bundles for responsive reconstruction and later self-verify loops
 
 CLI helpers:
 
@@ -301,11 +312,13 @@ web-embedding capabilities
 web-embedding capture \
   --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
   --user-data-dir "$PWD/.tmp/browser-profile" \
+  --breakpoints tablet mobile \
   --output-dir "$PWD/.tmp/captures/spline-community"
 
 web-embedding clone \
   --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
   --user-data-dir "$PWD/.tmp/browser-profile" \
+  --breakpoints tablet mobile \
   --output-dir "$PWD/.tmp/reproductions/spline-community"
 
 web-embedding reproduce \

@@ -314,6 +314,13 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
     artifact_trace = captured_artifacts.get("interaction_trace")
     if isinstance(artifact_trace, dict):
         artifact_trace.pop("content", None)
+    breakpoint_summary = summary.get("breakpoints")
+    if isinstance(breakpoint_summary, dict):
+        variants = breakpoint_summary.get("variants")
+        if isinstance(variants, list):
+            breakpoint_summary["variant_count"] = len(variants)
+            breakpoint_summary["variant_sample"] = variants[:3]
+            breakpoint_summary.pop("variants", None)
     return summary
 
 
@@ -331,6 +338,7 @@ def command_capture(args: argparse.Namespace) -> int:
         capture_screenshot=not args.skip_screenshot,
         viewport_width=args.viewport_width,
         viewport_height=args.viewport_height,
+        breakpoint_profiles=args.breakpoints,
         output_dir=args.output_dir,
         exact_requested=not args.not_exact,
         license_text=args.license_text,
@@ -376,6 +384,7 @@ def compact_rebuild_scaffold_summary(scaffold: dict[str, Any]) -> dict[str, Any]
             "policy_mode": nested_summary.get("policy_mode"),
             "frame_policy": nested_summary.get("frame_policy"),
             "viewport": nested_summary.get("viewport"),
+            "breakpoints": nested_summary.get("breakpoints"),
             "signals": nested_summary.get("signals"),
             "block_count": len(nested_summary.get("blocks", []) or []),
             "outline_count": len(nested_summary.get("outline", []) or []),
@@ -399,6 +408,7 @@ def command_reproduce(args: argparse.Namespace) -> int:
         capture_screenshot=not args.skip_screenshot,
         viewport_width=args.viewport_width,
         viewport_height=args.viewport_height,
+        breakpoint_profiles=args.breakpoints,
         output_dir=args.output_dir,
         exact_requested=not args.not_exact,
         license_text=args.license_text,
@@ -452,6 +462,7 @@ def command_clone(args: argparse.Namespace) -> int:
         capture_screenshot=not args.skip_screenshot,
         viewport_width=args.viewport_width,
         viewport_height=args.viewport_height,
+        breakpoint_profiles=args.breakpoints,
         output_dir=args.output_dir,
         exact_requested=not args.not_exact,
         license_text=args.license_text,
@@ -532,6 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
     capture_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
     capture_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    capture_parser.add_argument("--breakpoints", nargs="*", choices=["desktop", "tablet", "mobile"], default=[], help="Additional breakpoint profiles to capture alongside the primary viewport.")
     capture_parser.add_argument("--license-text", help="Optional license text for policy classification.")
     capture_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
     capture_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
@@ -551,6 +563,7 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
     reproduce_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
     reproduce_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    reproduce_parser.add_argument("--breakpoints", nargs="*", choices=["desktop", "tablet", "mobile"], default=[], help="Additional breakpoint profiles to capture alongside the primary viewport.")
     reproduce_parser.add_argument("--license-text", help="Optional license text for policy classification.")
     reproduce_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
     reproduce_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
@@ -570,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     clone_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
     clone_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
     clone_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    clone_parser.add_argument("--breakpoints", nargs="*", choices=["desktop", "tablet", "mobile"], default=[], help="Additional breakpoint profiles to capture alongside the primary viewport.")
     clone_parser.add_argument("--license-text", help="Optional license text for policy classification.")
     clone_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
     clone_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")

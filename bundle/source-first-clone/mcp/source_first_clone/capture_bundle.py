@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .acquisition import discover_embed_candidates, inspect_reference, trace_runtime_sources
-from .constants import CAPTURE_SCHEMA_VERSION
+from .constants import BREAKPOINT_PROFILES, CAPTURE_SCHEMA_VERSION
 from .policy import classify_clone_mode
 
 
@@ -25,6 +25,7 @@ def capture_reference_bundle(
     capture_screenshot: bool = False,
     viewport_width: int = 1440,
     viewport_height: int = 1200,
+    breakpoint_profiles: list[str] | None = None,
     output_dir: str | None = None,
     exact_requested: bool = True,
     license_text: str | None = None,
@@ -39,6 +40,122 @@ def capture_reference_bundle(
         source_signals=source_signals,
     )
     runtime_output_dir = Path(output_dir).expanduser().resolve() if output_dir else None
+    breakpoint_requests = _resolve_breakpoint_requests(
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        breakpoint_profiles=breakpoint_profiles,
+    )
+
+    bundle_payload = _build_capture_bundle(
+        url=url,
+        static=static,
+        policy=policy,
+        wait_seconds=wait_seconds,
+        include_runtime_trace=include_runtime_trace,
+        user_data_dir=user_data_dir,
+        storage_state_path=storage_state_path,
+        storage_state_output_path=storage_state_output_path,
+        capture_html=capture_html,
+        capture_screenshot=capture_screenshot,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        runtime_output_dir=runtime_output_dir,
+        breakpoint_name="primary",
+    )
+
+    if breakpoint_requests:
+        variant_summaries: list[dict[str, Any]] = []
+        for request in breakpoint_requests:
+            variant_output_dir = runtime_output_dir / "breakpoints" / request["name"] if runtime_output_dir else None
+            variant_bundle = _build_capture_bundle(
+                url=url,
+                static=static,
+                policy=policy,
+                wait_seconds=wait_seconds,
+                include_runtime_trace=include_runtime_trace,
+                user_data_dir=user_data_dir,
+                storage_state_path=storage_state_path,
+                storage_state_output_path=None,
+                capture_html=capture_html,
+                capture_screenshot=capture_screenshot,
+                viewport_width=request["width"],
+                viewport_height=request["height"],
+                runtime_output_dir=variant_output_dir,
+                breakpoint_name=request["name"],
+            )
+            if variant_output_dir:
+                variant_persisted = persist_capture_bundle(variant_output_dir, variant_bundle)
+                variant_bundle["bundle"]["persisted"] = variant_persisted
+            variant_summaries.append(_summarize_breakpoint_variant(request["name"], variant_bundle))
+
+        fully_captured = all(summary.get("available") for summary in variant_summaries)
+        bundle_payload["breakpoints"] = {
+            "requested_profiles": [request["name"] for request in breakpoint_requests],
+            "primary": {
+                "name": "primary",
+                "width": viewport_width,
+                "height": viewport_height,
+            },
+            "captured_count": sum(1 for summary in variant_summaries if summary.get("available")),
+            "variants": variant_summaries,
+        }
+        bundle_payload["bundle"]["artifacts"]["breakpoint_variants"] = fully_captured
+        bundle_payload["bundle"]["captured_artifacts"]["breakpoints"] = {
+            "available": bool(variant_summaries),
+            "count": len(variant_summaries),
+            "captured_count": sum(1 for summary in variant_summaries if summary.get("available")),
+            "variants": variant_summaries,
+        }
+        if not fully_captured and "breakpoint viewport set" not in bundle_payload["bundle"]["missing_artifacts"]:
+            bundle_payload["bundle"]["missing_artifacts"].append("breakpoint viewport set")
+
+    if runtime_output_dir:
+        persisted = persist_capture_bundle(runtime_output_dir, bundle_payload)
+        bundle_payload["bundle"]["persisted"] = persisted
+
+    return bundle_payload
+
+
+def _resolve_breakpoint_requests(
+    viewport_width: int,
+    viewport_height: int,
+    breakpoint_profiles: list[str] | None,
+) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    seen_sizes = {(int(viewport_width), int(viewport_height))}
+    for raw_profile in breakpoint_profiles or []:
+        profile_name = str(raw_profile or "").strip().lower()
+        profile = BREAKPOINT_PROFILES.get(profile_name)
+        if not profile or profile_name in seen_names:
+            continue
+        width = int(profile["width"])
+        height = int(profile["height"])
+        if (width, height) in seen_sizes:
+            continue
+        requests.append({"name": profile_name, "width": width, "height": height})
+        seen_names.add(profile_name)
+        seen_sizes.add((width, height))
+    return requests
+
+
+def _build_capture_bundle(
+    *,
+    url: str,
+    static: dict[str, Any],
+    policy: dict[str, Any],
+    wait_seconds: int,
+    include_runtime_trace: bool,
+    user_data_dir: str | None,
+    storage_state_path: str | None,
+    storage_state_output_path: str | None,
+    capture_html: bool,
+    capture_screenshot: bool,
+    viewport_width: int,
+    viewport_height: int,
+    runtime_output_dir: Path | None,
+    breakpoint_name: str,
+) -> dict[str, Any]:
     derived_storage_state_output_path = storage_state_output_path
     if runtime_output_dir and not derived_storage_state_output_path:
         derived_storage_state_output_path = str(runtime_output_dir / "session" / "storage-state.json")
@@ -52,6 +169,7 @@ def capture_reference_bundle(
         "viewport_width": viewport_width,
         "viewport_height": viewport_height,
         "output_dir": str(runtime_output_dir) if runtime_output_dir else None,
+        "breakpoint_name": breakpoint_name,
     }
     runtime = (
         trace_runtime_sources(
@@ -109,7 +227,7 @@ def capture_reference_bundle(
     if runtime_session.get("storageStateExported"):
         gaps = [gap for gap in gaps if gap != "exported storage state"]
 
-    bundle_payload = {
+    return {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "url": url,
         "session_request": runtime_request,
@@ -150,11 +268,28 @@ def capture_reference_bundle(
         "note": "This is a scaffolded capture bundle. It intentionally does not claim full DOM/CSS fidelity yet, even when Playwright session capture is available.",
     }
 
-    if runtime_output_dir:
-        persisted = persist_capture_bundle(runtime_output_dir, bundle_payload)
-        bundle_payload["bundle"]["persisted"] = persisted
 
-    return bundle_payload
+def _summarize_breakpoint_variant(name: str, bundle_payload: dict[str, Any]) -> dict[str, Any]:
+    runtime = bundle_payload.get("runtime", {}) if isinstance(bundle_payload, dict) else {}
+    session_request = bundle_payload.get("session_request", {}) if isinstance(bundle_payload, dict) else {}
+    bundle = bundle_payload.get("bundle", {}) if isinstance(bundle_payload, dict) else {}
+    persisted = bundle.get("persisted", {}) if isinstance(bundle, dict) else {}
+    persisted_files = persisted.get("files", {}) if isinstance(persisted, dict) else {}
+    static = bundle_payload.get("static", {}) if isinstance(bundle_payload, dict) else {}
+    return {
+        "name": name,
+        "available": bool(runtime.get("available")),
+        "viewport": {
+            "width": session_request.get("viewport_width"),
+            "height": session_request.get("viewport_height"),
+        },
+        "title": runtime.get("title") or static.get("title"),
+        "final_url": runtime.get("finalUrl") or static.get("final_url"),
+        "artifacts": bundle.get("artifacts"),
+        "persisted_root": persisted.get("root"),
+        "capture_manifest": persisted_files.get("capture_manifest"),
+        "screenshot": persisted_files.get("screenshot"),
+    }
 
 
 def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> dict[str, Any]:

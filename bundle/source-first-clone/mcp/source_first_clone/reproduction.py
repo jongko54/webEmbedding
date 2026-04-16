@@ -216,6 +216,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
     interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
+    breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
 
     prompt_lines = [
         "Rebuild this reference as faithfully as possible using the captured structure and styling summary.",
@@ -227,6 +228,18 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
         prompt_lines.append(f"Page title: {static['title']}")
     if meta.get("description"):
         prompt_lines.append(f"Description: {meta['description']}")
+    if isinstance(breakpoint_summary, dict) and breakpoint_summary.get("variants"):
+        prompt_lines.append("Breakpoint coverage:")
+        primary = breakpoint_summary.get("primary", {})
+        if isinstance(primary, dict):
+            prompt_lines.append(f"- primary {primary.get('width')}x{primary.get('height')}")
+        for variant in breakpoint_summary.get("variants", [])[:6]:
+            if not isinstance(variant, dict):
+                continue
+            viewport = variant.get("viewport", {}) if isinstance(variant.get("viewport"), dict) else {}
+            prompt_lines.append(
+                f"- {variant.get('name')} {viewport.get('width')}x{viewport.get('height')} available={variant.get('available')}"
+            )
 
     dom_texts: list[str] = []
     if dom_capture.get("available"):

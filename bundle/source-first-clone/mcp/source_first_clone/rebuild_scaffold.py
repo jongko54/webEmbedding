@@ -561,9 +561,10 @@ def _renderer_confidence(summary: dict[str, Any]) -> str:
 def _remaining_gaps(summary: dict[str, Any]) -> list[str]:
     gaps = [
         "Exact source reuse was unavailable, so this renderer is still bounded by capture artifacts.",
-        "Only a single viewport screenshot was captured, so breakpoint parity is not yet proven.",
     ]
     signals = summary.get("signals", {}) if isinstance(summary, dict) else {}
+    if not signals.get("breakpoint_variants_available"):
+        gaps.append("Only a single viewport screenshot was captured, so breakpoint parity is not yet proven.")
     if not signals.get("dom_available"):
         gaps.append("DOM snapshot coverage is incomplete.")
     if not signals.get("styles_available"):
@@ -1237,6 +1238,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
 
     frame_policy = static.get("frame_policy", {}) if isinstance(static.get("frame_policy", {}), dict) else {}
     meta = static.get("meta", {}) if isinstance(static.get("meta", {}), dict) else {}
+    breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
+    breakpoint_variants = breakpoint_summary.get("variants", []) if isinstance(breakpoint_summary, dict) else []
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
@@ -1257,6 +1260,12 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "assets_available": bool(assets_capture.get("available")),
             "interactions_available": bool(interactions_capture.get("available")),
             "runtime_available": bool(runtime.get("available")),
+            "breakpoint_variants_available": bool(breakpoint_variants),
+        },
+        "breakpoints": {
+            "requested_profiles": breakpoint_summary.get("requested_profiles") if isinstance(breakpoint_summary, dict) else [],
+            "captured_count": breakpoint_summary.get("captured_count") if isinstance(breakpoint_summary, dict) else 0,
+            "variant_count": len(breakpoint_variants) if isinstance(breakpoint_variants, list) else 0,
         },
         "outline": outline[:12],
         "blocks": blocks,
