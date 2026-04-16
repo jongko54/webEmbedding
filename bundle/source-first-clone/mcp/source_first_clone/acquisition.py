@@ -452,6 +452,163 @@ function safeReplayValue(candidate) {
   return "web embedding";
 }
 
+function normalizeText(value, maxLength = 160) {
+  if (!value) {
+    return null;
+  }
+  const normalized = String(value).replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function resolveLabelFromReferences(element) {
+  const labelledBy = String(element.getAttribute("aria-labelledby") || "")
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const parts = [];
+  for (const id of labelledBy) {
+    const labelNode = document.getElementById(id);
+    if (labelNode) {
+      const text = normalizeText(labelNode.innerText || labelNode.textContent || "", 80);
+      if (text) {
+        parts.push(text);
+      }
+    }
+  }
+  return parts.length ? parts.join(" ").trim() : null;
+}
+
+function resolveAssociatedLabel(element) {
+  if (!element || !element.tagName) {
+    return null;
+  }
+  const id = element.getAttribute("id");
+  if (id) {
+    const directLabels = Array.from(document.querySelectorAll(`label[for="${CSS.escape(id)}"]`))
+      .map((node) => normalizeText(node.innerText || node.textContent || "", 80))
+      .filter(Boolean);
+    if (directLabels.length) {
+      return directLabels.join(" ").trim();
+    }
+  }
+  const wrappingLabel = element.closest("label");
+  if (wrappingLabel) {
+    return normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 80);
+  }
+  return null;
+}
+
+function getInteractionKind(node) {
+  if (!node || !node.tagName) {
+    return "unknown";
+  }
+  const tag = node.tagName.toLowerCase();
+  const role = String(node.getAttribute("role") || "").toLowerCase();
+  const type = String(node.getAttribute("type") || "").toLowerCase();
+  if (node.isContentEditable || role === "textbox" || role === "searchbox") return "text-entry";
+  if (tag === "input" && ["text", "search", "url", "tel", "email", "password"].includes(type)) return "text-entry";
+  if (tag === "textarea") return "text-entry";
+  if (tag === "select" || role === "combobox") return "select";
+  if (tag === "summary" || role === "button" || role === "menuitem" || role === "menuitemcheckbox" || role === "menuitemradio" || role === "switch") return "toggle";
+  if (role === "tab") return "tab";
+  if (role === "checkbox" || role === "radio" || type === "checkbox" || type === "radio") return "checkable";
+  if (role === "link" || tag === "a") return "link";
+  if (role === "slider" || type === "range") return "slider";
+  if (node.hasAttribute("aria-haspopup")) return "disclosure";
+  return "action";
+}
+
+function isFocusableElement(node, style) {
+  if (!node || !node.tagName) {
+    return false;
+  }
+  const tag = node.tagName.toLowerCase();
+  const role = String(node.getAttribute("role") || "").toLowerCase();
+  const type = String(node.getAttribute("type") || "").toLowerCase();
+  if (node.isContentEditable) {
+    return true;
+  }
+  if (["button", "select", "textarea", "summary"].includes(tag)) {
+    return true;
+  }
+  if (tag === "input" && type !== "hidden") {
+    return true;
+  }
+  if (tag === "a" && node.hasAttribute("href")) {
+    return true;
+  }
+  if (role && ["button", "link", "textbox", "searchbox", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio", "combobox", "slider", "option", "treeitem"].includes(role)) {
+    return true;
+  }
+  const tabIndex = node.tabIndex;
+  if (typeof tabIndex === "number" && tabIndex >= 0) {
+    return true;
+  }
+  if (style && style.cursor === "pointer") {
+    return true;
+  }
+  return false;
+}
+
+function getInteractionLabel(node) {
+  if (!node || !node.tagName) {
+    return null;
+  }
+  return (
+    normalizeText(node.getAttribute("aria-label"), 80) ||
+    resolveLabelFromReferences(node) ||
+    resolveAssociatedLabel(node) ||
+    normalizeText(node.getAttribute("title"), 80) ||
+    normalizeText(node.getAttribute("alt"), 80) ||
+    normalizeText(node.getAttribute("placeholder"), 80) ||
+    normalizeText(node.innerText || node.textContent || "", 80) ||
+    normalizeText("value" in node ? node.value : "", 80) ||
+    normalizeText(node.tagName.toLowerCase(), 80)
+  );
+}
+
+function describeInteractionTarget(node, style) {
+  if (!node || !node.tagName) {
+    return null;
+  }
+  const rect = node.getBoundingClientRect();
+  const kind = getInteractionKind(node);
+  const label = getInteractionLabel(node);
+  return {
+    tag: node.tagName.toLowerCase(),
+    role: node.getAttribute("role"),
+    kind,
+    label,
+    id: node.id || null,
+    className: normalizeClassName(node.className),
+    name: node.getAttribute("name"),
+    title: node.getAttribute("title"),
+    placeholder: node.getAttribute("placeholder"),
+    type: node.getAttribute("type"),
+    inputMode: node.getAttribute("inputmode"),
+    autocomplete: node.getAttribute("autocomplete"),
+    ariaLabel: node.getAttribute("aria-label"),
+    ariaDescription: node.getAttribute("aria-description"),
+    ariaCurrent: node.getAttribute("aria-current"),
+    ariaControls: node.getAttribute("aria-controls"),
+    ariaExpanded: node.getAttribute("aria-expanded"),
+    ariaSelected: node.getAttribute("aria-selected"),
+    ariaPressed: node.getAttribute("aria-pressed"),
+    ariaHasPopup: node.getAttribute("aria-haspopup"),
+    ariaRoleDescription: node.getAttribute("aria-roledescription"),
+    ariaLive: node.getAttribute("aria-live"),
+    focusable: isFocusableElement(node, style),
+    inputCapable: kind === "text-entry",
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
+  };
+}
+
 function normalizeClassName(value) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, 120) || null;
 }
@@ -483,8 +640,16 @@ function captureNodeSignature(node) {
     ariaExpanded: node.getAttribute("aria-expanded"),
     ariaSelected: node.getAttribute("aria-selected"),
     ariaModal: node.getAttribute("aria-modal"),
+    ariaHasPopup: node.getAttribute("aria-haspopup"),
     ariaRoleDescription: node.getAttribute("aria-roledescription"),
     ariaLive: node.getAttribute("aria-live"),
+    title: node.getAttribute("title"),
+    placeholder: node.getAttribute("placeholder"),
+    name: node.getAttribute("name"),
+    type: node.getAttribute("type"),
+    inputMode: node.getAttribute("inputmode"),
+    autocomplete: node.getAttribute("autocomplete"),
+    label: getInteractionLabel(node),
     open: node.open === true,
     hidden: Boolean(node.hidden),
     disabled: Boolean(node.disabled),
@@ -803,11 +968,13 @@ function captureInteractionSignals(element, style) {
 function captureSemanticState(element, style) {
   const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
   const semanticState = {
-    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    text: normalizeText(element.innerText || element.textContent || "", 120),
+    labelText: getInteractionLabel(element),
     ariaLabel: element.getAttribute("aria-label"),
     ariaDescription: element.getAttribute("aria-description"),
     ariaRoleDescription: element.getAttribute("aria-roledescription"),
     ariaLive: element.getAttribute("aria-live"),
+    ariaHasPopup: element.getAttribute("aria-haspopup"),
     ariaExpanded: element.getAttribute("aria-expanded"),
     ariaPressed: element.getAttribute("aria-pressed"),
     ariaSelected: element.getAttribute("aria-selected"),
@@ -821,6 +988,9 @@ function captureSemanticState(element, style) {
     rel: element.getAttribute("rel"),
     name: element.getAttribute("name"),
     placeholder: element.getAttribute("placeholder"),
+    title: element.getAttribute("title"),
+    autocomplete: element.getAttribute("autocomplete"),
+    inputMode: element.getAttribute("inputmode"),
     value: "value" in element ? String(element.value || "") : null,
     checked: "checked" in element ? Boolean(element.checked) : null,
     selected: "selected" in element ? Boolean(element.selected) : null,
@@ -833,6 +1003,8 @@ function captureSemanticState(element, style) {
     datasetSample: Object.fromEntries(datasetEntries),
     activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
     activeElementMatches: document.activeElement === element,
+    focusable: isFocusableElement(element, style),
+    interactiveKind: getInteractionKind(element),
     scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
     interactionSignals: captureInteractionSignals(element, style),
   };
@@ -864,6 +1036,9 @@ function captureToggleState(selector) {
       id,
       tag: target.tagName.toLowerCase(),
       role: target.getAttribute("role"),
+      kind: getInteractionKind(target),
+      label: getInteractionLabel(target),
+      focusable: isFocusableElement(target, targetStyle),
       open: target.open === true,
       hidden: Boolean(target.hidden),
       ariaHidden: target.getAttribute("aria-hidden"),
@@ -884,6 +1059,9 @@ function captureToggleState(selector) {
     available: true,
     selector,
     inForm: Boolean(element.closest("form")),
+    interactionKind: getInteractionKind(element),
+    labelText: getInteractionLabel(element),
+    targetSummary: describeInteractionTarget(element, style),
     controlledTargets,
     semanticState: captureSemanticState(element, style),
   };
@@ -916,10 +1094,10 @@ function captureControlledTargetState(element) {
       rect: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
       },
-      text: (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+      text: normalizeText(target.innerText || target.textContent || "", 120),
     };
   });
 }
@@ -934,6 +1112,9 @@ function captureInteractionState(selector) {
     available: true,
     selector,
     inForm: Boolean(element.closest("form")),
+    interactionKind: getInteractionKind(element),
+    labelText: getInteractionLabel(element),
+    targetSummary: describeInteractionTarget(element, style),
     controlledTargets: captureControlledTargetState(element),
     semanticState: captureSemanticState(element, style),
     baseStyles: styleSnapshotFromComputed(style),
@@ -951,12 +1132,18 @@ function summarizeInteractionState(state) {
     tag: pick("tag") ?? state.tag ?? null,
     role: pick("role") ?? state.role ?? null,
     text: pick("text") ?? state.text ?? null,
+    labelText: pick("labelText") ?? state.labelText ?? null,
     href: pick("href") ?? state.href ?? null,
     type: pick("type") ?? state.type ?? null,
     value: pick("value"),
+    title: pick("title") ?? state.title ?? null,
+    placeholder: pick("placeholder") ?? state.placeholder ?? null,
+    autocomplete: pick("autocomplete") ?? state.autocomplete ?? null,
+    inputMode: pick("inputMode") ?? state.inputMode ?? null,
     ariaExpanded: pick("ariaExpanded"),
     ariaPressed: pick("ariaPressed"),
     ariaSelected: pick("ariaSelected"),
+    ariaHasPopup: pick("ariaHasPopup"),
     open: pick("open"),
     checked: pick("checked"),
     selected: pick("selected"),
@@ -964,6 +1151,8 @@ function summarizeInteractionState(state) {
     hidden: pick("hidden"),
     scrollY: pick("scrollY"),
     activeElementTag: pick("activeElementTag") ?? state.activeElementTag ?? null,
+    kind: pick("interactiveKind") ?? state.interactionKind ?? null,
+    focusable: pick("focusable") ?? state.focusable ?? null,
     signals: signals
       ? {
           scroll: signals.scroll && (signals.scroll.element || signals.scroll.ancestor || signals.scroll.viewport.scrollableY || signals.scroll.viewport.scrollableX)
@@ -996,6 +1185,7 @@ function diffInteractionStates(before, after) {
     "ariaExpanded",
     "ariaPressed",
     "ariaSelected",
+    "ariaHasPopup",
     "contentEditable",
     "tabIndex",
     "open",
@@ -1003,6 +1193,13 @@ function diffInteractionStates(before, after) {
     "disabled",
     "scrollY",
     "activeElementTag",
+    "labelText",
+    "title",
+    "placeholder",
+    "autocomplete",
+    "inputMode",
+    "interactiveKind",
+    "focusable",
   ];
   const diff = {};
   for (const key of keys) {
@@ -1056,10 +1253,13 @@ function isSafeToggleCandidate(candidate) {
   if (candidate.ariaExpanded !== null || candidate.ariaControls) {
     return true;
   }
-  if (role === "tab" || role === "menuitem") {
+  if (role === "tab" || role === "menuitem" || role === "menuitemcheckbox" || role === "menuitemradio" || role === "switch" || role === "combobox" || role === "checkbox" || role === "radio" || role === "option" || role === "treeitem") {
     return true;
   }
   if (tag === "button" && type === "button") {
+    return true;
+  }
+  if (tag === "input" && ["checkbox", "radio"].includes(type)) {
     return true;
   }
   return false;
@@ -1393,6 +1593,78 @@ function isSafeToggleCandidate(candidate) {
       initialScrollX: Math.round(window.scrollX || window.pageXOffset || 0),
     }));
     const interactiveCandidates = await page.evaluate(() => {
+      const normalizeText = (value, maxLength = 160) => {
+        if (!value) return null;
+        const normalized = String(value).replace(/\s+/g, " ").trim();
+        return normalized ? normalized.slice(0, maxLength) : null;
+      };
+      const normalizeClassName = (value) => String(value || "").replace(/\s+/g, " ").trim().slice(0, 120) || null;
+      const resolveLabelFromReferences = (element) => {
+        const labelledBy = String(element.getAttribute("aria-labelledby") || "")
+          .split(/\s+/)
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .slice(0, 4);
+        const parts = [];
+        for (const id of labelledBy) {
+          const labelNode = document.getElementById(id);
+          if (labelNode) {
+            const text = normalizeText(labelNode.innerText || labelNode.textContent || "", 80);
+            if (text) parts.push(text);
+          }
+        }
+        return parts.length ? parts.join(" ").trim() : null;
+      };
+      const resolveAssociatedLabel = (element) => {
+        const id = element.getAttribute("id");
+        if (id) {
+          const directLabels = Array.from(document.querySelectorAll(`label[for="${CSS.escape(id)}"]`))
+            .map((node) => normalizeText(node.innerText || node.textContent || "", 80))
+            .filter(Boolean);
+          if (directLabels.length) return directLabels.join(" ").trim();
+        }
+        const wrappingLabel = element.closest("label");
+        return wrappingLabel ? normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 80) : null;
+      };
+      const getInteractionLabel = (element) => (
+        normalizeText(element.getAttribute("aria-label"), 80) ||
+        resolveLabelFromReferences(element) ||
+        resolveAssociatedLabel(element) ||
+        normalizeText(element.getAttribute("title"), 80) ||
+        normalizeText(element.getAttribute("alt"), 80) ||
+        normalizeText(element.getAttribute("placeholder"), 80) ||
+        normalizeText(element.innerText || element.textContent || "", 80) ||
+        normalizeText("value" in element ? element.value : "", 80) ||
+        normalizeText(element.tagName.toLowerCase(), 80)
+      );
+      const getInteractionKind = (element) => {
+        const tag = element.tagName.toLowerCase();
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const type = String(element.getAttribute("type") || "").toLowerCase();
+        if (element.isContentEditable || role === "textbox" || role === "searchbox") return "text-entry";
+        if (tag === "input" && ["text", "search", "url", "tel", "email", "password"].includes(type)) return "text-entry";
+        if (tag === "textarea") return "text-entry";
+        if (tag === "select" || role === "combobox") return "select";
+        if (tag === "summary" || ["button", "menuitem", "menuitemcheckbox", "menuitemradio", "switch"].includes(role)) return "toggle";
+        if (role === "tab") return "tab";
+        if (["checkbox", "radio"].includes(role) || ["checkbox", "radio"].includes(type)) return "checkable";
+        if (role === "link" || tag === "a") return "link";
+        if (role === "slider" || type === "range") return "slider";
+        if (element.hasAttribute("aria-haspopup")) return "disclosure";
+        return "action";
+      };
+      const isFocusableElement = (element, style) => {
+        const tag = element.tagName.toLowerCase();
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const type = String(element.getAttribute("type") || "").toLowerCase();
+        if (element.isContentEditable) return true;
+        if (["button", "select", "textarea", "summary"].includes(tag)) return true;
+        if (tag === "input" && type !== "hidden") return true;
+        if (tag === "a" && element.hasAttribute("href")) return true;
+        if (role && ["button", "link", "textbox", "searchbox", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio", "combobox", "slider", "option", "treeitem"].includes(role)) return true;
+        if (typeof element.tabIndex === "number" && element.tabIndex >= 0) return true;
+        return Boolean(style && style.cursor === "pointer");
+      };
       const styleSnapshotFromComputed = (style) => ({
         display: style.display,
         position: style.position,
@@ -1410,6 +1682,41 @@ function isSafeToggleCandidate(candidate) {
         outlineOffset: style.outlineOffset,
         cursor: style.cursor,
       });
+      const describeInteractionTarget = (element, style) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          role: element.getAttribute("role"),
+          kind: getInteractionKind(element),
+          label: getInteractionLabel(element),
+          id: element.id || null,
+          className: normalizeClassName(element.className),
+          name: element.getAttribute("name"),
+          title: element.getAttribute("title"),
+          placeholder: element.getAttribute("placeholder"),
+          type: element.getAttribute("type"),
+          inputMode: element.getAttribute("inputmode"),
+          autocomplete: element.getAttribute("autocomplete"),
+          ariaLabel: element.getAttribute("aria-label"),
+          ariaDescription: element.getAttribute("aria-description"),
+          ariaCurrent: element.getAttribute("aria-current"),
+          ariaControls: element.getAttribute("aria-controls"),
+          ariaExpanded: element.getAttribute("aria-expanded"),
+          ariaSelected: element.getAttribute("aria-selected"),
+          ariaPressed: element.getAttribute("aria-pressed"),
+          ariaHasPopup: element.getAttribute("aria-haspopup"),
+          ariaRoleDescription: element.getAttribute("aria-roledescription"),
+          ariaLive: element.getAttribute("aria-live"),
+          focusable: isFocusableElement(element, style),
+          inputCapable: getInteractionKind(element) === "text-entry",
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        };
+      };
       const selector = [
         'a[href]',
         'button',
@@ -1421,7 +1728,21 @@ function isSafeToggleCandidate(candidate) {
         '[role="link"]',
         '[role="tab"]',
         '[role="menuitem"]',
+        '[role="menuitemcheckbox"]',
+        '[role="menuitemradio"]',
+        '[role="switch"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="combobox"]',
+        '[role="option"]',
+        '[role="treeitem"]',
+        '[role="textbox"]',
+        '[role="searchbox"]',
+        '[role="slider"]',
         '[onclick]',
+        '[aria-haspopup]',
+        '[aria-expanded]',
+        '[contenteditable="true"]',
         '[tabindex]:not([tabindex="-1"])'
       ].join(',');
       const nodes = Array.from(document.querySelectorAll(selector))
@@ -1442,6 +1763,7 @@ function isSafeToggleCandidate(candidate) {
           tag: element.tagName.toLowerCase(),
           role: element.getAttribute('role'),
           text: (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120) || null,
+          labelText: getInteractionLabel(element),
           href: element.getAttribute('href'),
           type: element.getAttribute('type'),
           ariaLabel: element.getAttribute('aria-label'),
@@ -1451,6 +1773,7 @@ function isSafeToggleCandidate(candidate) {
           ariaControls: element.getAttribute('aria-controls'),
           inForm: Boolean(element.closest('form')),
           inputCapable: (
+            element.isContentEditable ||
             element.tagName.toLowerCase() === 'textarea' ||
             (
               element.tagName.toLowerCase() === 'input' &&
@@ -1461,9 +1784,11 @@ function isSafeToggleCandidate(candidate) {
             !element.getAttribute('href') &&
             (
               ['button', 'summary'].includes(element.tagName.toLowerCase()) ||
-              ['button', 'tab', 'menuitem'].includes((element.getAttribute('role') || '').toLowerCase()) ||
+              ['button', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'switch', 'combobox', 'checkbox', 'radio', 'option', 'treeitem'].includes((element.getAttribute('role') || '').toLowerCase()) ||
+              ['checkbox', 'radio', 'button'].includes((element.getAttribute('type') || '').toLowerCase()) ||
               Boolean(element.getAttribute('aria-controls')) ||
-              element.hasAttribute('aria-expanded')
+              element.hasAttribute('aria-expanded') ||
+              element.hasAttribute('aria-haspopup')
             )
           ),
           rect: {
@@ -1473,6 +1798,10 @@ function isSafeToggleCandidate(candidate) {
             height: Math.round(rect.height),
           },
           baseStyles: styleSnapshotFromComputed(style),
+          kind: getInteractionKind(element),
+          label: getInteractionLabel(element),
+          focusable: isFocusableElement(element, style),
+          targetSummary: describeInteractionTarget(element, style),
         };
       });
     });
@@ -1516,6 +1845,7 @@ function isSafeToggleCandidate(candidate) {
         targetId: null,
         scrollY,
         label: scrollY === 0 ? "scroll top" : `scroll ${scrollY}px`,
+        interactionKind: "scroll",
       });
       try {
         await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), scrollY);
@@ -1614,23 +1944,13 @@ function isSafeToggleCandidate(candidate) {
         focusError = error.message;
       }
 
-      interactionStates.push({
-        ...candidate,
-        hoverStyles,
-        hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
-        hoverState,
-        hoverError,
-        focusStyles,
-        focusDelta: diffStyleSnapshots(candidate.baseStyles, focusStyles),
-        focusState,
-        focusError,
-      });
       const hoverStep = pushTraceStep({
         kind: "hover",
         safeToExecute: true,
         targetId: candidate.id,
         selector: candidate.selector,
-        label: candidate.text || candidate.ariaLabel || candidate.tag,
+        label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+        interactionKind: "hover",
       });
       pushExecution({
         stepId: hoverStep.id,
@@ -1645,7 +1965,8 @@ function isSafeToggleCandidate(candidate) {
         safeToExecute: true,
         targetId: candidate.id,
         selector: candidate.selector,
-        label: candidate.text || candidate.ariaLabel || candidate.tag,
+        label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+        interactionKind: "focus",
       });
       pushExecution({
         stepId: focusStep.id,
@@ -1665,8 +1986,9 @@ function isSafeToggleCandidate(candidate) {
           safeToExecute: true,
           targetId: candidate.id,
           selector: candidate.selector,
-          label: candidate.text || candidate.ariaLabel || candidate.tag,
+          label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
           value: typeValue,
+          interactionKind: "type",
         });
         try {
           beforeTypeState = await page.evaluate(captureInteractionState, candidate.selector);
@@ -1704,7 +2026,8 @@ function isSafeToggleCandidate(candidate) {
           safeToExecute: safeToggleLike,
           targetId: candidate.id,
           selector: candidate.selector,
-          label: candidate.text || candidate.ariaLabel || candidate.tag,
+          label: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
+          interactionKind: safeToggleLike ? "click-toggle" : "click-planned",
         });
         if (!safeToggleLike) {
           pushExecution({
@@ -1774,6 +2097,7 @@ function isSafeToggleCandidate(candidate) {
       }
       interactionStates.push({
         ...candidate,
+        interactionLabel: candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag,
         hoverStyles,
         hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
         hoverState,
@@ -1785,6 +2109,11 @@ function isSafeToggleCandidate(candidate) {
         clickState,
       });
     }
+    await page.evaluate(() => {
+      document
+        .querySelectorAll('[data-web-embedding-interaction-id]')
+        .forEach((element) => element.removeAttribute('data-web-embedding-interaction-id'));
+    });
     await page.mouse.move(1, 1);
     const networkManifest = {
       requests: uniqueByUrl(requestEntries).slice(0, 400),
