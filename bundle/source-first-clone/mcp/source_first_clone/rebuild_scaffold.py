@@ -507,12 +507,90 @@ def _interaction_label(entry: dict[str, Any], index: int) -> str:
     return f"{tag.title()} interaction {index + 1}"
 
 
+def _viewport_side(summary: dict[str, Any], key: str, fallback: int) -> int:
+    viewport = summary.get("viewport", {}) if isinstance(summary, dict) else {}
+    try:
+        value = int(viewport.get(key) or fallback)
+    except (TypeError, ValueError):
+        value = fallback
+    return max(value, 1)
+
+
+def _block_rect_value(block: dict[str, Any], key: str) -> int:
+    rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
+    try:
+        return int(rect.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _infer_section_role(
+    block: dict[str, Any],
+    viewport_width: int,
+    viewport_height: int,
+    interaction_labels: set[str],
+) -> str:
+    tag = str(block.get("tag") or "div").lower()
+    text = _clean_text(block.get("text"), 120)
+    width = _block_rect_value(block, "width")
+    height = _block_rect_value(block, "height")
+    y = _block_rect_value(block, "y")
+
+    if tag in {"header", "nav"}:
+        return "masthead"
+    if tag in {"a", "button", "input", "textarea"} or text.lower() in interaction_labels:
+        return "action"
+    if height >= int(viewport_height * 0.18) or width >= int(viewport_width * 0.76):
+        return "hero"
+    if y <= max(120, viewport_height // 8) and width >= int(viewport_width * 0.55):
+        return "masthead"
+    if width >= int(viewport_width * 0.5) and height <= max(140, viewport_height // 10):
+        return "band"
+    return "content"
+
+
+def _renderer_confidence(summary: dict[str, Any]) -> str:
+    signals = summary.get("signals", {}) if isinstance(summary, dict) else {}
+    if all(bool(signals.get(label)) for label in ("dom_available", "styles_available", "interactions_available")):
+        return "high"
+    if sum(1 for value in signals.values() if value) >= 3:
+        return "medium"
+    return "low"
+
+
+def _remaining_gaps(summary: dict[str, Any]) -> list[str]:
+    gaps = [
+        "Exact source reuse was unavailable, so this renderer is still bounded by capture artifacts.",
+        "Only a single viewport screenshot was captured, so breakpoint parity is not yet proven.",
+    ]
+    signals = summary.get("signals", {}) if isinstance(summary, dict) else {}
+    if not signals.get("dom_available"):
+        gaps.append("DOM snapshot coverage is incomplete.")
+    if not signals.get("styles_available"):
+        gaps.append("Computed style coverage is incomplete.")
+    if not signals.get("interactions_available"):
+        gaps.append("Interaction-state coverage is incomplete.")
+    return gaps[:4]
+
+
+def _generic_section_title(title: str) -> bool:
+    lowered = title.strip().lower()
+    return lowered.startswith("div block") or lowered.startswith("section ")
+
+
 def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     outline = summary.get("outline", []) if isinstance(summary, dict) else []
     interactions = (summary.get("interactions", {}) or {}).get("sample", [])
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    viewport_width = _viewport_side(summary, "width", 1440)
+    viewport_height = _viewport_side(summary, "height", 1200)
+    interaction_labels = {
+        _clean_text(entry.get("text"), 56).lower()
+        for entry in interactions
+        if isinstance(entry, dict) and _clean_text(entry.get("text"), 56)
+    }
 
     section_cards: list[dict[str, Any]] = []
     for index, block in enumerate(blocks[:8]):
@@ -530,9 +608,16 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "id": f"section-{index + 1}",
                 "title": _block_title(block, index),
                 "tag": str(block.get("tag") or "div"),
+                "role": _infer_section_role(block, viewport_width, viewport_height, interaction_labels),
                 "copy": _block_copy(block),
                 "meta": f"{rect.get('width', 0)} x {rect.get('height', 0)} px",
                 "details": detail_parts,
+                "rect": {
+                    "x": rect.get("x", 0),
+                    "y": rect.get("y", 0),
+                    "width": rect.get("width", 0),
+                    "height": rect.get("height", 0),
+                },
             }
         )
 
@@ -542,9 +627,11 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "id": "section-1",
                 "title": "Captured shell",
                 "tag": "div",
+                "role": "hero",
                 "copy": "No rich DOM/style data was available, so this scaffold keeps a neutral shell and leaves the exact rebuild to downstream implementation.",
                 "meta": "Fallback state",
                 "details": [],
+                "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
             }
         )
 
@@ -567,6 +654,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "tag": str(entry.get("tag") or "element"),
                 "href": entry.get("href"),
                 "states": states or ["interaction detected"],
+                "rect": entry.get("rect"),
             }
         )
 
@@ -609,6 +697,43 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         summary.get("description")
         or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
     )
+    hero_section = next((section for section in section_cards if section.get("role") == "hero"), section_cards[0])
+    hero_title = hero_section.get("title") or str(summary.get("title") or "Captured reference")
+    if _generic_section_title(str(hero_title)):
+        hero_title = str(summary.get("title") or "Captured reference")
+    hero_copy = hero_section.get("copy") or str(subtitle)
+    if hero_copy == "Captured layout block derived from the source page structure.":
+        hero_copy = str(subtitle)
+    masthead_links = [
+        {"label": card["label"], "href": card["href"]}
+        for card in interaction_cards
+        if card.get("href")
+    ][:4]
+    action_items = [
+        {"label": card["label"], "href": card["href"], "states": card["states"]}
+        for card in interaction_cards
+        if card.get("href")
+    ][:2]
+    body_sections = [
+        section
+        for section in section_cards
+        if section["id"] != hero_section["id"] and section.get("role") in {"content", "band"}
+    ]
+    if not body_sections:
+        body_sections = [
+            section
+            for section in section_cards
+            if section["id"] != hero_section["id"] and section.get("role") != "masthead"
+        ] or (section_cards[1:] or section_cards[:1])
+    rhythm = [
+        {
+            "id": section["id"],
+            "role": section.get("role"),
+            "size": section.get("meta"),
+            "y": (section.get("rect") or {}).get("y"),
+        }
+        for section in section_cards
+    ]
 
     return {
         "title": str(summary.get("title") or "Captured reference"),
@@ -628,8 +753,28 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "weights": typography.get("weights") or [],
         },
         "sections": section_cards,
+        "masthead": {
+            "brand": str(summary.get("title") or "Captured reference"),
+            "links": masthead_links,
+        },
+        "hero": {
+            "eyebrow": "Role-inferred reconstruction",
+            "title": hero_title,
+            "copy": hero_copy,
+            "meta": hero_section.get("meta"),
+            "details": hero_section.get("details") or [],
+            "actions": action_items,
+        },
+        "bodySections": body_sections,
         "interactions": interaction_cards,
         "outline": outline_cards,
+        "reconstruction": {
+            "version": "reconstruction.v1",
+            "strategy": "role-inferred-next-app",
+            "confidence": _renderer_confidence(summary),
+            "remainingGaps": _remaining_gaps(summary),
+            "layoutRhythm": rhythm,
+        },
         "note": str(summary.get("note") or ""),
     }
 
@@ -656,64 +801,115 @@ def _render_bounded_reference_page_tsx() -> str:
             "",
             "export function BoundedReferencePage({ data }: Props) {",
             "  return (",
-            '    <main className=\"bounded-shell\">',
-            '      <section className=\"bounded-hero bounded-panel\">',
-            '        <p className=\"bounded-eyebrow\">Bounded rebuild app scaffold</p>',
-            "        <h1>{data.title}</h1>",
-            '        <p className=\"bounded-lede\">{data.subtitle}</p>',
-            '        <div className=\"bounded-meta\">',
+            '    <main className="bounded-shell">',
+            '      <header className="bounded-masthead bounded-panel">',
+            '        <div className="bounded-brand-block">',
+            '          <p className="bounded-eyebrow">Captured reference</p>',
+            '          <strong className="bounded-brand">{data.masthead.brand}</strong>',
+            "        </div>",
+            '        <nav className="bounded-nav" aria-label="Captured navigation sample">',
+            "          {data.masthead.links.length ? (",
+            "            data.masthead.links.map((link) => (",
+            '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`}>',
+            "                {link.label}",
+            "              </a>",
+            "            ))",
+            "          ) : (",
+            '            <span className="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>',
+            "          )}",
+            "        </nav>",
+            "      </header>",
+            "",
+            '      <section className="bounded-hero bounded-panel">',
+            '        <p className="bounded-eyebrow">{data.hero.eyebrow}</p>',
+            "        <h1>{data.hero.title}</h1>",
+            '        <p className="bounded-lede">{data.hero.copy}</p>',
+            '        <div className="bounded-meta">',
             "          {data.metaBits.map((bit) => (",
-            '            <span className=\"bounded-chip\" key={bit}>',
+            '            <span className="bounded-chip" key={bit}>',
             "              {bit}",
             "            </span>",
             "          ))}",
             "        </div>",
+            '        <div className="bounded-hero-actions">',
+            '          <span className="bounded-chip bounded-chip--muted">{data.hero.meta}</span>',
+            "          {data.hero.details.slice(0, 3).map((detail) => (",
+            '            <span className="bounded-chip bounded-chip--muted" key={detail}>',
+            "              {detail}",
+            "            </span>",
+            "          ))}",
+            "          {data.hero.actions.map((action) => (",
+            '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`}>',
+            "              {action.label}",
+            "            </a>",
+            "          ))}",
+            "        </div>",
             "      </section>",
             "",
-            '      <section className=\"bounded-layout\">',
-            '        <div className=\"bounded-main\">',
-            '          <div className=\"bounded-section-grid\">',
-            "            {data.sections.map((section) => (",
-            '              <article className=\"bounded-card bounded-panel\" key={section.id}>',
-            '                <p className=\"bounded-kicker\">{section.tag}</p>',
+            '      <section className="bounded-layout">',
+            '        <div className="bounded-main">',
+            '          <section className="bounded-section-grid">',
+            "            {data.bodySections.map((section) => (",
+            '              <article className="bounded-card bounded-panel" data-role={section.role} key={section.id}>',
+            '                <div className="bounded-card-head">',
+            '                  <p className="bounded-kicker">{section.role}</p>',
+            '                  <span className="bounded-chip bounded-chip--muted">{section.tag}</span>',
+            "                </div>",
             "                <h2>{section.title}</h2>",
-            '                <p className=\"bounded-copy\">{section.copy}</p>',
-            '                <div className=\"bounded-meta bounded-meta--inline\">',
-            '                  <span className=\"bounded-chip\">{section.meta}</span>',
+            '                <p className="bounded-copy">{section.copy}</p>',
+            '                <div className="bounded-meta bounded-meta--inline">',
+            '                  <span className="bounded-chip">{section.meta}</span>',
             "                  {section.details.slice(0, 3).map((detail) => (",
-            '                    <span className=\"bounded-chip bounded-chip--muted\" key={detail}>',
+            '                    <span className="bounded-chip bounded-chip--muted" key={detail}>',
             "                      {detail}",
             "                    </span>",
             "                  ))}",
             "                </div>",
             "              </article>",
             "            ))}",
-            "          </div>",
+            "          </section>",
             "        </div>",
             "",
-            '        <aside className=\"bounded-rail\">',
-            '          <section className=\"bounded-panel bounded-stack\">',
-            '            <p className=\"bounded-kicker\">Signals</p>',
-            '            <ul className=\"bounded-list\">',
-            "              {data.signalBits.length ? (",
-            "                data.signalBits.map((signal) => <li key={signal}>{signal}</li>)",
-            "              ) : (",
-            "                <li>No extra runtime signals were captured.</li>",
-            "              )}",
+            '        <aside className="bounded-rail">',
+            '          <section className="bounded-panel bounded-stack">',
+            '            <p className="bounded-kicker">Renderer status</p>',
+            '            <div className="bounded-status-row">',
+            "              <strong>{data.reconstruction.strategy}</strong>",
+            '              <span className="bounded-chip">{data.reconstruction.confidence}</span>',
+            "            </div>",
+            '            <ul className="bounded-list">',
+            "              {data.reconstruction.remainingGaps.map((item) => (",
+            "                <li key={item}>{item}</li>",
+            "              ))}",
             "            </ul>",
             "          </section>",
             "",
-            '          <section className=\"bounded-panel bounded-stack\">',
-            '            <p className=\"bounded-kicker\">Interaction samples</p>',
-            '            <div className=\"bounded-stack\">',
+            '          <section className="bounded-panel bounded-stack">',
+            '            <p className="bounded-kicker">Signals</p>',
+            '            <div className="bounded-meta bounded-meta--inline">',
+            "              {data.signalBits.length ? (",
+            "                data.signalBits.map((signal) => (",
+            '                  <span className="bounded-chip bounded-chip--muted" key={signal}>',
+            "                    {signal}",
+            "                  </span>",
+            "                ))",
+            "              ) : (",
+            '                <span className="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>',
+            "              )}",
+            "            </div>",
+            "          </section>",
+            "",
+            '          <section className="bounded-panel bounded-stack">',
+            '            <p className="bounded-kicker">Interaction samples</p>',
+            '            <div className="bounded-stack">',
             "              {data.interactions.length ? (",
             "                data.interactions.map((entry) => (",
-            '                  <article className=\"bounded-mini-card\" key={entry.id}>',
+            '                  <article className="bounded-mini-card" key={entry.id}>',
             '                    <strong>{entry.label}</strong>',
             '                    <p>{entry.copy}</p>',
-            '                    <div className=\"bounded-meta bounded-meta--inline\">',
+            '                    <div className="bounded-meta bounded-meta--inline">',
             "                      {entry.states.map((state) => (",
-            '                        <span className=\"bounded-chip bounded-chip--muted\" key={state}>',
+            '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
             "                          {state}",
             "                        </span>",
             "                      ))}",
@@ -721,7 +917,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "                  </article>",
             "                ))",
             "              ) : (",
-            '                <article className=\"bounded-mini-card\">',
+            '                <article className="bounded-mini-card">',
             "                  <strong>No sampled interactions</strong>",
             "                  <p>Interaction data was not available in the capture bundle.</p>",
             "                </article>",
@@ -729,13 +925,14 @@ def _render_bounded_reference_page_tsx() -> str:
             "            </div>",
             "          </section>",
             "",
-            '          <section className=\"bounded-panel bounded-stack\">',
-            '            <p className=\"bounded-kicker\">DOM outline</p>',
-            '            <div className=\"bounded-stack bounded-stack--tight\">',
-            "              {data.outline.slice(0, 6).map((item) => (",
-            '                <article className=\"bounded-outline-item\" key={item.id}>',
-            '                  <strong>{item.label}</strong>',
-            '                  <p>{item.copy}</p>',
+            '          <section className="bounded-panel bounded-stack">',
+            '            <p className="bounded-kicker">Layout rhythm</p>',
+            '            <div className="bounded-stack bounded-stack--tight">',
+            "              {data.reconstruction.layoutRhythm.slice(0, 6).map((item) => (",
+            '                <article className="bounded-outline-item" key={item.id}>',
+            '                  <strong>{item.role}</strong>',
+            '                  <p>{item.size}</p>',
+            '                  <span className="bounded-outline-meta">y: {item.y ?? 0}</span>',
             "                </article>",
             "              ))}",
             "            </div>",
@@ -832,6 +1029,32 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin: 0 auto;",
             "  padding: 40px 20px 72px;",
             "}",
+            ".bounded-masthead {",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: space-between;",
+            "  gap: 20px;",
+            "  padding: 18px 22px;",
+            "  margin-bottom: 16px;",
+            "}",
+            ".bounded-brand-block { min-width: 0; }",
+            ".bounded-brand {",
+            "  display: block;",
+            "  font-size: 1rem;",
+            "  letter-spacing: -0.02em;",
+            "}",
+            ".bounded-nav {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  justify-content: flex-end;",
+            "  gap: 12px;",
+            "}",
+            ".bounded-nav-link {",
+            "  color: inherit;",
+            "  text-decoration: none;",
+            "  font-size: 0.95rem;",
+            "}",
+            ".bounded-nav-link--muted { opacity: 0.72; }",
             ".bounded-layout {",
             "  display: grid;",
             "  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);",
@@ -878,6 +1101,12 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  max-width: 62ch;",
             "  margin: 16px 0 0;",
             "}",
+            ".bounded-hero-actions {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  gap: 10px;",
+            "  margin-top: 18px;",
+            "}",
             ".bounded-meta {",
             "  display: flex;",
             "  flex-wrap: wrap;",
@@ -899,9 +1128,29 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  border-color: var(--bounded-border);",
             "  background: rgba(255, 255, 255, 0.03);",
             "}",
+            ".bounded-cta {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  min-height: 38px;",
+            "  padding: 0 16px;",
+            "  border-radius: 999px;",
+            "  text-decoration: none;",
+            "  color: #09111d;",
+            "  background: color-mix(in srgb, var(--bounded-accent) 84%, white 8%);",
+            "  font-weight: 600;",
+            "}",
             ".bounded-card, .bounded-stack { padding: 20px; }",
             ".bounded-card h2 { font-size: 1.05rem; }",
             ".bounded-copy { margin: 10px 0 0; }",
+            ".bounded-card-head {",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: space-between;",
+            "  gap: 12px;",
+            "}",
+            ".bounded-card[data-role=\"hero\"], .bounded-card[data-role=\"band\"] {",
+            "  grid-column: 1 / -1;",
+            "}",
             ".bounded-rail { display: grid; gap: 16px; }",
             ".bounded-stack { display: grid; gap: 14px; }",
             ".bounded-stack--tight { gap: 10px; }",
@@ -921,7 +1170,24 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin-bottom: 6px;",
             "}",
             ".bounded-mini-card p, .bounded-outline-item p { margin: 0; }",
+            ".bounded-status-row {",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: space-between;",
+            "  gap: 12px;",
+            "}",
+            ".bounded-outline-meta {",
+            "  display: inline-block;",
+            "  margin-top: 8px;",
+            "  color: var(--bounded-muted);",
+            "  font-size: 12px;",
+            "}",
             "@media (max-width: 980px) {",
+            "  .bounded-masthead {",
+            "    flex-direction: column;",
+            "    align-items: flex-start;",
+            "  }",
+            "  .bounded-nav { justify-content: flex-start; }",
             "  .bounded-layout { grid-template-columns: 1fr; }",
             "}",
         ]
@@ -1006,7 +1272,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "sample": interaction_sample,
         },
         "renderer": {
-            "kind": "next-app-scaffold",
+            "kind": "role-inferred-next-app",
+            "strategy": "capture-bundle-to-sectioned-app",
             "entrypoints": [
                 "next-app/app/page.tsx",
                 "next-app/components/BoundedReferencePage.tsx",

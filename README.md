@@ -280,7 +280,7 @@ The persisted output directory will include:
 - `reproduction/rebuild/next-app/components/reference-data.ts`
 - `reproduction/rebuild/manifest.json`
 
-When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical `next-app/` renderer skeleton to continue from.
+When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical role-inferred `next-app/` renderer skeleton to continue from.
 
 The capture bundle now includes an interaction-state layer for visible interactive elements:
 
@@ -313,7 +313,7 @@ When exact reuse is available, `reproduce` also writes:
 The new tools are still scaffolds for the next phase:
 
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
-- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded `next-app/` renderer skeleton for frame-blocked pages
+- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded role-inferred `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
 - `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downstream priority findings without overstating exactness
 
