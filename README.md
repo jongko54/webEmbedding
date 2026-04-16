@@ -310,12 +310,12 @@ The persisted output directory will include:
 - `reproduction/self-verify/repair-plan.json`
 - `reproduction/self-verify/repair-prompt.txt`
 - `reproduction/self-verify/summary.json`
-- `reproduction/repair-pass/rebuild/*`
-- `reproduction/repair-pass/self-verify/*`
+- `reproduction/repair-loop/pass-*/rebuild/*`
+- `reproduction/repair-loop/pass-*/self-verify/*`
 
 When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a low-level HTML/CSS/TSX starter, an `app-model` snapshot, an `app-preview.html` render target, and a more practical role-inferred `next-app/` renderer skeleton to continue from.
 
-When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now renders multiple bounded preview targets such as `starter.html` and `app-preview.html`, captures those rendered previews back into bundles, compares them, selects the stronger renderer, and writes a repair plan under `reproduction/self-verify/`. It then runs one bounded auto-repair pass that rewrites the scaffold tokens/data under `reproduction/repair-pass/` and verifies that repaired scaffold again. That closes the loop from `reference -> scaffold -> rendered preview -> verify -> repair guidance -> repaired preview verify`, even though it still does not boot a full Next.js runtime.
+When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now renders multiple bounded preview targets such as `starter.html` and `app-preview.html`, captures those rendered previews back into bundles, compares them, selects the stronger renderer, and writes a repair plan under `reproduction/self-verify/`. It then runs a guarded bounded auto-repair loop under `reproduction/repair-loop/pass-*/`, re-verifying each repaired scaffold and stopping when score gains flatten out or exact-clone readiness is reached. That closes the loop from `reference -> scaffold -> rendered preview -> verify -> repair guidance -> repaired preview -> re-verify`, even though it still does not boot a full Next.js runtime.
 
 The capture bundle now includes two interaction layers for visible interactive elements:
 
@@ -374,7 +374,7 @@ The new tools are still scaffolds for the next phase:
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
 - `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downsampled pixel-diff signals and interaction-trace coverage as a core exact-clone readiness signal
 - `build_reproduction_bundle` now closes a bounded self-verify loop for rebuild paths by rendering multiple scaffold previews, recapturing them, choosing the stronger renderer, and emitting a repair plan across the primary viewport plus any requested breakpoint variants
-- the same reproduction flow now runs one bounded auto-repair scaffold pass and re-verifies the repaired preview so downstream tooling gets both the original repair plan and a concrete repaired scaffold candidate
+- the same reproduction flow now runs a bounded auto-repair loop, keeps each persisted repair iteration on disk, and promotes the strongest repaired scaffold candidate into the top-level `repair_pass` response for downstream tooling
 
 ## Guardrails
 

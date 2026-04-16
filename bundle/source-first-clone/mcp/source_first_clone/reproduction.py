@@ -30,6 +30,9 @@ ANALYTICS_HOST_HINTS = (
     "fonts.gstatic.com",
 )
 
+MAX_AUTO_REPAIR_PASSES = 3
+MIN_AUTO_REPAIR_SCORE_DELTA = 3
+
 
 def is_noise_url(url: str) -> bool:
     lowered = url.lower()
@@ -381,6 +384,146 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     return "\n".join(prompt_lines)
 
 
+def _self_verify_score(self_verify: dict[str, Any] | None) -> int:
+    if not isinstance(self_verify, dict):
+        return 0
+    root_report = self_verify.get("root_report", {})
+    if isinstance(root_report, dict):
+        try:
+            return int(root_report.get("score") or 0)
+        except (TypeError, ValueError):
+            pass
+    preferred_renderer = self_verify.get("preferred_renderer", {})
+    if isinstance(preferred_renderer, dict):
+        try:
+            return int(preferred_renderer.get("score") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _build_repair_loop(
+    capture_bundle: dict[str, Any],
+    rebuild_artifacts: dict[str, str],
+    initial_self_verify: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    if not isinstance(rebuild_artifacts, dict) or not isinstance(initial_self_verify, dict):
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Repair loop requires a persisted rebuild scaffold and initial self-verify result.",
+        }
+
+    if initial_self_verify.get("overall_ready_for_exact_clone"):
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Initial bounded renderer already met the exact-clone readiness threshold.",
+        }
+
+    current_rebuild_artifacts = rebuild_artifacts
+    current_self_verify = initial_self_verify
+    current_score = _self_verify_score(initial_self_verify)
+    best_score = current_score
+    best_pass: dict[str, Any] | None = None
+    attempted_passes: list[dict[str, Any]] = []
+    persisted_passes: list[dict[str, Any]] = []
+    stop_reason = "max-passes-reached"
+
+    for pass_index in range(1, MAX_AUTO_REPAIR_PASSES + 1):
+        repair_pass = build_repair_scaffold(
+            capture_bundle=capture_bundle,
+            rebuild_artifacts=current_rebuild_artifacts,
+            self_verify=current_self_verify,
+        )
+        if not repair_pass.get("available"):
+            stop_reason = str(repair_pass.get("reason") or "repair-scaffold-unavailable")
+            break
+
+        stage_path = Path("repair-loop") / f"pass-{pass_index}"
+        persisted_repair = persist_rebuild_scaffold(output_root / "reproduction" / stage_path, repair_pass)
+        repair_verify = run_rebuild_self_verify(
+            reference_bundle=capture_bundle,
+            rebuild_artifacts=persisted_repair,
+            output_dir=output_root,
+            stage_path=str(stage_path / "self-verify"),
+        )
+        next_score = _self_verify_score(repair_verify)
+        score_delta = next_score - current_score
+        pass_summary = {
+            "index": pass_index,
+            "source_score": current_score,
+            "score": next_score,
+            "score_delta": score_delta,
+            "improved": score_delta > 0,
+            "meets_minimum_delta": score_delta >= MIN_AUTO_REPAIR_SCORE_DELTA,
+            "overall_ready_for_exact_clone": bool(repair_verify.get("overall_ready_for_exact_clone")),
+            "stage_path": str(stage_path),
+        }
+        repair_pass["persisted"] = persisted_repair
+        repair_pass["self_verify"] = repair_verify
+        repair_pass["iteration"] = pass_summary
+        attempted_passes.append(repair_pass)
+        persisted_passes.append(
+            {
+                "index": pass_index,
+                "artifacts": persisted_repair,
+                "self_verify": repair_verify.get("persisted"),
+            }
+        )
+
+        if next_score > best_score:
+            best_score = next_score
+            best_pass = repair_pass
+
+        if repair_verify.get("overall_ready_for_exact_clone"):
+            best_pass = repair_pass
+            stop_reason = "ready-for-exact-clone"
+            break
+        if score_delta <= 0:
+            stop_reason = "no-improvement"
+            break
+        if score_delta < MIN_AUTO_REPAIR_SCORE_DELTA:
+            stop_reason = "insufficient-score-delta"
+            break
+
+        current_rebuild_artifacts = persisted_repair
+        current_self_verify = repair_verify
+        current_score = next_score
+    else:
+        stop_reason = "max-passes-reached"
+
+    if best_pass is None and attempted_passes:
+        best_pass = attempted_passes[0]
+        best_score = _self_verify_score(best_pass.get("self_verify"))
+
+    if best_pass is None:
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Repair loop did not produce a usable pass.",
+        }
+
+    best_iteration = best_pass.get("iteration", {}) if isinstance(best_pass.get("iteration", {}), dict) else {}
+    return {
+        "available": True,
+        "status": "completed",
+        "pass_count": len(attempted_passes),
+        "max_passes": MAX_AUTO_REPAIR_PASSES,
+        "minimum_score_delta": MIN_AUTO_REPAIR_SCORE_DELTA,
+        "initial_score": _self_verify_score(initial_self_verify),
+        "best_score": best_score,
+        "best_pass_index": best_iteration.get("index"),
+        "overall_ready_for_exact_clone": bool((best_pass.get("self_verify") or {}).get("overall_ready_for_exact_clone")),
+        "stop_reason": stop_reason,
+        "passes": attempted_passes,
+        "best_pass": best_pass,
+        "persisted": {"passes": persisted_passes},
+        "note": "This bounded repair loop repeats scaffold repair only while verification score keeps improving by a meaningful margin.",
+    }
+
+
 def build_reproduction_bundle(
     capture_bundle: dict[str, Any],
     output_dir: str | None = None,
@@ -440,27 +583,35 @@ def build_reproduction_bundle(
             result["self_verify"] = self_verify
             persisted["self_verify"] = self_verify.get("persisted")
             if not self_verify.get("overall_ready_for_exact_clone"):
-                repair_pass = build_repair_scaffold(
+                repair_loop = _build_repair_loop(
                     capture_bundle=capture_bundle,
                     rebuild_artifacts=rebuild_artifacts,
-                    self_verify=self_verify,
+                    initial_self_verify=self_verify,
+                    output_root=output_root,
                 )
-                if repair_pass.get("available"):
-                    repair_root = output_root / "reproduction" / "repair-pass"
-                    persisted_repair = persist_rebuild_scaffold(repair_root, repair_pass)
-                    repair_verify = run_rebuild_self_verify(
-                        reference_bundle=capture_bundle,
-                        rebuild_artifacts=persisted_repair,
-                        output_dir=output_root,
-                        stage_path="repair-pass/self-verify",
-                    )
-                    repair_pass["persisted"] = persisted_repair
-                    repair_pass["self_verify"] = repair_verify
-                    result["repair_pass"] = repair_pass
-                    persisted["repair_pass"] = {
-                        "artifacts": persisted_repair,
-                        "self_verify": repair_verify.get("persisted"),
+                if repair_loop.get("available"):
+                    best_pass = repair_loop.get("best_pass")
+                    if isinstance(best_pass, dict):
+                        result["repair_pass"] = best_pass
+                        persisted["repair_pass"] = {
+                            "artifacts": best_pass.get("persisted"),
+                            "self_verify": ((best_pass.get("self_verify") or {}).get("persisted")),
+                        }
+                    result["repair_passes"] = repair_loop.get("passes")
+                    result["repair_loop"] = {
+                        "status": repair_loop.get("status"),
+                        "pass_count": repair_loop.get("pass_count"),
+                        "max_passes": repair_loop.get("max_passes"),
+                        "minimum_score_delta": repair_loop.get("minimum_score_delta"),
+                        "initial_score": repair_loop.get("initial_score"),
+                        "best_score": repair_loop.get("best_score"),
+                        "best_pass_index": repair_loop.get("best_pass_index"),
+                        "overall_ready_for_exact_clone": repair_loop.get("overall_ready_for_exact_clone"),
+                        "stop_reason": repair_loop.get("stop_reason"),
+                        "persisted": repair_loop.get("persisted"),
+                        "note": repair_loop.get("note"),
                     }
+                    persisted["repair_passes"] = repair_loop.get("persisted")
             plan_path = persisted.get("plan")
             if isinstance(plan_path, str):
                 Path(plan_path).write_text(json.dumps(result, indent=2) + "\n")
