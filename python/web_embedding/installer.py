@@ -362,6 +362,23 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
         summary["candidateCount"] = len(candidates)
         summary["candidateSample"] = candidates[:15]
         summary.pop("candidates", None)
+    self_verify = summary.get("self_verify")
+    if isinstance(self_verify, dict):
+        breakpoint_summary = self_verify.get("breakpoints", {})
+        reports = breakpoint_summary.get("reports") if isinstance(breakpoint_summary, dict) else None
+        compact = {
+            "status": self_verify.get("status"),
+            "overall_ready_for_exact_clone": self_verify.get("overall_ready_for_exact_clone"),
+            "root_report": self_verify.get("root_report"),
+            "persisted": self_verify.get("persisted"),
+            "note": self_verify.get("note"),
+        }
+        if isinstance(breakpoint_summary, dict):
+            compact["breakpoints"] = {
+                "compared": breakpoint_summary.get("compared"),
+                "reports": reports[:3] if isinstance(reports, list) else [],
+            }
+        summary["self_verify"] = compact
     return summary
 
 
@@ -430,18 +447,7 @@ def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
         exact_reuse.pop("snippets", None)
     reproduction = summary.get("reproduction")
     if isinstance(reproduction, dict):
-        reproduction.pop("rebuild_prompt", None)
-        exact_reuse = reproduction.get("exact_reuse")
-        if isinstance(exact_reuse, dict):
-            exact_reuse.pop("snippets", None)
-        rebuild_scaffold = reproduction.get("rebuild_scaffold")
-        if isinstance(rebuild_scaffold, dict):
-            reproduction["rebuild_scaffold"] = compact_rebuild_scaffold_summary(rebuild_scaffold)
-        candidates = reproduction.get("candidates")
-        if isinstance(candidates, list):
-            reproduction["candidateCount"] = len(candidates)
-            reproduction["candidateSample"] = candidates[:15]
-            reproduction.pop("candidates", None)
+        summary["reproduction"] = compact_reproduction_result(reproduction)
     capture_bundle = summary.get("capture_bundle")
     if isinstance(capture_bundle, dict):
         summary["capture_bundle"] = compact_capture_result(capture_bundle)

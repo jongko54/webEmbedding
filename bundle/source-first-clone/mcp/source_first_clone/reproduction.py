@@ -8,6 +8,7 @@ from typing import Any
 
 from .planning import plan_reproduction_path
 from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
+from .self_verify import run_rebuild_self_verify
 
 
 ANALYTICS_HOST_HINTS = (
@@ -376,8 +377,21 @@ def build_reproduction_bundle(
             result["next_action"] = "rebuild"
 
     if output_dir:
-        persisted = persist_reproduction_bundle(Path(output_dir).expanduser().resolve(), result)
+        output_root = Path(output_dir).expanduser().resolve()
+        persisted = persist_reproduction_bundle(output_root, result)
         result["persisted"] = persisted
+        rebuild_artifacts = persisted.get("rebuild_scaffold")
+        if isinstance(rebuild_artifacts, dict):
+            self_verify = run_rebuild_self_verify(
+                reference_bundle=capture_bundle,
+                rebuild_artifacts=rebuild_artifacts,
+                output_dir=output_root,
+            )
+            result["self_verify"] = self_verify
+            persisted["self_verify"] = self_verify.get("persisted")
+            plan_path = persisted.get("plan")
+            if isinstance(plan_path, str):
+                Path(plan_path).write_text(json.dumps(result, indent=2) + "\n")
 
     return result
 
