@@ -14,6 +14,26 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from .constants import DEFAULT_BROWSER_PATHS, LICENSE_HINTS, URL_PATTERNS, USER_AGENT
+from .platform_adapters import inspect_platform_adapter, merge_platform_candidates
+
+
+def is_candidate_noise(url: str) -> bool:
+    lowered = (url or "").lower()
+    if any(token in lowered for token in ("googletagmanager.com", "google-analytics.com", "doubleclick.net")):
+        return True
+    if lowered.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".css", ".js", ".map", ".woff", ".woff2")):
+        return True
+    return False
+
+
+def should_promote_direct_iframe(final_url: str, platform_adapter: dict[str, Any] | None) -> bool:
+    platform = str((platform_adapter or {}).get("platform") or "").lower()
+    lowered_url = (final_url or "").lower()
+    if platform == "spline" and "/community/file/" in lowered_url:
+        return False
+    if platform == "figma" and "/community/" in lowered_url:
+        return False
+    return True
 
 
 def detect_runtime_capabilities() -> dict[str, Any]:
@@ -180,7 +200,7 @@ def extract_license_hints(html: str) -> list[str]:
     return [hint for hint in LICENSE_HINTS if hint in lowered]
 
 
-def build_candidates(base_url: str, html: str) -> list[dict[str, str]]:
+def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     final_candidates: list[dict[str, str]] = []
     seen: set[str] = set()
 
@@ -189,6 +209,8 @@ def build_candidates(base_url: str, html: str) -> list[dict[str, str]]:
         for raw_match in matches:
             candidate = raw_match if isinstance(raw_match, str) else raw_match[0]
             normalized = urljoin(base_url, candidate.strip())
+            if is_candidate_noise(normalized):
+                continue
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -198,30 +220,37 @@ def build_candidates(base_url: str, html: str) -> list[dict[str, str]]:
     for raw in generic_urls:
         if not re.search(r"(spline|preview|embed|viewer|scene|iframe|remix|export)", raw, re.I):
             continue
+        if is_candidate_noise(raw):
+            continue
         if raw in seen:
             continue
         seen.add(raw)
         final_candidates.append({"kind": "runtime-hint", "url": raw})
 
-    return final_candidates
+    return merge_platform_candidates(final_candidates, adapter_candidates)
 
 
 def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
     fetched = fetch_url(url, timeout_seconds=timeout_seconds)
     html = fetched["html"]
     frame_policy = analyze_frame_policy(fetched.get("headers"))
-    candidate_urls = build_candidates(fetched["final_url"], html)
-    if frame_policy.get("embeddable") is True:
+    meta = extract_meta(html)
+    platform_adapter = inspect_platform_adapter(fetched["final_url"], html, meta)
+    candidate_urls = build_candidates(fetched["final_url"], html, adapter_candidates=platform_adapter.get("candidates"))
+    if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidate_urls = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidate_urls]
     return {
         "url": url,
         "final_url": fetched["final_url"],
         "status": fetched["status"],
         "title": extract_title(html),
-        "meta": extract_meta(html),
+        "meta": meta,
         "license_hints": extract_license_hints(html),
         "headers": fetched.get("headers", {}),
         "frame_policy": frame_policy,
+        "platform": platform_adapter.get("platform"),
+        "platform_adapter": platform_adapter,
+        "source_signals": platform_adapter.get("source_signals", []),
         "candidate_urls": candidate_urls,
     }
 
@@ -229,13 +258,18 @@ def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
 def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
     fetched = fetch_url(url, timeout_seconds=timeout_seconds)
     frame_policy = analyze_frame_policy(fetched.get("headers"))
-    candidates = build_candidates(fetched["final_url"], fetched["html"])
-    if frame_policy.get("embeddable") is True:
+    meta = extract_meta(fetched["html"])
+    platform_adapter = inspect_platform_adapter(fetched["final_url"], fetched["html"], meta)
+    candidates = build_candidates(fetched["final_url"], fetched["html"], adapter_candidates=platform_adapter.get("candidates"))
+    if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidates = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidates]
     return {
         "url": url,
         "final_url": fetched["final_url"],
         "frame_policy": frame_policy,
+        "platform": platform_adapter.get("platform"),
+        "platform_adapter": platform_adapter,
+        "source_signals": platform_adapter.get("source_signals", []),
         "candidates": candidates,
     }
 

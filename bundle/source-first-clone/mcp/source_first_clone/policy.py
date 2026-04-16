@@ -18,7 +18,7 @@ def classify_clone_mode(
     candidate_kinds = {str(item.get("kind", "")).lower() for item in candidates if isinstance(item, dict)}
     reusable_license = any(token in license_text for token in ["cc0", "creative commons", "mit", "apache", "remix"])
     blocked_license = any(token in license_text for token in ["all rights reserved", "copyright"])
-    source_signal = any(token in source_signals for token in ["remix", "export", "source", "fork"])
+    source_signal = any(token in source_signals for token in ["remix", "export", "source", "fork", "duplicate", "cc0"])
 
     if blocked_license and not reusable_license:
         return {

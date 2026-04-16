@@ -33,11 +33,19 @@ def capture_reference_bundle(
 ) -> dict[str, Any]:
     static = inspect_reference(url, timeout_seconds=timeout_seconds)
     candidates = discover_embed_candidates(url, timeout_seconds=timeout_seconds)["candidates"]
+    merged_source_signals = list(
+        dict.fromkeys(
+            [
+                *(str(item).lower() for item in (source_signals or []) if item),
+                *(str(item).lower() for item in (static.get("source_signals") or []) if item),
+            ]
+        )
+    )
     policy = classify_clone_mode(
         exact_requested=exact_requested,
         license_text=license_text,
         candidates=candidates,
-        source_signals=source_signals,
+        source_signals=merged_source_signals,
     )
     runtime_output_dir = Path(output_dir).expanduser().resolve() if output_dir else None
     breakpoint_requests = _resolve_breakpoint_requests(
@@ -50,6 +58,7 @@ def capture_reference_bundle(
         url=url,
         static=static,
         policy=policy,
+        source_signals=merged_source_signals,
         wait_seconds=wait_seconds,
         include_runtime_trace=include_runtime_trace,
         user_data_dir=user_data_dir,
@@ -71,6 +80,7 @@ def capture_reference_bundle(
                 url=url,
                 static=static,
                 policy=policy,
+                source_signals=merged_source_signals,
                 wait_seconds=wait_seconds,
                 include_runtime_trace=include_runtime_trace,
                 user_data_dir=user_data_dir,
@@ -144,6 +154,7 @@ def _build_capture_bundle(
     url: str,
     static: dict[str, Any],
     policy: dict[str, Any],
+    source_signals: list[str],
     wait_seconds: int,
     include_runtime_trace: bool,
     user_data_dir: str | None,
@@ -232,6 +243,7 @@ def _build_capture_bundle(
         "url": url,
         "session_request": runtime_request,
         "static": static,
+        "source_signals": source_signals,
         "runtime": runtime,
         "policy": policy,
         "bundle": {
