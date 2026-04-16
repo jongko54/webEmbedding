@@ -11,6 +11,7 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .constants import DEFAULT_BROWSER_PATHS, LICENSE_HINTS, URL_PATTERNS, USER_AGENT
@@ -119,6 +120,37 @@ def fetch_url(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
             "html": html,
             "headers": headers,
         }
+
+
+def build_platform_only_inspection(url: str, error: Exception | None = None) -> dict[str, Any]:
+    platform_adapter = inspect_platform_adapter(url, "", {})
+    platform = platform_adapter.get("platform")
+    notes = list(platform_adapter.get("notes") or [])
+    if error:
+        notes.append(f"Static fetch fallback used because upstream fetch failed: {error}")
+    return {
+        "url": url,
+        "final_url": url,
+        "status": None,
+        "title": None,
+        "meta": {},
+        "license_hints": [],
+        "headers": {},
+        "frame_policy": {
+            "x_frame_options": None,
+            "content_security_policy": None,
+            "frame_ancestors": None,
+            "embeddable": "unknown",
+            "reason": "Frame policy could not be determined without a successful static fetch.",
+        },
+        "platform": platform,
+        "platform_adapter": {
+            **platform_adapter,
+            "notes": notes,
+        },
+        "source_signals": platform_adapter.get("source_signals", []),
+        "candidate_urls": merge_platform_candidates([], platform_adapter.get("candidates")),
+    }
 
 
 def analyze_frame_policy(headers: dict[str, str] | None) -> dict[str, Any]:
@@ -231,7 +263,13 @@ def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str
 
 
 def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
-    fetched = fetch_url(url, timeout_seconds=timeout_seconds)
+    try:
+        fetched = fetch_url(url, timeout_seconds=timeout_seconds)
+    except (HTTPError, URLError) as error:
+        fallback = build_platform_only_inspection(url, error=error)
+        if fallback.get("platform") != "generic":
+            return fallback
+        raise
     html = fetched["html"]
     frame_policy = analyze_frame_policy(fetched.get("headers"))
     meta = extract_meta(html)
@@ -256,7 +294,21 @@ def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
 
 
 def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
-    fetched = fetch_url(url, timeout_seconds=timeout_seconds)
+    try:
+        fetched = fetch_url(url, timeout_seconds=timeout_seconds)
+    except (HTTPError, URLError) as error:
+        fallback = build_platform_only_inspection(url, error=error)
+        if fallback.get("platform") != "generic":
+            return {
+                "url": url,
+                "final_url": fallback.get("final_url"),
+                "frame_policy": fallback.get("frame_policy"),
+                "platform": fallback.get("platform"),
+                "platform_adapter": fallback.get("platform_adapter"),
+                "source_signals": fallback.get("source_signals", []),
+                "candidates": fallback.get("candidate_urls", []),
+            }
+        raise
     frame_policy = analyze_frame_policy(fetched.get("headers"))
     meta = extract_meta(fetched["html"])
     platform_adapter = inspect_platform_adapter(fetched["final_url"], fetched["html"], meta)

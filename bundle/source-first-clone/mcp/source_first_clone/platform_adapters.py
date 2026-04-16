@@ -12,6 +12,7 @@ SPLINE_VIEWER_RE = re.compile(r"https://viewer\.spline\.design/[^\"'\s>]+", re.I
 FIGMA_DUPLICATE_RE = re.compile(r"duplicate\s+this\s+file", re.I)
 WEBFLOW_ASSET_RE = re.compile(r"(webflow|website-files\.com|webflow\.io)", re.I)
 FRAMER_ASSET_RE = re.compile(r"(framerusercontent|framer\.website|framer\.app|framer\.com)", re.I)
+FIGMA_PATH_RE = re.compile(r"^/(?:community/file|file|proto|design|board|slides)/", re.I)
 
 
 def _dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -161,14 +162,27 @@ def _inspect_figma(final_url: str, html: str) -> dict[str, Any]:
     source_signals: list[str] = []
     lowered_url = final_url.lower()
     lowered_html = (html or "").lower()
+    parsed = urlparse(final_url)
+    path = parsed.path or ""
 
-    if "/embed" not in lowered_url:
+    if "figma.com/embed" in lowered_url:
+        candidates.append({"kind": "figma-embed", "url": final_url, "source": "platform-adapter", "platform": "figma"})
+        notes.append("Existing Figma embed URL detected.")
+    elif FIGMA_PATH_RE.search(path):
         embed_url = f"https://www.figma.com/embed?embed_host=share&url={quote(final_url, safe='')}"
         candidates.append({"kind": "figma-embed", "url": embed_url, "source": "platform-adapter", "platform": "figma"})
         notes.append("Generated a Figma embed URL from the original share link.")
     if "/community/" in lowered_url or FIGMA_DUPLICATE_RE.search(lowered_html):
         source_signals.append("duplicate")
         notes.append("Figma community or duplicate signal detected.")
+    if "/proto/" in lowered_url:
+        notes.append("Prototype-style Figma URL detected; embed should preserve the interactive prototype surface.")
+    if "/design/" in lowered_url or "/file/" in lowered_url:
+        notes.append("Design file URL detected; embed should preserve the live file surface.")
+    if "/board/" in lowered_url:
+        notes.append("FigJam board URL detected.")
+    if "/slides/" in lowered_url:
+        notes.append("Figma Slides URL detected.")
 
     return {
         "platform": "figma",
