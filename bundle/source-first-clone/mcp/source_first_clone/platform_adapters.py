@@ -42,6 +42,13 @@ def _append_unique(items: list[str], value: str | None) -> None:
         items.append(value)
 
 
+def _append_candidate(candidates: list[dict[str, Any]], kind: str, url: str, platform: str, source: str = "platform-adapter") -> None:
+    cleaned_url = str(url or "").strip()
+    if not cleaned_url:
+        return
+    candidates.append({"kind": kind, "url": cleaned_url, "source": source, "platform": platform})
+
+
 def _host(final_url: str) -> str:
     return (urlparse(final_url).hostname or "").lower()
 
@@ -131,34 +138,34 @@ def _inspect_spline(final_url: str, html: str) -> dict[str, Any]:
     notes: list[str] = []
     source_signals: list[str] = []
     lowered_html = (html or "").lower()
+    lowered_url = final_url.lower()
 
     if "/community/file/" in final_url.lower():
         source_signals.append("remix")
+        _append_unique(source_signals, "community")
         notes.append("Spline community file detected; remix/source reuse is often available when licensing allows it.")
     if "licensed under cc0" in lowered_html or "cc0 1.0" in lowered_html:
         source_signals.append("cc0")
         notes.append("Spline page mentions CC0 licensing.")
+
+    if "/file/" in lowered_url and "view=preview" not in lowered_url:
+        separator = "&" if "?" in final_url else "?"
+        _append_candidate(candidates, "spline-preview", f"{final_url}{separator}view=preview", "spline")
+        notes.append("Generated a Spline preview URL from a raw file link.")
+
+    if "/community/file/" in lowered_url and "view=preview" not in lowered_url:
+        separator = "&" if "?" in final_url else "?"
+        _append_candidate(candidates, "spline-preview", f"{final_url}{separator}view=preview", "spline")
+        notes.append("Generated a Spline preview URL from a community file link.")
 
     for match in SPLINE_FILE_RE.findall(html or ""):
         url = match.strip()
         if "view=preview" not in url.lower():
             separator = "&" if "?" in url else "?"
             url = f"{url}{separator}view=preview"
-        candidates.append({"kind": "spline-preview", "url": url, "source": "platform-adapter", "platform": "spline"})
+        _append_candidate(candidates, "spline-preview", url, "spline")
     for match in SPLINE_VIEWER_RE.findall(html or ""):
-        candidates.append({"kind": "spline-viewer", "url": match.strip(), "source": "platform-adapter", "platform": "spline"})
-
-    if "/file/" in final_url.lower() and "view=preview" not in final_url.lower():
-        separator = "&" if "?" in final_url else "?"
-        candidates.append(
-            {
-                "kind": "spline-preview",
-                "url": f"{final_url}{separator}view=preview",
-                "source": "platform-adapter",
-                "platform": "spline",
-            }
-        )
-        notes.append("Generated a Spline preview URL from a raw file link.")
+        _append_candidate(candidates, "spline-viewer", match.strip(), "spline")
 
     return {
         "platform": "spline",
@@ -179,22 +186,26 @@ def _inspect_figma(final_url: str, html: str) -> dict[str, Any]:
     path = parsed.path or ""
 
     if "figma.com/embed" in lowered_url:
-        candidates.append({"kind": "figma-embed", "url": final_url, "source": "platform-adapter", "platform": "figma"})
+        _append_candidate(candidates, "figma-embed", final_url, "figma")
         notes.append("Existing Figma embed URL detected.")
     elif FIGMA_PATH_RE.search(path):
         embed_url = f"https://www.figma.com/embed?embed_host=share&url={quote(final_url, safe='')}"
-        candidates.append({"kind": "figma-embed", "url": embed_url, "source": "platform-adapter", "platform": "figma"})
+        _append_candidate(candidates, "figma-embed", embed_url, "figma")
         notes.append("Generated a Figma embed URL from the original share link.")
     if "/community/" in lowered_url or FIGMA_DUPLICATE_RE.search(lowered_html):
-        source_signals.append("duplicate")
+        _append_unique(source_signals, "duplicate")
+        _append_unique(source_signals, "community")
         notes.append("Figma community or duplicate signal detected.")
     if "/proto/" in lowered_url:
+        _append_unique(source_signals, "prototype")
         notes.append("Prototype-style Figma URL detected; embed should preserve the interactive prototype surface.")
     if "/design/" in lowered_url or "/file/" in lowered_url:
         notes.append("Design file URL detected; embed should preserve the live file surface.")
     if "/board/" in lowered_url:
+        _append_unique(source_signals, "board")
         notes.append("FigJam board URL detected.")
     if "/slides/" in lowered_url:
+        _append_unique(source_signals, "slides")
         notes.append("Figma Slides URL detected.")
 
     return {
@@ -216,6 +227,7 @@ def _inspect_framer(final_url: str, html: str, generator: str | None) -> dict[st
     if host.endswith(".framer.website") or host.endswith(".framer.app"):
         notes.append("Framer-managed host detected.")
         _append_unique(source_signals, "published")
+        _append_unique(source_signals, "framer")
 
     if generator:
         notes.append(f"Generator meta: {generator}")
@@ -224,6 +236,7 @@ def _inspect_framer(final_url: str, html: str, generator: str | None) -> dict[st
     if FRAMER_ASSET_RE.search(lowered_html):
         notes.append("Framer asset/CDN markers were found in the HTML.")
         _append_unique(source_signals, "asset-backed")
+        _append_unique(source_signals, "runtime")
 
     if "framerusercontent" in lowered_html:
         notes.append("framerusercontent assets suggest a published Framer surface backed by Framer-hosted assets.")
@@ -256,6 +269,7 @@ def _inspect_webflow(final_url: str, html: str, generator: str | None) -> dict[s
     if host.endswith(".webflow.io"):
         notes.append("Webflow-managed host detected.")
         _append_unique(source_signals, "published")
+        _append_unique(source_signals, "webflow")
 
     if generator:
         notes.append(f"Generator meta: {generator}")
@@ -264,6 +278,7 @@ def _inspect_webflow(final_url: str, html: str, generator: str | None) -> dict[s
     if WEBFLOW_ASSET_RE.search(lowered_html):
         notes.append("Webflow asset/CDN markers were found in the HTML.")
         _append_unique(source_signals, "asset-backed")
+        _append_unique(source_signals, "runtime")
 
     if WEBFLOW_RUNTIME_RE.search(lowered_html):
         notes.append("Webflow runtime markers were found in the page HTML.")

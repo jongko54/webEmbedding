@@ -88,7 +88,6 @@ def _runtime_next_config() -> str:
         [
             "/** @type {import('next').NextConfig} */",
             "const nextConfig = {",
-            "  eslint: { ignoreDuringBuilds: true },",
             "  typescript: { ignoreBuildErrors: true },",
             "};",
             "",
@@ -125,8 +124,10 @@ def _copy_runtime_artifact(source: str | None, target: Path) -> None:
 
 def _materialize_next_runtime_project(rebuild_artifacts: dict[str, str], runtime_root: Path) -> None:
     _ensure_runtime_base(runtime_root)
-    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/layout.tsx"), runtime_root / "app" / "layout.tsx")
+    layout_target = runtime_root / "app" / "layout.tsx"
+    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/layout.tsx"), layout_target)
     _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/page.tsx"), runtime_root / "app" / "page.tsx")
+    _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/fonts.css"), runtime_root / "app" / "fonts.css")
     _copy_runtime_artifact(rebuild_artifacts.get("next-app/app/globals.css"), runtime_root / "app" / "globals.css")
     _copy_runtime_artifact(
         rebuild_artifacts.get("next-app/components/BoundedReferencePage.tsx"),
@@ -136,6 +137,8 @@ def _materialize_next_runtime_project(rebuild_artifacts: dict[str, str], runtime
         rebuild_artifacts.get("next-app/components/reference-data.ts"),
         runtime_root / "components" / "reference-data.ts",
     )
+    if layout_target.exists() and 'import "./fonts.css"' in layout_target.read_text() and not (runtime_root / "app" / "fonts.css").exists():
+        (runtime_root / "app" / "fonts.css").write_text("/* runtime stub for generated font imports */\n")
 
 
 def _run_checked(command: list[str], cwd: Path, log_path: Path, timeout: int = 300) -> None:
@@ -321,24 +324,55 @@ def _build_repair_plan(
             }
         )
     focus_checks = [item.get("name") for item in (comparison.get("weakest_checks") or []) if isinstance(item, dict)]
+    normalized_focus_checks = [str(item) for item in focus_checks if item]
+    score = 0
+    try:
+        score = int(renderer_score or 0)
+    except (TypeError, ValueError):
+        score = 0
+    priority_findings = [str(item) for item in (guidance.get("priority_findings") or []) if item]
+    recommended_actions = [str(item) for item in (guidance.get("recommended_actions") or []) if item]
+    breakpoint_needs_layout_attention = any(
+        isinstance(report, dict)
+        and report.get("available")
+        and (
+            "screenshot" in str(report.get("focus") or "").lower()
+            or "layout" in str(report.get("focus") or "").lower()
+            or "spacing" in str(report.get("focus") or "").lower()
+        )
+        for report in breakpoint_focus
+    )
+    if score < 70 or breakpoint_needs_layout_attention:
+        for name in ("screenshot", "dom snapshot", "computed styles"):
+            if name not in normalized_focus_checks:
+                normalized_focus_checks.append(name)
+    if any("interaction" in item.lower() for item in priority_findings + recommended_actions):
+        for name in ("interaction states", "interaction trace"):
+            if name not in normalized_focus_checks:
+                normalized_focus_checks.append(name)
     return {
         "available": True,
         "status": "generated",
         "target_renderer": renderer_name,
         "score": renderer_score,
-        "focus_checks": focus_checks[:4],
-        "priority_findings": guidance.get("priority_findings") or [],
-        "recommended_actions": guidance.get("recommended_actions") or [],
+        "focus_checks": normalized_focus_checks[:6],
+        "priority_findings": priority_findings,
+        "recommended_actions": recommended_actions,
         "breakpoint_focus": breakpoint_focus,
         "prompt": "\n".join(
             [
                 f"Repair the bounded renderer `{renderer_name}` before claiming exact parity.",
                 f"Current bounded score: {renderer_score}.",
-                "Focus checks: " + (", ".join(focus_checks[:4]) if focus_checks else "screenshot, structure, and interaction parity"),
+                "Focus checks: "
+                + (
+                    ", ".join(normalized_focus_checks[:6])
+                    if normalized_focus_checks
+                    else "screenshot, structure, and interaction parity"
+                ),
                 "Priority findings:",
-                *[f"- {item}" for item in (guidance.get("priority_findings") or [])[:6]],
+                *[f"- {item}" for item in priority_findings[:6]],
                 "Recommended actions:",
-                *[f"- {item}" for item in (guidance.get("recommended_actions") or [])[:6]],
+                *[f"- {item}" for item in recommended_actions[:6]],
                 "Breakpoint focus:",
                 *[
                     f"- {item.get('name')}: {item.get('focus')} (score {item.get('score')})"

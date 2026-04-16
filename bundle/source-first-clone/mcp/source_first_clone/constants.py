@@ -22,12 +22,16 @@ BREAKPOINT_PROFILES = {
 
 URL_PATTERNS = [
     ("spline-preview", re.compile(r"https://app\.spline\.design/file/[^\"'\s>]+\?view=preview", re.I)),
+    ("spline-community", re.compile(r"https://app\.spline\.design/community/file/[^\"'\s>]+", re.I)),
     ("spline-viewer", re.compile(r"https://viewer\.spline\.design/[^\"'\s>]+", re.I)),
     ("spline-code", re.compile(r"https://[^\"'\s>]+\.splinecode", re.I)),
+    ("figma-share", re.compile(r"https://(?:www\.)?figma\.com/(?:community/file|file|proto|board|slides)/[^\"'\s>]+", re.I)),
     ("figma-embed", re.compile(r"https://www\.figma\.com/embed[^\"'\s>]+", re.I)),
     ("youtube-embed", re.compile(r"https://www\.youtube\.com/embed/[^\"'\s>]+", re.I)),
     ("vimeo-embed", re.compile(r"https://player\.vimeo\.com/video/[^\"'\s>]+", re.I)),
     ("codepen-embed", re.compile(r"https://codepen\.io/[^\"'\s>]+/embed/[^\"'\s>]+", re.I)),
+    ("framer-asset", re.compile(r"https://[^\"'\s>]*(?:framerusercontent|framer\.app|framer\.website)[^\"'\s>]*", re.I)),
+    ("webflow-asset", re.compile(r"https://[^\"'\s>]*(?:website-files\.com|cdn\.prod\.website-files\.com)[^\"'\s>]*", re.I)),
     ("iframe-src", re.compile(r"<iframe[^>]+src=[\"']([^\"']+)", re.I)),
     ("generic-embed", re.compile(r"https://[^\"'\s>]*(?:embed|preview|viewer)[^\"'\s>]*", re.I)),
 ]

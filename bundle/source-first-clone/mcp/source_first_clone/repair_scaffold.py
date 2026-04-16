@@ -7,7 +7,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .rebuild_scaffold import _render_bounded_reference_page_html, _render_reference_data_ts
+from .rebuild_scaffold import (
+    _build_asset_manifest,
+    _derive_style_tokens,
+    _derive_typography,
+    _render_bounded_reference_page_html,
+    _render_next_app_fonts_css,
+    _render_reference_data_ts,
+)
 
 
 def _read_json(path: str | None) -> dict[str, Any]:
@@ -132,6 +139,46 @@ def _compact_body_sections(
         }
     )
     return sections[:2]
+
+
+def _state_bits_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
+    if not isinstance(snapshot, dict):
+        return []
+    semantic = snapshot.get("semanticState", {}) if isinstance(snapshot.get("semanticState", {}), dict) else snapshot
+    bits: list[str] = []
+    for key in ("ariaExpanded", "ariaPressed", "ariaSelected", "checked", "selected", "open", "hidden", "disabled"):
+        value = semantic.get(key)
+        if value is not None:
+            _append_unique(bits, f"{key}:{value}")
+    for key in ("value", "placeholder", "href", "role", "type", "activeElementTag", "scrollY"):
+        value = semantic.get(key)
+        if value:
+            _append_unique(bits, f"{key}:{_clean_text(value, 48)}")
+    dataset_keys = semantic.get("datasetKeys", []) if isinstance(semantic.get("datasetKeys", []), list) else []
+    if dataset_keys:
+        _append_unique(bits, f"dataset:{', '.join(str(item) for item in dataset_keys[:4])}")
+    return bits[:6]
+
+
+def _looks_like_flat_reference(summary: dict[str, Any]) -> bool:
+    blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
+    if not isinstance(blocks, list) or not blocks:
+        return False
+    inspected = 0
+    flat_votes = 0
+    for block in blocks[:10]:
+        if not isinstance(block, dict):
+            continue
+        styles = block.get("styles", {}) if isinstance(block.get("styles", {}), dict) else {}
+        inspected += 1
+        background = str(styles.get("backgroundColor") or "")
+        radius = str(styles.get("borderRadius") or "")
+        font_size = str(styles.get("fontSize") or "")
+        if background in {"rgba(0, 0, 0, 0)", "transparent", "none"} and radius in {"0px", "0"}:
+            flat_votes += 1
+        if font_size == "14px":
+            flat_votes += 1
+    return inspected > 0 and flat_votes >= inspected
 
 
 def _render_repaired_bounded_reference_page_component() -> str:
@@ -346,14 +393,31 @@ def _interaction_cards_from_capture(capture_bundle: dict[str, Any], limit: int =
         states: list[str] = []
         hover_delta = entry.get("hoverDelta") or {}
         focus_delta = entry.get("focusDelta") or {}
+        hover_state = entry.get("hoverState") or {}
+        focus_state = entry.get("focusState") or {}
+        type_state = entry.get("typeState") or {}
         click_state = entry.get("clickState") or {}
         click_delta = click_state.get("stateDelta") if isinstance(click_state, dict) else {}
         if isinstance(hover_delta, dict) and hover_delta:
             states.append(f"hover: {', '.join(sorted(str(key) for key in hover_delta.keys()))}")
+        states.extend(_state_bits_from_snapshot(hover_state))
         if isinstance(focus_delta, dict) and focus_delta:
             states.append(f"focus: {', '.join(sorted(str(key) for key in focus_delta.keys()))}")
+        states.extend(_state_bits_from_snapshot(focus_state))
+        if isinstance(type_state, dict):
+            before_state = type_state.get("before") or {}
+            after_state = type_state.get("after") or {}
+            if before_state or after_state:
+                before_bits = _state_bits_from_snapshot(before_state)
+                after_bits = _state_bits_from_snapshot(after_state)
+                if before_bits or after_bits:
+                    states.append(f"type: {' | '.join(['before ' + ', '.join(before_bits[:3]) if before_bits else 'before', 'after ' + ', '.join(after_bits[:3]) if after_bits else 'after'])}")
         if isinstance(click_delta, dict) and click_delta:
             states.append(f"click: {', '.join(sorted(str(key) for key in click_delta.keys()))}")
+        if isinstance(click_state, dict):
+            states.extend(_state_bits_from_snapshot(click_state.get("before")))
+            states.extend(_state_bits_from_snapshot(click_state.get("after")))
+            states.extend(_state_bits_from_snapshot(click_state.get("restored")))
         label = (
             _clean_text(entry.get("text"), 56)
             or _clean_text(entry.get("ariaLabel"), 56)
@@ -380,6 +444,7 @@ def _trace_signal_bits(capture_bundle: dict[str, Any], limit: int = 4) -> list[s
     trace_capture = captures.get("interactionTrace", {}) if isinstance(captures.get("interactionTrace", {}), dict) else {}
     trace = trace_capture.get("content", {}) if isinstance(trace_capture, dict) else {}
     steps = trace.get("steps", []) if isinstance(trace, dict) else []
+    executions = trace.get("executions", []) if isinstance(trace, dict) else []
     bits: list[str] = []
     for step in steps[: limit * 2] if isinstance(steps, list) else []:
         if not isinstance(step, dict):
@@ -394,6 +459,25 @@ def _trace_signal_bits(capture_bundle: dict[str, Any], limit: int = 4) -> list[s
             _append_unique(bits, kind)
         if len(bits) >= limit:
             break
+    if len(bits) < limit and isinstance(executions, list):
+        for execution in executions:
+            if not isinstance(execution, dict):
+                continue
+            kind = _clean_text(execution.get("kind"), 24)
+            status = _clean_text(execution.get("status"), 24)
+            if kind and status:
+                _append_unique(bits, f"{kind} {status}")
+            state_summary = execution.get("stateSummary") or {}
+            if isinstance(state_summary, dict):
+                before = state_summary.get("before")
+                after = state_summary.get("after")
+                restored = state_summary.get("restored")
+                for label, snapshot in (("before", before), ("after", after), ("restored", restored)):
+                    state_bits = _state_bits_from_snapshot(snapshot)
+                    if state_bits:
+                        _append_unique(bits, f"{kind or 'state'} {label}: {', '.join(state_bits[:3])}")
+            if len(bits) >= limit:
+                break
     return bits[:limit]
 
 
@@ -405,12 +489,15 @@ def _repair_css(
 ) -> str:
     palette = app_model.get("palette", {}) if isinstance(app_model.get("palette", {}), dict) else {}
     typography = app_model.get("typography", {}) if isinstance(app_model.get("typography", {}), dict) else {}
+    style_tokens = app_model.get("styleTokens", {}) if isinstance(app_model.get("styleTokens", {}), dict) else {}
     viewport = app_model.get("viewport", {}) if isinstance(app_model.get("viewport", {}), dict) else {}
     focus_checks = repair_plan.get("focus_checks", []) if isinstance(repair_plan, dict) else []
     focus_checks = [str(item) for item in focus_checks if item]
     viewport_width = int(viewport.get("width") or 1440)
     shell_width = max(360, min(viewport_width - 48, 1320))
     font_family = ((typography.get("fonts") or ["Inter, system-ui, sans-serif"])[0]) if isinstance(typography.get("fonts", []), list) else "Inter, system-ui, sans-serif"
+    line_height = (typography.get("line_heights") or ["1.5"])[0] if isinstance(typography.get("line_heights", []), list) else "1.5"
+    letter_spacing = (typography.get("letter_spacings") or ["-0.01em"])[0] if isinstance(typography.get("letter_spacings", []), list) else "-0.01em"
     lines = [base_css.rstrip(), "", "/* auto-repair pass */", ":root {"]
     if palette.get("text"):
         lines.append(f"  --bounded-text: {palette['text']};")
@@ -421,6 +508,8 @@ def _repair_css(
     if palette.get("accent"):
         lines.append(f"  --bounded-accent: {palette['accent']};")
     lines.append(f"  --bounded-font-sans: {font_family};")
+    lines.append(f"  --bounded-body-line-height: {line_height};")
+    lines.append(f"  --bounded-heading-letter-spacing: {letter_spacing};")
     lines.append("}")
     lines.extend(
         [
@@ -439,7 +528,8 @@ def _repair_css(
     if "computed styles" in focus_checks:
         lines.extend(
             [
-                ".bounded-hero h1, .bounded-card h2, .bounded-brand { font-family: var(--bounded-font-sans); }",
+                ".bounded-hero h1, .bounded-card h2, .bounded-brand { font-family: var(--bounded-font-sans); letter-spacing: var(--bounded-heading-letter-spacing); }",
+                ".bounded-lede, .bounded-copy, .bounded-mini-card p, .bounded-outline-item p { line-height: var(--bounded-body-line-height); }",
                 ".bounded-chip { backdrop-filter: blur(12px); }",
             ]
         )
@@ -452,11 +542,16 @@ def _repair_css(
         )
     runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle, dict) else {}
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    styles_capture = captures.get("styles", {}) if isinstance(captures.get("styles", {}), dict) else {}
+    style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
     css_analysis = captures.get("cssAnalysis", {}) if isinstance(captures.get("cssAnalysis", {}), dict) else {}
     css_content = css_analysis.get("content", {}) if isinstance(css_analysis, dict) else {}
     body_style = css_content.get("bodyComputedStyle", {}) if isinstance(css_content.get("bodyComputedStyle", {}), dict) else {}
     presentation = app_model.get("presentation", {}) if isinstance(app_model.get("presentation", {}), dict) else {}
     compact = str(presentation.get("variant") or "") == "compact-center-stage"
+    if not style_tokens:
+        style_tokens = _derive_style_tokens(style_entries if isinstance(style_entries, list) else [])
+    flat_reference = str(presentation.get("styleMode") or "") == "flat-reference"
     if body_style.get("backgroundColor") or body_style.get("color"):
         lines.append("body {")
         if body_style.get("backgroundColor"):
@@ -475,6 +570,25 @@ def _repair_css(
                 ".bounded-compact-shell { display: grid; gap: 16px; }",
                 ".bounded-section-grid--compact { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }",
                 ".bounded-hero-actions--compact .bounded-cta { min-height: 34px; }",
+            ]
+        )
+    if flat_reference:
+        lines.extend(
+            [
+                "body { font-size: 14px; background: linear-gradient(180deg, #1f2024 0%, #1f2024 100%); }",
+                ".bounded-shell { max-width: min(100%, 1380px); padding: 8px 12px 32px; }",
+                ".bounded-panel { border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }",
+                ".bounded-masthead { padding: 6px 8px; margin-bottom: 6px; }",
+                ".bounded-hero { padding: 20px 8px 12px; margin-bottom: 8px; min-height: auto; }",
+                ".bounded-hero--compact { min-height: auto; padding-top: 16px; }",
+                ".bounded-hero-orb { display: none; }",
+                ".bounded-hero h1 { font-size: clamp(3rem, 8vw, 5.6rem); line-height: 1; font-weight: 400; letter-spacing: 0; }",
+                ".bounded-lede { max-width: 52ch; font-size: 14px; }",
+                ".bounded-nav-link, .bounded-chip, .bounded-copy, .bounded-mini-card p, .bounded-outline-item p { font-size: 14px; }",
+                ".bounded-chip, .bounded-chip--muted, .bounded-cta { border-radius: 0; border-color: transparent; background: transparent; color: inherit; padding-inline: 0; min-height: auto; }",
+                ".bounded-cta { font-weight: 400; text-decoration: none; }",
+                ".bounded-card, .bounded-stack, .bounded-mini-card, .bounded-outline-item { padding: 0; background: transparent; border: 0; }",
+                ".bounded-section-grid, .bounded-compact-shell, .bounded-layout, .bounded-rail, .bounded-stack { gap: 8px; }",
             ]
         )
     return "\n".join(lines).rstrip() + "\n"
@@ -509,12 +623,17 @@ def build_repair_scaffold(
 
     runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle, dict) else {}
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    styles_capture = captures.get("styles", {}) if isinstance(captures.get("styles", {}), dict) else {}
+    style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
+    asset_capture = captures.get("assets", {}) if isinstance(captures.get("assets", {}), dict) else {}
+    asset_content = asset_capture.get("content", {}) if isinstance(asset_capture, dict) else {}
     css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures.get("cssAnalysis", {}), dict) else {}
     css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
     body_style = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis.get("bodyComputedStyle", {}), dict) else {}
     root_style = css_analysis.get("rootComputedStyle", {}) if isinstance(css_analysis.get("rootComputedStyle", {}), dict) else {}
     palette = repaired_app_model.get("palette", {}) if isinstance(repaired_app_model.get("palette", {}), dict) else {}
     typography = repaired_app_model.get("typography", {}) if isinstance(repaired_app_model.get("typography", {}), dict) else {}
+    style_tokens = repaired_app_model.get("styleTokens", {}) if isinstance(repaired_app_model.get("styleTokens", {}), dict) else {}
     unique_links = _unique_link_entries(capture_bundle, limit=8)
     trace_bits = _trace_signal_bits(capture_bundle, limit=4)
     outline_sample = _outline_text_sample(base_summary, limit=3)
@@ -545,6 +664,18 @@ def build_repair_scaffold(
         fonts = [body_style.get("fontFamily"), *[item for item in fonts if item != body_style.get("fontFamily")]]
         typography["fonts"] = fonts[:3]
         applied_repairs.append("Promoted live body font family into bounded typography tokens.")
+    if not style_tokens:
+        style_tokens = _derive_style_tokens(style_entries if isinstance(style_entries, list) else [])
+    if body_style.get("fontFamily"):
+        families = style_tokens.get("font_families", []) if isinstance(style_tokens.get("font_families", []), list) else []
+        families = [body_style.get("fontFamily"), *[item for item in families if item != body_style.get("fontFamily")]]
+        style_tokens["font_families"] = families[:4]
+    if body_style.get("lineHeight"):
+        _append_unique(typography.setdefault("line_heights", []), body_style.get("lineHeight"))
+        _append_unique(style_tokens.setdefault("line_heights", []), body_style.get("lineHeight"))
+    if body_style.get("letterSpacing"):
+        _append_unique(typography.setdefault("letter_spacings", []), body_style.get("letterSpacing"))
+        _append_unique(style_tokens.setdefault("letter_spacings", []), body_style.get("letterSpacing"))
     if unique_links:
         masthead = repaired_app_model.get("masthead", {}) if isinstance(repaired_app_model.get("masthead", {}), dict) else {}
         masthead["links"] = unique_links[:6]
@@ -598,6 +729,7 @@ def build_repair_scaffold(
     repaired_app_model["hero"] = hero
     repaired_app_model["palette"] = palette
     repaired_app_model["typography"] = typography
+    repaired_app_model["styleTokens"] = style_tokens
 
     if "dom snapshot" in focus_checks or "screenshot" in focus_checks:
         repaired_app_model["bodySections"] = _compact_body_sections(base_summary, unique_links, trace_bits)
@@ -613,6 +745,11 @@ def build_repair_scaffold(
         }
         repaired_app_model["reconstruction"]["strategy"] = "auto-repaired-compact-next-app"
         applied_repairs.append("Collapsed the renderer into a compact center-stage composition to reduce screenshot footprint drift.")
+    if _looks_like_flat_reference(base_summary):
+        presentation = repaired_app_model.get("presentation", {}) if isinstance(repaired_app_model.get("presentation", {}), dict) else {}
+        presentation["styleMode"] = "flat-reference"
+        repaired_app_model["presentation"] = presentation
+        applied_repairs.append("Flattened panel chrome to better match a low-radius transparent reference surface.")
 
     repaired_summary["signals"] = json.loads(json.dumps(repaired_summary.get("signals", {})))
     repaired_summary["signals"]["auto_repair_available"] = True
@@ -622,19 +759,26 @@ def build_repair_scaffold(
         "applied_repairs": applied_repairs[:8],
         "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
     }
+    repaired_summary["styleTokens"] = style_tokens
+    repaired_summary["assetManifest"] = _build_asset_manifest(repaired_summary, asset_content, css_analysis, typography, style_tokens)
 
     base_css = _read_text(rebuild_artifacts.get("next-app/app/globals.css"))
     repaired_css = _repair_css(base_css, repaired_app_model, repair_plan, capture_bundle)
     repaired_preview = _render_bounded_reference_page_html(repaired_app_model)
     repaired_data_ts = _render_reference_data_ts(repaired_app_model)
+    repaired_fonts_css = _render_next_app_fonts_css(repaired_summary)
+    asset_manifest = repaired_summary.get("assetManifest", {}) if isinstance(repaired_summary.get("assetManifest", {}), dict) else {}
 
     artifacts: dict[str, Any] = {
         "layout-summary.json": repaired_summary,
         "app-model.json": repaired_app_model,
         "app-preview.html": repaired_preview,
+        "next-app/app/fonts.css": repaired_fonts_css,
         "next-app/app/globals.css": repaired_css,
         "next-app/components/BoundedReferencePage.tsx": _render_repaired_bounded_reference_page_component(),
         "next-app/components/reference-data.ts": repaired_data_ts,
+        "assets/asset-manifest.json": asset_manifest,
+        "assets/font-manifest.json": asset_manifest.get("fonts", {}),
         "prompt.txt": str(repair_plan.get("prompt") or "").rstrip() + "\n",
         "repair-notes.json": {
             "target_renderer": repair_plan.get("target_renderer"),
@@ -651,6 +795,7 @@ def build_repair_scaffold(
         "starter.tsx",
         "next-app/app/layout.tsx",
         "next-app/app/page.tsx",
+        "next-app/app/fonts.css",
     ):
         content = _read_text(rebuild_artifacts.get(key))
         if content:
