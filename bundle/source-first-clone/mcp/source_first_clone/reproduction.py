@@ -90,6 +90,16 @@ def classify_candidate(url: str) -> str:
     return "runtime-hint"
 
 
+def should_reuse_direct_iframe(final_url: str, platform: str | None) -> bool:
+    lowered = (final_url or "").lower()
+    platform = str(platform or "").lower()
+    if platform == "spline" and ("app.spline.design/file/" in lowered or "/community/file/" in lowered):
+        return False
+    if platform == "figma" and "figma.com/embed" not in lowered:
+        return False
+    return True
+
+
 def collect_reuse_candidates(capture_bundle: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -110,7 +120,7 @@ def collect_reuse_candidates(capture_bundle: dict[str, Any]) -> list[dict[str, A
 
     static = capture_bundle.get("static", {})
     frame_policy = static.get("frame_policy", {}) if isinstance(static, dict) else {}
-    if frame_policy.get("embeddable") is True and static.get("final_url"):
+    if frame_policy.get("embeddable") is True and static.get("final_url") and should_reuse_direct_iframe(static.get("final_url"), static.get("platform")):
         add(static["final_url"], "static.frame_policy", "direct-iframe")
     for item in static.get("candidate_urls", []) or []:
         if isinstance(item, dict):
