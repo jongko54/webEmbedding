@@ -6,6 +6,7 @@ import json
 import math
 import re
 import struct
+import zlib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,7 +114,7 @@ def build_fidelity_report(
         "missing_artifacts": missing_artifacts,
         "limitations": [
             "This report is bounded to persisted artifacts and metadata.",
-            "It does not perform pixel-level image diffing.",
+            "It uses bounded PNG fingerprinting, not full pixel-perfect diffing.",
             "If screenshot bytes are missing, screenshot parity cannot be verified.",
             "If DOM or style content is absent, structural and visual alignment is only partially assessed.",
         ],
@@ -269,6 +270,193 @@ def _png_metadata(path: Path) -> dict[str, Any]:
     return {"byteLength": path.stat().st_size if path.exists() else None}
 
 
+def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    png_path = Path(path)
+    if not png_path.exists():
+        return None
+    try:
+        decoded = _decode_png_rgba(png_path)
+    except Exception:
+        return None
+    width = decoded["width"]
+    height = decoded["height"]
+    pixels = decoded["pixels"]
+    if width <= 0 or height <= 0 or not pixels:
+        return None
+
+    bucket_count = 8
+    bucket_sums = [0.0] * (bucket_count * bucket_count)
+    bucket_counts = [0] * (bucket_count * bucket_count)
+    luma_total = 0.0
+    opaque_pixels = 0
+
+    for y in range(height):
+        row_start = y * width * 4
+        bucket_y = min(bucket_count - 1, (y * bucket_count) // height)
+        for x in range(width):
+            offset = row_start + x * 4
+            red = pixels[offset]
+            green = pixels[offset + 1]
+            blue = pixels[offset + 2]
+            alpha = pixels[offset + 3]
+            if alpha == 0:
+                continue
+            luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+            luma_total += luma
+            opaque_pixels += 1
+            bucket_x = min(bucket_count - 1, (x * bucket_count) // width)
+            bucket_index = bucket_y * bucket_count + bucket_x
+            bucket_sums[bucket_index] += luma
+            bucket_counts[bucket_index] += 1
+
+    if opaque_pixels == 0:
+        return None
+
+    bucket_values = [
+        (bucket_sums[index] / bucket_counts[index]) if bucket_counts[index] else 0.0
+        for index in range(bucket_count * bucket_count)
+    ]
+    average = sum(bucket_values) / len(bucket_values)
+    bits = "".join("1" if value >= average else "0" for value in bucket_values)
+    return {
+        "width": width,
+        "height": height,
+        "mean_luma": round(luma_total / opaque_pixels, 4),
+        "ahash": f"{int(bits, 2):016x}",
+    }
+
+
+def _decode_png_rgba(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    if len(data) < 8 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Not a PNG file")
+
+    offset = 8
+    width = height = bit_depth = color_type = interlace = None
+    idat_chunks: list[bytes] = []
+
+    while offset + 8 <= len(data):
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_data = data[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, _compression, _filter_method, interlace = struct.unpack(
+                ">IIBBBBB", chunk_data
+            )
+        elif chunk_type == b"IDAT":
+            idat_chunks.append(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+
+    if width is None or height is None or bit_depth != 8 or interlace not in {0, None}:
+        raise ValueError("Unsupported PNG layout")
+    if color_type not in {0, 2, 6}:
+        raise ValueError("Unsupported PNG color type")
+
+    channel_count = {0: 1, 2: 3, 6: 4}[int(color_type)]
+    bytes_per_pixel = channel_count
+    stride = width * bytes_per_pixel
+    raw = zlib.decompress(b"".join(idat_chunks))
+    expected = height * (stride + 1)
+    if len(raw) < expected:
+        raise ValueError("PNG data truncated")
+
+    rgba = bytearray(width * height * 4)
+    previous_row = bytearray(stride)
+    cursor = 0
+    output_cursor = 0
+    for _ in range(height):
+        filter_type = raw[cursor]
+        cursor += 1
+        row = bytearray(raw[cursor : cursor + stride])
+        cursor += stride
+        _apply_png_filter(row, previous_row, filter_type, bytes_per_pixel)
+
+        if color_type == 6:
+            rgba[output_cursor : output_cursor + (width * 4)] = row
+        elif color_type == 2:
+            for x in range(width):
+                source = x * 3
+                target = output_cursor + (x * 4)
+                rgba[target] = row[source]
+                rgba[target + 1] = row[source + 1]
+                rgba[target + 2] = row[source + 2]
+                rgba[target + 3] = 255
+        else:
+            for x in range(width):
+                value = row[x]
+                target = output_cursor + (x * 4)
+                rgba[target] = value
+                rgba[target + 1] = value
+                rgba[target + 2] = value
+                rgba[target + 3] = 255
+
+        previous_row = row
+        output_cursor += width * 4
+
+    return {"width": width, "height": height, "pixels": bytes(rgba)}
+
+
+def _apply_png_filter(
+    row: bytearray,
+    previous_row: bytearray,
+    filter_type: int,
+    bytes_per_pixel: int,
+) -> None:
+    if filter_type == 0:
+        return
+    if filter_type == 1:
+        for index in range(len(row)):
+            left = row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+            row[index] = (row[index] + left) & 0xFF
+        return
+    if filter_type == 2:
+        for index in range(len(row)):
+            row[index] = (row[index] + previous_row[index]) & 0xFF
+        return
+    if filter_type == 3:
+        for index in range(len(row)):
+            left = row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+            up = previous_row[index]
+            row[index] = (row[index] + ((left + up) // 2)) & 0xFF
+        return
+    if filter_type == 4:
+        for index in range(len(row)):
+            left = row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+            up = previous_row[index]
+            up_left = previous_row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+            row[index] = (row[index] + _paeth_predictor(left, up, up_left)) & 0xFF
+        return
+    raise ValueError(f"Unsupported PNG filter type: {filter_type}")
+
+
+def _paeth_predictor(left: int, up: int, up_left: int) -> int:
+    prediction = left + up - up_left
+    left_distance = abs(prediction - left)
+    up_distance = abs(prediction - up)
+    up_left_distance = abs(prediction - up_left)
+    if left_distance <= up_distance and left_distance <= up_left_distance:
+        return left
+    if up_distance <= up_left_distance:
+        return up
+    return up_left
+
+
+def _hash_similarity(reference_hash: Any, candidate_hash: Any) -> float | None:
+    if not isinstance(reference_hash, str) or not isinstance(candidate_hash, str):
+        return None
+    if len(reference_hash) != len(candidate_hash):
+        return None
+    reference_bits = bin(int(reference_hash, 16))[2:].zfill(len(reference_hash) * 4)
+    candidate_bits = bin(int(candidate_hash, 16))[2:].zfill(len(candidate_hash) * 4)
+    distance = sum(1 for left, right in zip(reference_bits, candidate_bits) if left != right)
+    total = len(reference_bits)
+    return max(0.0, 1.0 - (distance / total)) if total else None
+
+
 def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     ref_meta = reference.get("metadata") or {}
     cand_meta = candidate.get("metadata") or {}
@@ -280,6 +468,8 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
     cand_size = _artifact_size(candidate)
     ref_dims = _image_dimensions(ref_meta, ref_path)
     cand_dims = _image_dimensions(cand_meta, cand_path)
+    ref_fingerprint = _png_fingerprint(ref_path) if ref_path else None
+    cand_fingerprint = _png_fingerprint(cand_path) if cand_path else None
     status = "present" if ref_present and cand_present else "missing"
     detail = []
     if ref_dims and cand_dims:
@@ -290,6 +480,16 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
     if ref_size and cand_size:
         ratio = _safe_ratio(ref_size, cand_size)
         detail.append(f"byte-size ratio {ratio:.2f}")
+    visual_similarity = None
+    if ref_fingerprint and cand_fingerprint:
+        hash_similarity = _hash_similarity(ref_fingerprint.get("ahash"), cand_fingerprint.get("ahash"))
+        luma_similarity = _count_similarity(ref_fingerprint.get("mean_luma"), cand_fingerprint.get("mean_luma"))
+        if hash_similarity is not None:
+            detail.append(f"ahash similarity {hash_similarity:.2f}")
+        if luma_similarity is not None:
+            detail.append(f"mean-luma similarity {luma_similarity:.2f}")
+        visual_parts = [score for score in (hash_similarity, luma_similarity) if score is not None]
+        visual_similarity = sum(visual_parts) / len(visual_parts) if visual_parts else None
     summary = "screenshot parity present" if status == "present" else "screenshot parity missing"
     if detail:
         summary = f"{summary} ({'; '.join(detail)})"
@@ -298,6 +498,8 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         similarity_parts.append(1.0 if ref_dims == cand_dims else 0.0)
     if ref_size and cand_size:
         similarity_parts.append(_count_similarity(ref_size, cand_size))
+    if visual_similarity is not None:
+        similarity_parts.append(visual_similarity)
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.5
     return {
         "name": "screenshot",
@@ -307,7 +509,11 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         "reference": _artifact_report_entry(reference),
         "candidate": _artifact_report_entry(candidate),
         "similarity": similarity if status == "present" else 0.0,
-        "details": detail,
+        "details": {
+            "notes": detail,
+            "reference_fingerprint": ref_fingerprint,
+            "candidate_fingerprint": cand_fingerprint,
+        },
     }
 
 
