@@ -362,6 +362,84 @@ def _render_html(summary: dict[str, Any]) -> str:
     )
 
 
+def _render_tsx(summary: dict[str, Any]) -> str:
+    title = str(summary.get("title") or "Captured reference")
+    subtitle = str(
+        summary.get("description")
+        or "Bounded rebuild scaffold derived from DOM and style capture. Use this as a starter, not a claim of exact fidelity."
+    )
+    footer_bits = [
+        f"frame policy: {(summary.get('frame_policy', {}) or {}).get('reason') or 'unknown'}",
+        f"assets: {summary.get('assets', {}).get('image_count', 0)} images",
+        f"interactive states: {summary.get('interactions', {}).get('count', 0)}",
+    ]
+    cards: list[dict[str, str]] = []
+    for block in summary.get("blocks", []) if isinstance(summary, dict) else []:
+        rect = block.get("rect", {}) if isinstance(block, dict) else {}
+        styles = block.get("styles", {}) if isinstance(block, dict) else {}
+        detail_parts = [
+            str(styles.get(field))
+            for field in ("fontFamily", "fontSize", "fontWeight", "color", "backgroundColor")
+            if styles.get(field)
+        ]
+        cards.append(
+            {
+                "tag": str(block.get("tag") or "div"),
+                "text": str(block.get("text") or "Layout block derived from capture data."),
+                "meta": f"{rect.get('width', 0)} x {rect.get('height', 0)} px",
+                "details": " · ".join(detail_parts) if detail_parts else "No computed style sample available.",
+            }
+        )
+
+    if not cards:
+        cards.append(
+            {
+                "tag": "Captured shell",
+                "text": "No rich DOM/style data was available, so this scaffold keeps a single neutral container and metadata block.",
+                "meta": "Fallback state",
+                "details": "No computed style sample available.",
+            }
+        )
+
+    cards_literal = json.dumps(cards, ensure_ascii=False, indent=2)
+    footer_literal = json.dumps(footer_bits, ensure_ascii=False, indent=2)
+    return "\n".join(
+        [
+            'import "./starter.css";',
+            "",
+            f"const metaBits = {footer_literal} as const;",
+            f"const cards = {cards_literal} as const;",
+            "",
+            "export default function RebuildStarter() {",
+            "  return (",
+            '    <main className="shell">',
+            '      <section className="hero panel">',
+            '        <p className="eyebrow">Rebuild scaffold</p>',
+            f"        <h1>{escape(title)}</h1>",
+            f"        <p className=\"lede\">{escape(subtitle)}</p>",
+            '        <div className="meta">',
+            '          {metaBits.map((bit) => (',
+            '            <span key={bit}>{bit}</span>',
+            "          ))}",
+            "        </div>",
+            "      </section>",
+            '      <section className="grid">',
+            '        {cards.map((card, index) => (',
+            '          <article className="card panel" key={`${card.tag}-${index}`}>',
+            "            <h2>{card.tag}</h2>",
+            "            <p>{card.text}</p>",
+            "            <code>{card.meta}</code>",
+            "            <p>{card.details}</p>",
+            "          </article>",
+            "        ))}",
+            "      </section>",
+            "    </main>",
+            "  );",
+            "}",
+        ]
+    )
+
+
 def _render_prompt(summary: dict[str, Any]) -> str:
     lines = [
         "Use the scaffold as a bounded rebuild starter, not as an exact reproduction claim.",
@@ -463,17 +541,19 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     }
     html = _render_html(summary)
     css = _render_css(summary)
+    tsx = _render_tsx(summary)
     prompt = _render_prompt(summary)
 
     artifacts = {
         "layout-summary.json": summary,
         "starter.html": html,
         "starter.css": css,
+        "starter.tsx": tsx,
         "prompt.txt": prompt,
         "manifest.json": {
             "schema_version": SCAFFOLD_SCHEMA_VERSION,
             "coverage": summary["coverage"],
-            "files": ["layout-summary.json", "starter.html", "starter.css", "prompt.txt"],
+            "files": ["layout-summary.json", "starter.html", "starter.css", "starter.tsx", "prompt.txt"],
         },
     }
 

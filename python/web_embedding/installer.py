@@ -342,15 +342,36 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
         exact_reuse.pop("snippets", None)
     rebuild_scaffold = summary.get("rebuild_scaffold")
     if isinstance(rebuild_scaffold, dict):
-        artifacts = rebuild_scaffold.get("artifacts")
-        if isinstance(artifacts, dict):
-            rebuild_scaffold["artifact_files"] = list(artifacts.keys())
-            rebuild_scaffold.pop("artifacts", None)
+        summary["rebuild_scaffold"] = compact_rebuild_scaffold_summary(rebuild_scaffold)
     candidates = summary.get("candidates")
     if isinstance(candidates, list):
         summary["candidateCount"] = len(candidates)
         summary["candidateSample"] = candidates[:15]
         summary.pop("candidates", None)
+    return summary
+
+
+def compact_rebuild_scaffold_summary(scaffold: dict[str, Any]) -> dict[str, Any]:
+    summary = json.loads(json.dumps(scaffold))
+    artifacts = summary.get("artifacts")
+    if isinstance(artifacts, dict):
+        summary["artifact_files"] = list(artifacts.keys())
+        summary.pop("artifacts", None)
+    nested_summary = summary.get("summary")
+    if isinstance(nested_summary, dict):
+        summary["summary"] = {
+            "coverage": nested_summary.get("coverage"),
+            "source_url": nested_summary.get("source_url"),
+            "final_url": nested_summary.get("final_url"),
+            "title": nested_summary.get("title"),
+            "policy_mode": nested_summary.get("policy_mode"),
+            "frame_policy": nested_summary.get("frame_policy"),
+            "viewport": nested_summary.get("viewport"),
+            "signals": nested_summary.get("signals"),
+            "block_count": len(nested_summary.get("blocks", []) or []),
+            "outline_count": len(nested_summary.get("outline", []) or []),
+            "interaction_count": (nested_summary.get("interactions", {}) or {}).get("count"),
+        }
     return summary
 
 
@@ -395,10 +416,7 @@ def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
             exact_reuse.pop("snippets", None)
         rebuild_scaffold = reproduction.get("rebuild_scaffold")
         if isinstance(rebuild_scaffold, dict):
-            artifacts = rebuild_scaffold.get("artifacts")
-            if isinstance(artifacts, dict):
-                rebuild_scaffold["artifact_files"] = list(artifacts.keys())
-                rebuild_scaffold.pop("artifacts", None)
+            reproduction["rebuild_scaffold"] = compact_rebuild_scaffold_summary(rebuild_scaffold)
         candidates = reproduction.get("candidates")
         if isinstance(candidates, list):
             reproduction["candidateCount"] = len(candidates)
@@ -435,12 +453,7 @@ def command_clone(args: argparse.Namespace) -> int:
 
 
 def compact_scaffold_result(result: dict[str, Any]) -> dict[str, Any]:
-    summary = json.loads(json.dumps(result))
-    artifacts = summary.get("artifacts")
-    if isinstance(artifacts, dict):
-        summary["artifact_files"] = list(artifacts.keys())
-        summary.pop("artifacts", None)
-    return summary
+    return compact_rebuild_scaffold_summary(result)
 
 
 def command_scaffold(args: argparse.Namespace) -> int:

@@ -271,9 +271,10 @@ The persisted output directory will include:
 - `reproduction/rebuild/layout-summary.json`
 - `reproduction/rebuild/starter.html`
 - `reproduction/rebuild/starter.css`
+- `reproduction/rebuild/starter.tsx`
 - `reproduction/rebuild/manifest.json`
 
-When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a JSON layout summary plus a starter HTML/CSS pair to continue from.
+When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a JSON layout summary plus starter HTML, CSS, and TSX files to continue from.
 
 The capture bundle now includes an interaction-state layer for visible interactive elements:
 
@@ -306,9 +307,9 @@ When exact reuse is available, `reproduce` also writes:
 The new tools are still scaffolds for the next phase:
 
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
-- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS plus a layout summary for frame-blocked pages
+- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX plus a layout summary for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
-- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports without overstating exactness
+- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports with PNG fingerprinting and without overstating exactness
 
 ## Guardrails
 
