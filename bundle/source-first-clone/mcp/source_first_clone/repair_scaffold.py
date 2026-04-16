@@ -105,15 +105,241 @@ def _outline_text_sample(summary: dict[str, Any], limit: int = 4) -> list[str]:
     return sample[:limit]
 
 
+def _section_style_baseline(style: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(style, dict):
+        return {}
+    fields = (
+        "display",
+        "position",
+        "color",
+        "backgroundColor",
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "lineHeight",
+        "letterSpacing",
+        "textAlign",
+        "textTransform",
+        "whiteSpace",
+        "boxShadow",
+        "borderRadius",
+        "borderColor",
+        "borderStyle",
+        "borderWidth",
+        "gap",
+        "justifyContent",
+        "alignItems",
+        "flexDirection",
+        "opacity",
+    )
+    return {field: style.get(field) for field in fields if style.get(field) is not None}
+
+
+def _is_transparent_color(value: Any) -> bool:
+    if value is None:
+        return True
+    lowered = str(value).strip().lower()
+    return lowered in {"", "transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)", "none"}
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", []):
+            return value
+    return None
+
+
+def _choose_section_card(
+    section_cards: list[dict[str, Any]],
+    roles: set[str],
+    tags: set[str] | None = None,
+) -> dict[str, Any] | None:
+    tags = tags or set()
+    for section in section_cards:
+        if not isinstance(section, dict):
+            continue
+        if str(section.get("role") or "").lower() in roles and (
+            not tags or str(section.get("tag") or "").lower() in tags
+        ):
+            return section
+    for section in section_cards:
+        if not isinstance(section, dict):
+            continue
+        if str(section.get("role") or "").lower() in roles:
+            return section
+    for section in section_cards:
+        if not isinstance(section, dict):
+            continue
+        if not tags or str(section.get("tag") or "").lower() in tags:
+            return section
+    return section_cards[0] if section_cards else None
+
+
+def _repair_section_style_snapshot(
+    section: dict[str, Any],
+    palette: dict[str, Any],
+    typography: dict[str, Any],
+    style_tokens: dict[str, Any],
+) -> dict[str, Any]:
+    role = str(section.get("role") or "content").lower()
+    tag = str(section.get("tag") or "div").lower()
+    captured_style = _section_style_baseline(section.get("style", {}))
+    resolved_style = dict(captured_style)
+    mutations: list[str] = []
+
+    def apply(key: str, value: Any, reason: str, replace_transparent: bool = False) -> None:
+        if value in (None, ""):
+            return
+        current = resolved_style.get(key)
+        if current not in (None, "") and not (replace_transparent and key == "backgroundColor" and _is_transparent_color(current)):
+            return
+        resolved_style[key] = value
+        _append_unique(mutations, reason)
+
+    text_color = palette.get("text")
+    surface_color = _first_non_empty(palette.get("surface"), palette.get("surfaceAlt"))
+    alt_surface_color = _first_non_empty(palette.get("surfaceAlt"), palette.get("surface"))
+    font_family = _first_non_empty(
+        (typography.get("fonts") or [None])[0] if isinstance(typography.get("fonts", []), list) else None,
+        (style_tokens.get("font_families") or [None])[0] if isinstance(style_tokens.get("font_families", []), list) else None,
+    )
+    font_size = _first_non_empty(
+        (typography.get("sizes") or [None])[0] if isinstance(typography.get("sizes", []), list) else None,
+        (style_tokens.get("font_sizes") or [None])[0] if isinstance(style_tokens.get("font_sizes", []), list) else None,
+    )
+    line_height = _first_non_empty(
+        (typography.get("line_heights") or [None])[0] if isinstance(typography.get("line_heights", []), list) else None,
+        (style_tokens.get("line_heights") or [None])[0] if isinstance(style_tokens.get("line_heights", []), list) else None,
+    )
+    letter_spacing = _first_non_empty(
+        (typography.get("letter_spacings") or [None])[0] if isinstance(typography.get("letter_spacings", []), list) else None,
+        (style_tokens.get("letter_spacings") or [None])[0] if isinstance(style_tokens.get("letter_spacings", []), list) else None,
+    )
+    font_weight = _first_non_empty(
+        (typography.get("weights") or [None])[0] if isinstance(typography.get("weights", []), list) else None,
+        (style_tokens.get("font_weights") or [None])[0] if isinstance(style_tokens.get("font_weights", []), list) else None,
+    )
+
+    if role == "masthead" or tag in {"nav", "header"}:
+        apply("backgroundColor", alt_surface_color, "Filled masthead/nav background from repaired surface tokens.", replace_transparent=True)
+    else:
+        apply("backgroundColor", surface_color, "Filled section background from repaired surface tokens.", replace_transparent=True)
+    apply("color", text_color, "Filled section text color from repaired palette tokens.")
+    apply("fontFamily", font_family, "Filled section font family from repaired typography tokens.")
+    apply("fontSize", font_size, "Filled section font size from repaired typography tokens.")
+    apply("lineHeight", line_height, "Filled section line height from repaired typography tokens.")
+    apply("letterSpacing", letter_spacing, "Filled section letter spacing from repaired typography tokens.")
+    apply("fontWeight", font_weight, "Filled section font weight from repaired typography tokens.")
+
+    return {
+        "capturedStyle": captured_style,
+        "resolvedStyle": resolved_style,
+        "mutations": mutations[:6],
+    }
+
+
+def _build_section_style_snapshots(
+    summary: dict[str, Any],
+    palette: dict[str, Any],
+    typography: dict[str, Any],
+    style_tokens: dict[str, Any],
+) -> dict[str, Any]:
+    sections = summary.get("sections", []) if isinstance(summary, dict) else []
+    blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
+    paired_sections: list[dict[str, Any]] = []
+    section_by_id: dict[str, dict[str, Any]] = {}
+    for index, section in enumerate(sections if isinstance(sections, list) else []):
+        if not isinstance(section, dict):
+            continue
+        block = blocks[index] if isinstance(blocks, list) and index < len(blocks) and isinstance(blocks[index], dict) else {}
+        enriched = dict(section)
+        enriched["style"] = _section_style_baseline(block.get("styles", {}))
+        style_snapshot = _repair_section_style_snapshot(enriched, palette, typography, style_tokens)
+        enriched["styleSnapshot"] = style_snapshot
+        paired_sections.append(enriched)
+        section_id = str(enriched.get("id") or "")
+        if section_id:
+            section_by_id[section_id] = style_snapshot
+
+    hero_section = _choose_section_card(paired_sections, {"hero"})
+    nav_section = _choose_section_card(paired_sections, {"masthead"}, {"nav", "header"})
+    body_sections = [
+        section
+        for section in paired_sections
+        if str(section.get("role") or "").lower() in {"content", "band"} and section.get("id") != (hero_section or {}).get("id")
+    ]
+    body_primary = body_sections[0] if body_sections else _choose_section_card(paired_sections, {"content", "band"})
+
+    return {
+        "sections": paired_sections,
+        "hero": hero_section.get("styleSnapshot", {}) if isinstance(hero_section, dict) else {},
+        "nav": nav_section.get("styleSnapshot", {}) if isinstance(nav_section, dict) else {},
+        "body": body_primary.get("styleSnapshot", {}) if isinstance(body_primary, dict) else {},
+        "bodySections": [
+            {
+                **section,
+                "styleSnapshot": section.get("styleSnapshot", {}),
+            }
+            for section in body_sections
+        ],
+        "byId": section_by_id,
+    }
+
+
+def _section_style_css_lines(selector: str, snapshot: dict[str, Any] | None) -> list[str]:
+    if not isinstance(snapshot, dict):
+        return []
+    style = snapshot.get("resolvedStyle", {}) if isinstance(snapshot.get("resolvedStyle", {}), dict) else {}
+    prop_map = (
+        ("backgroundColor", "background-color"),
+        ("color", "color"),
+        ("fontFamily", "font-family"),
+        ("fontSize", "font-size"),
+        ("fontWeight", "font-weight"),
+        ("lineHeight", "line-height"),
+        ("letterSpacing", "letter-spacing"),
+        ("textAlign", "text-align"),
+        ("textTransform", "text-transform"),
+        ("whiteSpace", "white-space"),
+        ("boxShadow", "box-shadow"),
+        ("borderRadius", "border-radius"),
+        ("borderColor", "border-color"),
+        ("borderStyle", "border-style"),
+        ("borderWidth", "border-width"),
+        ("gap", "gap"),
+        ("justifyContent", "justify-content"),
+        ("alignItems", "align-items"),
+        ("flexDirection", "flex-direction"),
+        ("opacity", "opacity"),
+        ("display", "display"),
+        ("position", "position"),
+    )
+    lines = [f"{selector} {{"]
+    emitted = False
+    for key, css_name in prop_map:
+        value = style.get(key)
+        if value in (None, ""):
+            continue
+        if key == "backgroundColor" and _is_transparent_color(value):
+            continue
+        lines.append(f"  {css_name}: {value};")
+        emitted = True
+    lines.append("}")
+    return lines if emitted else []
+
+
 def _compact_body_sections(
     summary: dict[str, Any],
     links: list[dict[str, Any]],
     trace_bits: list[str],
+    section_style_snapshots: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     title = _clean_text(summary.get("title"), 56) or "Captured reference"
     assets = summary.get("assets", {}) if isinstance(summary.get("assets", {}), dict) else {}
+    section_style_snapshots = section_style_snapshots or {}
     sections: list[dict[str, Any]] = []
     if links:
+        nav_snapshot = section_style_snapshots.get("nav", {}) if isinstance(section_style_snapshots.get("nav", {}), dict) else {}
         sections.append(
             {
                 "id": "repair-nav",
@@ -124,8 +350,10 @@ def _compact_body_sections(
                 "meta": f"{len(links)} reusable links",
                 "details": [link["href"] for link in links[:2]],
                 "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+                "styleSnapshot": nav_snapshot,
             }
         )
+    body_snapshot = section_style_snapshots.get("body", {}) if isinstance(section_style_snapshots.get("body", {}), dict) else {}
     sections.append(
         {
             "id": "repair-structure",
@@ -136,6 +364,7 @@ def _compact_body_sections(
             "meta": f"{assets.get('image_count', 0)} images / {assets.get('script_count', 0)} scripts",
             "details": trace_bits[:3],
             "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+            "styleSnapshot": body_snapshot,
         }
     )
     return sections[:2]
@@ -622,6 +851,10 @@ def _repair_css(
         if body_style.get("color"):
             lines.append(f"  color: {body_style['color']};")
         lines.append("}")
+    section_snapshots = app_model.get("sectionStyleSnapshots", {}) if isinstance(app_model.get("sectionStyleSnapshots", {}), dict) else {}
+    lines.extend(_section_style_css_lines(".bounded-hero", section_snapshots.get("hero", {})))
+    lines.extend(_section_style_css_lines(".bounded-masthead, .bounded-nav", section_snapshots.get("nav", {})))
+    lines.extend(_section_style_css_lines(".bounded-layout, .bounded-main, .bounded-rail, .bounded-card, .bounded-mini-card", section_snapshots.get("body", {})))
     if compact:
         lines.extend(
             [
@@ -801,9 +1034,16 @@ def build_repair_scaffold(
         _append_unique(style_tokens.setdefault("letter_spacings", []), body_style.get("letterSpacing"))
     if breakpoint_contexts:
         applied_repairs.append("Applied viewport-aware layout and typography adjustments from breakpoint capture variants.")
+
+    section_style_snapshots = _build_section_style_snapshots(base_summary, palette, typography, style_tokens)
+    if section_style_snapshots.get("sections"):
+        repaired_summary["sections"] = section_style_snapshots.get("sections", [])
+        repaired_app_model["sections"] = section_style_snapshots.get("sections", [])
+        applied_repairs.append("Preserved and repaired per-section style snapshots for hero, nav, and body sections.")
     if unique_links:
         masthead = repaired_app_model.get("masthead", {}) if isinstance(repaired_app_model.get("masthead", {}), dict) else {}
         masthead["links"] = unique_links[:6]
+        masthead["styleSnapshot"] = section_style_snapshots.get("nav", {})
         repaired_app_model["masthead"] = masthead
         applied_repairs.append("Deduplicated reusable navigation links from the full runtime interaction capture.")
 
@@ -847,6 +1087,7 @@ def build_repair_scaffold(
 
     hero = repaired_app_model.get("hero", {}) if isinstance(repaired_app_model.get("hero", {}), dict) else {}
     hero["eyebrow"] = "Auto-repaired reconstruction"
+    hero["styleSnapshot"] = section_style_snapshots.get("hero", {})
     if unique_links:
         hero["actions"] = [{"label": item["label"], "href": item["href"], "states": []} for item in unique_links[:3]]
     if outline_sample and (
@@ -865,9 +1106,21 @@ def build_repair_scaffold(
     repaired_app_model["typography"] = typography
     repaired_app_model["styleTokens"] = style_tokens
     repaired_app_model["breakpoints"] = breakpoint_contexts
+    repaired_app_model["sectionStyleSnapshots"] = section_style_snapshots
+    repaired_summary["sectionStyleSnapshots"] = section_style_snapshots
+    section_style_by_id = section_style_snapshots.get("byId", {}) if isinstance(section_style_snapshots.get("byId", {}), dict) else {}
+    body_sections = repaired_app_model.get("bodySections", []) if isinstance(repaired_app_model.get("bodySections", []), list) else []
+    repaired_app_model["bodySections"] = [
+        {
+            **section,
+            "styleSnapshot": section_style_by_id.get(str(section.get("id") or "")) or section.get("styleSnapshot", {}),
+        }
+        for section in body_sections
+        if isinstance(section, dict)
+    ]
 
     if "dom snapshot" in focus_checks or "screenshot" in focus_checks:
-        repaired_app_model["bodySections"] = _compact_body_sections(base_summary, unique_links, trace_bits)
+        repaired_app_model["bodySections"] = _compact_body_sections(base_summary, unique_links, trace_bits, section_style_snapshots)
         rhythm = repaired_app_model.get("reconstruction", {}).get("layoutRhythm", []) if isinstance(repaired_app_model.get("reconstruction", {}), dict) else []
         repaired_app_model.setdefault("reconstruction", {})["layoutRhythm"] = [
             {"id": "masthead", "role": "masthead", "size": "header", "y": 0},

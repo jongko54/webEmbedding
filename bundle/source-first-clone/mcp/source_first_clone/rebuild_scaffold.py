@@ -10,6 +10,30 @@ from typing import Any
 
 SCAFFOLD_SCHEMA_VERSION = "0.1.0"
 NOISY_TAGS = {"script", "style", "meta", "link", "noscript"}
+STYLE_SNAPSHOT_FIELDS = (
+    "display",
+    "position",
+    "color",
+    "backgroundColor",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "lineHeight",
+    "letterSpacing",
+    "textAlign",
+    "textTransform",
+    "whiteSpace",
+    "boxShadow",
+    "borderRadius",
+    "borderColor",
+    "borderStyle",
+    "borderWidth",
+    "gap",
+    "justifyContent",
+    "alignItems",
+    "flexDirection",
+    "opacity",
+)
 
 
 def _clean_text(value: Any, limit: int = 160) -> str:
@@ -142,11 +166,77 @@ def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 8) -
                     "flexDirection": styles.get("flexDirection"),
                     "opacity": styles.get("opacity"),
                 },
+                "styleSnapshot": _style_snapshot_from_styles(styles),
             }
         )
         if len(blocks) >= limit:
             break
     return blocks
+
+
+def _style_snapshot_from_styles(styles: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(styles, dict):
+        return {}
+    snapshot: dict[str, str] = {}
+    for field in STYLE_SNAPSHOT_FIELDS:
+        value = styles.get(field)
+        if value is None:
+            continue
+        cleaned = " ".join(str(value).split())
+        if cleaned:
+            snapshot[field] = cleaned
+    return snapshot
+
+
+def _style_snapshot_from_block(block: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(block, dict):
+        return {}
+    styles = block.get("styles", {}) if isinstance(block.get("styles", {}), dict) else {}
+    snapshot = _style_snapshot_from_styles(styles)
+    if snapshot:
+        return snapshot
+    raw_snapshot = block.get("styleSnapshot", {})
+    return raw_snapshot if isinstance(raw_snapshot, dict) else {}
+
+
+def _style_attr_from_snapshot(style_snapshot: dict[str, Any] | None) -> str:
+    if not isinstance(style_snapshot, dict) or not style_snapshot:
+        return ""
+    css_map = {
+        "display": "display",
+        "position": "position",
+        "color": "color",
+        "backgroundColor": "background-color",
+        "fontFamily": "font-family",
+        "fontSize": "font-size",
+        "fontWeight": "font-weight",
+        "lineHeight": "line-height",
+        "letterSpacing": "letter-spacing",
+        "textAlign": "text-align",
+        "textTransform": "text-transform",
+        "whiteSpace": "white-space",
+        "boxShadow": "box-shadow",
+        "borderRadius": "border-radius",
+        "borderColor": "border-color",
+        "borderStyle": "border-style",
+        "borderWidth": "border-width",
+        "gap": "gap",
+        "justifyContent": "justify-content",
+        "alignItems": "align-items",
+        "flexDirection": "flex-direction",
+        "opacity": "opacity",
+    }
+    parts: list[str] = []
+    for field in STYLE_SNAPSHOT_FIELDS:
+        value = style_snapshot.get(field)
+        if value is None:
+            continue
+        cleaned = " ".join(str(value).split())
+        if cleaned:
+            parts.append(f"{css_map[field]}: {escape(cleaned)};")
+    if not parts:
+        return ""
+    return ' style="' + " ".join(parts) + '"'
 
 
 def _collect_unique(values: list[str | None], limit: int = 4) -> list[str]:
@@ -784,6 +874,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "copy": _block_copy(block),
                 "meta": f"{rect.get('width', 0)} x {rect.get('height', 0)} px",
                 "details": detail_parts,
+                "styleSnapshot": _style_snapshot_from_block(block),
                 "rect": {
                     "x": rect.get("x", 0),
                     "y": rect.get("y", 0),
@@ -803,6 +894,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "copy": "No rich DOM/style data was available, so this scaffold keeps a neutral shell and leaves the exact rebuild to downstream implementation.",
                 "meta": "Fallback state",
                 "details": [],
+                "styleSnapshot": {},
                 "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
             }
         )
@@ -829,6 +921,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "tag": str(entry.get("tag") or "element"),
                 "href": entry.get("href"),
                 "states": states or ["interaction detected"],
+                "styleSnapshot": _style_snapshot_from_styles(entry.get("baseStyles")),
                 "rect": entry.get("rect"),
             }
         )
@@ -887,6 +980,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
     )
     hero_section = next((section for section in section_cards if section.get("role") == "hero"), section_cards[0])
+    masthead_section = next((section for section in section_cards if section.get("role") == "masthead"), None)
     hero_title = hero_section.get("title") or str(summary.get("title") or "Captured reference")
     if _generic_section_title(str(hero_title)):
         hero_title = str(summary.get("title") or "Captured reference")
@@ -899,7 +993,12 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         if card.get("href")
     ][:4]
     action_items = [
-        {"label": card["label"], "href": card["href"], "states": card["states"]}
+        {
+            "label": card["label"],
+            "href": card["href"],
+            "states": card["states"],
+            "styleSnapshot": card.get("styleSnapshot") or {},
+        }
         for card in interaction_cards
         if card.get("href")
     ][:2]
@@ -949,6 +1048,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "masthead": {
             "brand": str(summary.get("title") or "Captured reference"),
             "links": masthead_links,
+            "styleSnapshot": (masthead_section or hero_section).get("styleSnapshot") if isinstance((masthead_section or hero_section), dict) else {},
         },
         "hero": {
             "eyebrow": "Role-inferred reconstruction",
@@ -957,6 +1057,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "meta": hero_section.get("meta"),
             "details": hero_section.get("details") or [],
             "actions": action_items,
+            "styleSnapshot": hero_section.get("styleSnapshot") or {},
         },
         "bodySections": body_sections,
         "interactions": interaction_cards,
@@ -991,23 +1092,61 @@ def _render_bounded_reference_page_tsx() -> str:
     return "\n".join(
         [
             'import type { BoundedReferenceData } from "./reference-data";',
+            'import type { CSSProperties } from "react";',
             "",
             "type Props = {",
             "  data: BoundedReferenceData;",
             "};",
             "",
+            "function styleFromSnapshot(snapshot?: Record<string, unknown> | null): CSSProperties | undefined {",
+            "  if (!snapshot || typeof snapshot !== \"object\") {",
+            "    return undefined;",
+            "  }",
+            "  const style: CSSProperties = {};",
+            "  const set = (key: keyof CSSProperties, value: unknown) => {",
+            "    if (typeof value === \"string\" && value.trim()) {",
+            "      style[key] = value as CSSProperties[keyof CSSProperties];",
+            "    }",
+            "  };",
+            "  set(\"display\", snapshot.display);",
+            "  set(\"position\", snapshot.position);",
+            "  set(\"color\", snapshot.color);",
+            "  set(\"backgroundColor\", snapshot.backgroundColor);",
+            "  set(\"fontFamily\", snapshot.fontFamily);",
+            "  set(\"fontSize\", snapshot.fontSize);",
+            "  set(\"fontWeight\", snapshot.fontWeight);",
+            "  set(\"lineHeight\", snapshot.lineHeight);",
+            "  set(\"letterSpacing\", snapshot.letterSpacing);",
+            "  set(\"textAlign\", snapshot.textAlign);",
+            "  set(\"textTransform\", snapshot.textTransform);",
+            "  set(\"whiteSpace\", snapshot.whiteSpace);",
+            "  set(\"boxShadow\", snapshot.boxShadow);",
+            "  set(\"borderRadius\", snapshot.borderRadius);",
+            "  set(\"borderColor\", snapshot.borderColor);",
+            "  set(\"borderStyle\", snapshot.borderStyle);",
+            "  set(\"borderWidth\", snapshot.borderWidth);",
+            "  set(\"gap\", snapshot.gap);",
+            "  set(\"justifyContent\", snapshot.justifyContent);",
+            "  set(\"alignItems\", snapshot.alignItems);",
+            "  set(\"flexDirection\", snapshot.flexDirection);",
+            "  set(\"opacity\", snapshot.opacity);",
+            "  return Object.keys(style).length ? style : undefined;",
+            "}",
+            "",
             "export function BoundedReferencePage({ data }: Props) {",
+            "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot);",
+            "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot);",
             "  return (",
             '    <main className="bounded-shell">',
-            '      <header className="bounded-masthead bounded-panel">',
+            '      <header className="bounded-masthead bounded-panel" style={mastheadStyle}>',
             '        <div className="bounded-brand-block">',
-            '          <p className="bounded-eyebrow">Captured reference</p>',
-            '          <strong className="bounded-brand">{data.masthead.brand}</strong>',
+            '          <p className="bounded-eyebrow" style={mastheadStyle}>Captured reference</p>',
+            '          <strong className="bounded-brand" style={mastheadStyle}>{data.masthead.brand}</strong>',
             "        </div>",
-            '        <nav className="bounded-nav" aria-label="Captured navigation sample">',
+            '        <nav className="bounded-nav" aria-label="Captured navigation sample" style={mastheadStyle}>',
             "          {data.masthead.links.length ? (",
             "            data.masthead.links.map((link) => (",
-            '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`}>',
+            '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
             "                {link.label}",
             "              </a>",
             "            ))",
@@ -1017,26 +1156,26 @@ def _render_bounded_reference_page_tsx() -> str:
             "        </nav>",
             "      </header>",
             "",
-            '      <section className="bounded-hero bounded-panel">',
-            '        <p className="bounded-eyebrow">{data.hero.eyebrow}</p>',
-            "        <h1>{data.hero.title}</h1>",
-            '        <p className="bounded-lede">{data.hero.copy}</p>',
+            '      <section className="bounded-hero bounded-panel" style={heroStyle}>',
+            '        <p className="bounded-eyebrow" style={heroStyle}>{data.hero.eyebrow}</p>',
+            '        <h1 style={heroStyle}>{data.hero.title}</h1>',
+            '        <p className="bounded-lede" style={heroStyle}>{data.hero.copy}</p>',
             '        <div className="bounded-meta">',
             "          {data.metaBits.map((bit) => (",
-            '            <span className="bounded-chip" key={bit}>',
+            '            <span className="bounded-chip" key={bit} style={heroStyle}>',
             "              {bit}",
             "            </span>",
             "          ))}",
             "        </div>",
             '        <div className="bounded-hero-actions">',
-            '          <span className="bounded-chip bounded-chip--muted">{data.hero.meta}</span>',
+            '          <span className="bounded-chip bounded-chip--muted" style={heroStyle}>{data.hero.meta}</span>',
             "          {data.hero.details.slice(0, 3).map((detail) => (",
-            '            <span className="bounded-chip bounded-chip--muted" key={detail}>',
+            '            <span className="bounded-chip bounded-chip--muted" key={detail} style={heroStyle}>',
             "              {detail}",
             "            </span>",
             "          ))}",
             "          {data.hero.actions.map((action) => (",
-            '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`}>',
+            '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`} style={styleFromSnapshot(action.styleSnapshot)}>',
             "              {action.label}",
             "            </a>",
             "          ))}",
@@ -1047,17 +1186,17 @@ def _render_bounded_reference_page_tsx() -> str:
             '        <div className="bounded-main">',
             '          <section className="bounded-section-grid">',
             "            {data.bodySections.map((section) => (",
-            '              <article className="bounded-card bounded-panel" data-role={section.role} key={section.id}>',
+            '              <article className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot)}>',
             '                <div className="bounded-card-head">',
-            '                  <p className="bounded-kicker">{section.role}</p>',
-            '                  <span className="bounded-chip bounded-chip--muted">{section.tag}</span>',
+            '                  <p className="bounded-kicker" style={styleFromSnapshot(section.styleSnapshot)}>{section.role}</p>',
+            '                  <span className="bounded-chip bounded-chip--muted" style={styleFromSnapshot(section.styleSnapshot)}>{section.tag}</span>',
             "                </div>",
-            "                <h2>{section.title}</h2>",
-            '                <p className="bounded-copy">{section.copy}</p>',
+            '                <h2 style={styleFromSnapshot(section.styleSnapshot)}>{section.title}</h2>',
+            '                <p className="bounded-copy" style={styleFromSnapshot(section.styleSnapshot)}>{section.copy}</p>',
             '                <div className="bounded-meta bounded-meta--inline">',
-            '                  <span className="bounded-chip">{section.meta}</span>',
+            '                  <span className="bounded-chip" style={styleFromSnapshot(section.styleSnapshot)}>{section.meta}</span>',
             "                  {section.details.slice(0, 3).map((detail) => (",
-            '                    <span className="bounded-chip bounded-chip--muted" key={detail}>',
+            '                    <span className="bounded-chip bounded-chip--muted" key={detail} style={styleFromSnapshot(section.styleSnapshot)}>',
             "                      {detail}",
             "                    </span>",
             "                  ))}",
@@ -1152,6 +1291,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
     interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
+    masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"))
+    hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"))
 
     nav_items = []
     for link in masthead.get("links", []) if isinstance(masthead.get("links", []), list) else []:
@@ -1159,19 +1300,19 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             continue
         label = escape(str(link.get("label") or "Captured link"))
         href = escape(str(link.get("href") or "#"))
-        nav_items.append(f'              <a class="bounded-nav-link" href="{href}">{label}</a>')
+        nav_items.append(f'              <a class="bounded-nav-link" href="{href}"{masthead_style}>{label}</a>')
     if not nav_items:
         nav_items.append('              <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
 
-    hero_detail_bits = [f'          <span class="bounded-chip bounded-chip--muted">{escape(str(hero.get("meta") or ""))}</span>'] if hero.get("meta") else []
+    hero_detail_bits = [f'          <span class="bounded-chip bounded-chip--muted"{hero_style}>{escape(str(hero.get("meta") or ""))}</span>'] if hero.get("meta") else []
     for detail in hero.get("details", [])[:3] if isinstance(hero.get("details", []), list) else []:
-        hero_detail_bits.append(f'          <span class="bounded-chip bounded-chip--muted">{escape(str(detail))}</span>')
+        hero_detail_bits.append(f'          <span class="bounded-chip bounded-chip--muted"{hero_style}>{escape(str(detail))}</span>')
     for action in hero.get("actions", []) if isinstance(hero.get("actions", []), list) else []:
         if not isinstance(action, dict):
             continue
         label = escape(str(action.get("label") or "Captured action"))
         href = escape(str(action.get("href") or "#"))
-        hero_detail_bits.append(f'          <a class="bounded-cta" href="{href}">{label}</a>')
+        hero_detail_bits.append(f'          <a class="bounded-cta" href="{href}"{_style_attr_from_snapshot(action.get("styleSnapshot"))}>{label}</a>')
 
     section_cards = []
     for section in body_sections:
@@ -1183,13 +1324,13 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         section_cards.append(
             "\n".join(
                 [
-                    f'              <article class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}">',
+                    f'              <article class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>',
                     '                <div class="bounded-card-head">',
-                    f'                  <p class="bounded-kicker">{escape(str(section.get("role") or "content"))}</p>',
-                    f'                  <span class="bounded-chip bounded-chip--muted">{escape(str(section.get("tag") or "div"))}</span>',
+                    f'                  <p class="bounded-kicker"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("role") or "content"))}</p>',
+                    f'                  <span class="bounded-chip bounded-chip--muted"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("tag") or "div"))}</span>',
                     "                </div>",
-                    f'                <h2>{escape(str(section.get("title") or "Captured section"))}</h2>',
-                    f'                <p class="bounded-copy">{escape(str(section.get("copy") or ""))}</p>',
+                    f'                <h2{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("title") or "Captured section"))}</h2>',
+                    f'                <p class="bounded-copy"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("copy") or ""))}</p>',
                     '                <div class="bounded-meta bounded-meta--inline">',
                     *detail_bits,
                     "                </div>",
@@ -1274,19 +1415,19 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "</head>",
             "<body>",
             '  <main class="bounded-shell">',
-            '    <header class="bounded-masthead bounded-panel">',
+            f'    <header class="bounded-masthead bounded-panel"{masthead_style}>',
             '      <div class="bounded-brand-block">',
-            '        <p class="bounded-eyebrow">Captured reference</p>',
-            f'        <strong class="bounded-brand">{escape(str(masthead.get("brand") or app_model.get("title") or "Captured reference"))}</strong>',
+            f'        <p class="bounded-eyebrow"{masthead_style}>Captured reference</p>',
+            f'        <strong class="bounded-brand"{masthead_style}>{escape(str(masthead.get("brand") or app_model.get("title") or "Captured reference"))}</strong>',
             "      </div>",
-            '      <nav class="bounded-nav" aria-label="Captured navigation sample">',
+            f'      <nav class="bounded-nav" aria-label="Captured navigation sample"{masthead_style}>',
             *nav_items,
             "      </nav>",
             "    </header>",
-            '    <section class="bounded-hero bounded-panel">',
-            f'      <p class="bounded-eyebrow">{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>',
-            f'      <h1>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>',
-            f'      <p class="bounded-lede">{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>',
+            f'    <section class="bounded-hero bounded-panel"{hero_style}>',
+            f'      <p class="bounded-eyebrow"{hero_style}>{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>',
+            f'      <h1{hero_style}>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>',
+            f'      <p class="bounded-lede"{hero_style}>{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>',
             '      <div class="bounded-meta">',
             *[f'        <span class="bounded-chip">{escape(str(bit))}</span>' for bit in meta_bits],
             "      </div>",
