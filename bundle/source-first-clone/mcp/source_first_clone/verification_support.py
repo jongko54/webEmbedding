@@ -34,6 +34,10 @@ SCREENSHOT_HASH_GRID_SIZE = 8
 SCREENSHOT_HISTOGRAM_BINS = 12
 SCREENSHOT_QUADRANT_COUNT = 4
 SCREENSHOT_BAND_COUNT = 3
+SCREENSHOT_PIXEL_DIFF_GRID_SIZE = 24
+SCREENSHOT_PIXEL_LUMA_SCALE = 34.0
+SCREENSHOT_PIXEL_RGB_SCALE = 42.0
+SCREENSHOT_PIXEL_MISMATCH_SCALE = 0.34
 
 
 @dataclass
@@ -416,6 +420,69 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
         "band_luma": [round(value, 2) for value in band_values],
         "edge_density": round(_grid_edge_density(grid_values, SCREENSHOT_GRID_SIZE), 4),
         "ahash": f"{int(bits, 2):016x}",
+        **(_pixel_downsample_signature(decoded, SCREENSHOT_PIXEL_DIFF_GRID_SIZE) or {}),
+    }
+
+
+def _pixel_downsample_signature(decoded: dict[str, Any], grid_size: int) -> dict[str, Any] | None:
+    width = int(decoded.get("width") or 0)
+    height = int(decoded.get("height") or 0)
+    pixels = decoded.get("pixels") or b""
+    if width <= 0 or height <= 0 or not isinstance(pixels, (bytes, bytearray)):
+        return None
+
+    cell_count = grid_size * grid_size
+    luma_sums = [0.0] * cell_count
+    red_sums = [0.0] * cell_count
+    green_sums = [0.0] * cell_count
+    blue_sums = [0.0] * cell_count
+    cell_counts = [0] * cell_count
+
+    for y in range(height):
+        row_start = y * width * 4
+        grid_y = min(grid_size - 1, (y * grid_size) // height)
+        for x in range(width):
+            offset = row_start + (x * 4)
+            alpha = pixels[offset + 3]
+            if alpha == 0:
+                continue
+            grid_x = min(grid_size - 1, (x * grid_size) // width)
+            index = (grid_y * grid_size) + grid_x
+            red = pixels[offset]
+            green = pixels[offset + 1]
+            blue = pixels[offset + 2]
+            luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+            luma_sums[index] += luma
+            red_sums[index] += red
+            green_sums[index] += green
+            blue_sums[index] += blue
+            cell_counts[index] += 1
+
+    total_cells = sum(1 for count in cell_counts if count)
+    if total_cells == 0:
+        return None
+
+    luma_grid = [
+        (luma_sums[index] / cell_counts[index]) if cell_counts[index] else 0.0
+        for index in range(cell_count)
+    ]
+    rgb_grid: list[float] = []
+    for index in range(cell_count):
+        count = cell_counts[index]
+        if not count:
+            rgb_grid.extend([0.0, 0.0, 0.0])
+            continue
+        rgb_grid.extend(
+            [
+                round(red_sums[index] / count, 2),
+                round(green_sums[index] / count, 2),
+                round(blue_sums[index] / count, 2),
+            ]
+        )
+    return {
+        "pixel_grid_size": grid_size,
+        "pixel_luma_grid": [round(value, 2) for value in luma_grid],
+        "pixel_rgb_grid": rgb_grid,
     }
 
 
@@ -581,6 +648,70 @@ def _series_similarity(reference: Any, candidate: Any, scale: float = 1.0) -> fl
     return sum(comparisons) / len(comparisons)
 
 
+def _pixel_grid_metrics(reference: dict[str, Any] | None, candidate: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(reference, dict) or not isinstance(candidate, dict):
+        return None
+    ref_luma = reference.get("pixel_luma_grid")
+    cand_luma = candidate.get("pixel_luma_grid")
+    ref_rgb = reference.get("pixel_rgb_grid")
+    cand_rgb = candidate.get("pixel_rgb_grid")
+    if not isinstance(ref_luma, list) or not isinstance(cand_luma, list):
+        return None
+    if not isinstance(ref_rgb, list) or not isinstance(cand_rgb, list):
+        return None
+    if not ref_luma or len(ref_luma) != len(cand_luma) or len(ref_rgb) != len(cand_rgb):
+        return None
+
+    luma_deltas: list[float] = []
+    rgb_deltas: list[float] = []
+    mismatch_cells = 0
+    luma_mismatch_threshold = 26.0
+    rgb_mismatch_threshold = 30.0
+
+    cell_count = len(ref_luma)
+    for index in range(cell_count):
+        ref_luma_value = ref_luma[index]
+        cand_luma_value = cand_luma[index]
+        if not isinstance(ref_luma_value, (int, float)) or not isinstance(cand_luma_value, (int, float)):
+            continue
+        luma_delta = abs(float(ref_luma_value) - float(cand_luma_value))
+        luma_deltas.append(luma_delta)
+
+        ref_rgb_offset = index * 3
+        cand_rgb_offset = index * 3
+        ref_rgb_values = ref_rgb[ref_rgb_offset : ref_rgb_offset + 3]
+        cand_rgb_values = cand_rgb[cand_rgb_offset : cand_rgb_offset + 3]
+        if len(ref_rgb_values) != 3 or len(cand_rgb_values) != 3:
+            continue
+        channel_deltas = []
+        for ref_value, cand_value in zip(ref_rgb_values, cand_rgb_values):
+            if not isinstance(ref_value, (int, float)) or not isinstance(cand_value, (int, float)):
+                channel_deltas = []
+                break
+            channel_deltas.append(abs(float(ref_value) - float(cand_value)))
+        if not channel_deltas:
+            continue
+        rgb_delta = sum(channel_deltas) / len(channel_deltas)
+        rgb_deltas.append(rgb_delta)
+        if luma_delta > luma_mismatch_threshold or rgb_delta > rgb_mismatch_threshold:
+            mismatch_cells += 1
+
+    if not luma_deltas or not rgb_deltas:
+        return None
+
+    mean_abs_luma_delta = sum(luma_deltas) / len(luma_deltas)
+    mean_abs_rgb_delta = sum(rgb_deltas) / len(rgb_deltas)
+    mismatch_ratio = mismatch_cells / max(1, len(luma_deltas))
+    return {
+        "pixel_mean_abs_luma_delta": mean_abs_luma_delta,
+        "pixel_mean_abs_rgb_delta": mean_abs_rgb_delta,
+        "pixel_mismatch_ratio": mismatch_ratio,
+        "pixel_luma_similarity": max(0.0, 1.0 - (mean_abs_luma_delta / SCREENSHOT_PIXEL_LUMA_SCALE)),
+        "pixel_rgb_similarity": max(0.0, 1.0 - (mean_abs_rgb_delta / SCREENSHOT_PIXEL_RGB_SCALE)),
+        "pixel_mismatch_similarity": max(0.0, 1.0 - (mismatch_ratio / SCREENSHOT_PIXEL_MISMATCH_SCALE)),
+    }
+
+
 def _histogram_similarity(reference: Any, candidate: Any) -> float | None:
     return _series_similarity(reference, candidate, scale=1.0)
 
@@ -642,6 +773,12 @@ def _screenshot_drift_flags(
         flags.append("shape-and-contrast drift")
     if metrics.get("contrast_similarity", 1.0) < 0.7:
         flags.append("contrast-or-depth drift")
+    if metrics.get("pixel_mismatch_ratio", 0.0) > 0.28:
+        flags.append("pixel-structure drift")
+    if metrics.get("pixel_luma_similarity", 1.0) < 0.82:
+        flags.append("luma-or-contrast drift")
+    if metrics.get("pixel_rgb_similarity", 1.0) < 0.84:
+        flags.append("channel-color drift")
     return flags
 
 
@@ -672,6 +809,7 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         detail.append(f"byte-size ratio {ratio:.2f}")
         metrics["byte_ratio"] = ratio
     if ref_fingerprint and cand_fingerprint:
+        pixel_metrics = _pixel_grid_metrics(ref_fingerprint, cand_fingerprint)
         hash_similarity = _hash_similarity(ref_fingerprint.get("ahash"), cand_fingerprint.get("ahash"))
         luma_similarity = _count_similarity(ref_fingerprint.get("mean_luma"), cand_fingerprint.get("mean_luma"))
         contrast_similarity = _count_similarity(ref_fingerprint.get("contrast"), cand_fingerprint.get("contrast"))
@@ -729,6 +867,11 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
             metrics["aspect_similarity"] = aspect_similarity
         if opaque_similarity is not None:
             metrics["opaque_similarity"] = opaque_similarity
+        if pixel_metrics is not None:
+            detail.append(f"pixel-luma delta {pixel_metrics['pixel_mean_abs_luma_delta']:.1f}")
+            detail.append(f"pixel-rgb delta {pixel_metrics['pixel_mean_abs_rgb_delta']:.1f}")
+            detail.append(f"pixel mismatch {pixel_metrics['pixel_mismatch_ratio']:.2f}")
+            metrics.update(pixel_metrics)
     summary = "screenshot parity present" if status == "present" else "screenshot parity missing"
     if detail:
         summary = f"{summary} ({'; '.join(detail)})"
@@ -747,6 +890,9 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
             "edge_similarity": 0.12,
             "aspect_similarity": 0.03,
             "opaque_similarity": 0.03,
+            "pixel_luma_similarity": 0.18,
+            "pixel_rgb_similarity": 0.12,
+            "pixel_mismatch_similarity": 0.12,
         },
     )
     if similarity is None:
@@ -1046,8 +1192,14 @@ def _focus_hint(detail: dict[str, Any]) -> str:
             return "viewport or breakpoint mismatch"
         if "composition drift" in drift_flags:
             return "hero/section placement drift"
+        if "pixel-structure drift" in drift_flags:
+            return "micro-layout or spacing drift"
         if "color-balance drift" in drift_flags or "palette-or-background drift" in drift_flags:
             return "palette or background drift"
+        if "channel-color drift" in drift_flags:
+            return "channel or accent color drift"
+        if "luma-or-contrast drift" in drift_flags:
+            return "contrast or depth drift"
         if "shape-and-contrast drift" in drift_flags or "contrast-or-depth drift" in drift_flags:
             return "contrast, typography, or icon-shape drift"
         return drift_flags[0] if drift_flags else "coarse visual drift"
@@ -1076,8 +1228,14 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
                 actions.append("Recheck viewport and breakpoint first; the screenshot footprint shifted.")
             if "composition drift" in drift_flags:
                 actions.append("Align hero and section placement before tuning fine styling; the large-scale composition diverges.")
+            if "pixel-structure drift" in drift_flags:
+                actions.append("Compare local spacing, alignment, and block placement against the reference capture.")
             if "color-balance drift" in drift_flags or "palette-or-background drift" in drift_flags:
                 actions.append("Audit palette, background, and accent token usage against the reference capture.")
+            if "channel-color drift" in drift_flags:
+                actions.append("Audit accent, image, and channel color balance against the reference capture.")
+            if "luma-or-contrast drift" in drift_flags:
+                actions.append("Check brightness, contrast, and surface depth before changing geometry.")
             if "shape-and-contrast drift" in drift_flags or "contrast-or-depth drift" in drift_flags:
                 actions.append("Compare typography weight, contrast, and icon/button shapes against the reference.")
             if not drift_flags:
