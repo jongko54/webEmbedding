@@ -239,6 +239,26 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
         f"Reference URL: {capture_bundle.get('url')}",
         f"Final URL: {static.get('final_url')}",
     ]
+    platform = static.get("platform") or "generic"
+    platform_adapter = static.get("platform_adapter", {}) if isinstance(static, dict) else {}
+    source_signals = static.get("source_signals", []) if isinstance(static, dict) else []
+    candidate_urls = static.get("candidate_urls", []) if isinstance(static, dict) else []
+    if platform != "generic":
+        prompt_lines.append(f"Platform: {platform}")
+    if isinstance(platform_adapter, dict):
+        adapter_notes = platform_adapter.get("notes", []) if isinstance(platform_adapter.get("notes", []), list) else []
+        if adapter_notes:
+            prompt_lines.append("Platform adapter notes:")
+            prompt_lines.extend(f"- {str(note)}" for note in adapter_notes[:4])
+    if source_signals:
+        prompt_lines.append("Source signals:")
+        prompt_lines.extend(f"- {signal}" for signal in source_signals[:6])
+    if candidate_urls:
+        prompt_lines.append("Reuse candidates:")
+        for item in candidate_urls[:6]:
+            if not isinstance(item, dict):
+                continue
+            prompt_lines.append(f"- {item.get('kind')}: {item.get('url')}")
 
     if static.get("title"):
         prompt_lines.append(f"Page title: {static['title']}")

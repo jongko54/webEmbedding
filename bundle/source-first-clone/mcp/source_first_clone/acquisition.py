@@ -410,6 +410,20 @@ function styleSnapshotFromComputed(style) {
     outline: style.outline,
     outlineOffset: style.outlineOffset,
     cursor: style.cursor,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    lineHeight: style.lineHeight,
+    letterSpacing: style.letterSpacing,
+    textTransform: style.textTransform,
+    paddingTop: style.paddingTop,
+    paddingRight: style.paddingRight,
+    paddingBottom: style.paddingBottom,
+    paddingLeft: style.paddingLeft,
+    marginTop: style.marginTop,
+    marginRight: style.marginRight,
+    marginBottom: style.marginBottom,
+    marginLeft: style.marginLeft,
   };
 }
 
@@ -436,6 +450,45 @@ function safeReplayValue(candidate) {
     if (["search", "text", "url", "tel"].includes(lowered)) return "web embedding";
   }
   return "web embedding";
+}
+
+function captureSemanticState(element, style) {
+  const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
+  const semanticState = {
+    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    ariaLabel: element.getAttribute("aria-label"),
+    ariaDescription: element.getAttribute("aria-description"),
+    ariaExpanded: element.getAttribute("aria-expanded"),
+    ariaPressed: element.getAttribute("aria-pressed"),
+    ariaSelected: element.getAttribute("aria-selected"),
+    ariaControls: element.getAttribute("aria-controls"),
+    ariaCurrent: element.getAttribute("aria-current"),
+    role: element.getAttribute("role"),
+    tag: element.tagName.toLowerCase(),
+    type: element.getAttribute("type"),
+    href: element.getAttribute("href"),
+    target: element.getAttribute("target"),
+    rel: element.getAttribute("rel"),
+    name: element.getAttribute("name"),
+    placeholder: element.getAttribute("placeholder"),
+    value: "value" in element ? String(element.value || "") : null,
+    checked: "checked" in element ? Boolean(element.checked) : null,
+    selected: "selected" in element ? Boolean(element.selected) : null,
+    open: element.open === true,
+    hidden: Boolean(element.hidden),
+    disabled: Boolean(element.disabled),
+    contentEditable: element.isContentEditable ? "true" : element.getAttribute("contenteditable"),
+    tabIndex: element.tabIndex,
+    datasetKeys: datasetEntries.map(([key]) => key),
+    datasetSample: Object.fromEntries(datasetEntries),
+    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
+    activeElementMatches: document.activeElement === element,
+    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+  };
+  if (style) {
+    semanticState.styleSnapshot = styleSnapshotFromComputed(style);
+  }
+  return semanticState;
 }
 
 function captureToggleState(selector) {
@@ -479,39 +532,9 @@ function captureToggleState(selector) {
   return {
     available: true,
     selector,
-    tag: element.tagName.toLowerCase(),
-    role: element.getAttribute("role"),
-    type: element.getAttribute("type"),
-    href: element.getAttribute("href"),
-    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
-    ariaExpanded: element.getAttribute("aria-expanded"),
-    ariaPressed: element.getAttribute("aria-pressed"),
-    ariaSelected: element.getAttribute("aria-selected"),
-    ariaControls: element.getAttribute("aria-controls"),
-    open: element.open === true,
-    hidden: Boolean(element.hidden),
-    disabled: Boolean(element.disabled),
     inForm: Boolean(element.closest("form")),
-    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
-    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
     controlledTargets,
-    baseStyles: {
-      display: style.display,
-      position: style.position,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      borderColor: style.borderColor,
-      borderWidth: style.borderWidth,
-      borderRadius: style.borderRadius,
-      boxShadow: style.boxShadow,
-      opacity: style.opacity,
-      transform: style.transform,
-      filter: style.filter,
-      textDecoration: style.textDecoration,
-      outline: style.outline,
-      outlineOffset: style.outlineOffset,
-      cursor: style.cursor,
-    },
+    semanticState: captureSemanticState(element, style),
   };
 }
 
@@ -559,23 +582,36 @@ function captureInteractionState(selector) {
   return {
     available: true,
     selector,
-    tag: element.tagName.toLowerCase(),
-    role: element.getAttribute("role"),
-    type: element.getAttribute("type"),
-    href: element.getAttribute("href"),
-    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
-    ariaExpanded: element.getAttribute("aria-expanded"),
-    ariaPressed: element.getAttribute("aria-pressed"),
-    ariaSelected: element.getAttribute("aria-selected"),
-    ariaControls: element.getAttribute("aria-controls"),
-    open: element.open === true,
-    hidden: Boolean(element.hidden),
-    disabled: Boolean(element.disabled),
     inForm: Boolean(element.closest("form")),
-    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
-    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
     controlledTargets: captureControlledTargetState(element),
+    semanticState: captureSemanticState(element, style),
     baseStyles: styleSnapshotFromComputed(style),
+  };
+}
+
+function summarizeInteractionState(state) {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+  const semantic = state.semanticState && typeof state.semanticState === "object" ? state.semanticState : state;
+  const pick = (key) => (Object.prototype.hasOwnProperty.call(semantic, key) ? semantic[key] : null);
+  return {
+    tag: pick("tag") ?? state.tag ?? null,
+    role: pick("role") ?? state.role ?? null,
+    text: pick("text") ?? state.text ?? null,
+    href: pick("href") ?? state.href ?? null,
+    type: pick("type") ?? state.type ?? null,
+    value: pick("value"),
+    ariaExpanded: pick("ariaExpanded"),
+    ariaPressed: pick("ariaPressed"),
+    ariaSelected: pick("ariaSelected"),
+    open: pick("open"),
+    checked: pick("checked"),
+    selected: pick("selected"),
+    disabled: pick("disabled"),
+    hidden: pick("hidden"),
+    scrollY: pick("scrollY"),
+    activeElementTag: pick("activeElementTag") ?? state.activeElementTag ?? null,
   };
 }
 
@@ -583,10 +619,18 @@ function diffInteractionStates(before, after) {
   if (!before || !after) {
     return {};
   }
+  const beforeSemantic = before.semanticState && typeof before.semanticState === "object" ? before.semanticState : before;
+  const afterSemantic = after.semanticState && typeof after.semanticState === "object" ? after.semanticState : after;
   const keys = [
+    "value",
+    "checked",
+    "selected",
+    "ariaCurrent",
     "ariaExpanded",
     "ariaPressed",
     "ariaSelected",
+    "contentEditable",
+    "tabIndex",
     "open",
     "hidden",
     "disabled",
@@ -595,19 +639,27 @@ function diffInteractionStates(before, after) {
   ];
   const diff = {};
   for (const key of keys) {
-    if ((before[key] ?? null) !== (after[key] ?? null)) {
+    if ((beforeSemantic[key] ?? null) !== (afterSemantic[key] ?? null)) {
       diff[key] = {
-        before: before[key] ?? null,
-        after: after[key] ?? null,
+        before: beforeSemantic[key] ?? null,
+        after: afterSemantic[key] ?? null,
       };
     }
   }
-  const beforeTargets = JSON.stringify(before.controlledTargets || []);
-  const afterTargets = JSON.stringify(after.controlledTargets || []);
+  const beforeTargets = JSON.stringify(before.controlledTargets || beforeSemantic.controlledTargets || []);
+  const afterTargets = JSON.stringify(after.controlledTargets || afterSemantic.controlledTargets || []);
   if (beforeTargets !== afterTargets) {
     diff.controlledTargets = {
-      before: before.controlledTargets || [],
-      after: after.controlledTargets || [],
+      before: before.controlledTargets || beforeSemantic.controlledTargets || [],
+      after: after.controlledTargets || afterSemantic.controlledTargets || [],
+    };
+  }
+  const beforeStyle = JSON.stringify(beforeSemantic.styleSnapshot || before.baseStyles || {});
+  const afterStyle = JSON.stringify(afterSemantic.styleSnapshot || after.baseStyles || {});
+  if (beforeStyle !== afterStyle) {
+    diff.styleSnapshot = {
+      before: beforeSemantic.styleSnapshot || before.baseStyles || {},
+      after: afterSemantic.styleSnapshot || after.baseStyles || {},
     };
   }
   return diff;
@@ -1059,6 +1111,8 @@ function isSafeToggleCandidate(candidate) {
       const y = Math.max(1, Math.round(candidate.rect.y + Math.min(candidate.rect.height / 2, Math.max(candidate.rect.height - 1, 1))));
       let hoverStyles = null;
       let focusStyles = null;
+      let hoverState = null;
+      let focusState = null;
       let hoverError = null;
       let focusError = null;
       let clickState = null;
@@ -1088,6 +1142,7 @@ function isSafeToggleCandidate(candidate) {
           if (!element) return null;
           return styleSnapshotFromComputed(window.getComputedStyle(element));
         }, candidate.selector);
+        hoverState = await page.evaluate(captureInteractionState, candidate.selector);
       } catch (error) {
         hoverError = error.message;
       }
@@ -1117,6 +1172,7 @@ function isSafeToggleCandidate(candidate) {
           if (!element) return null;
           return styleSnapshotFromComputed(window.getComputedStyle(element));
         }, candidate.selector);
+        focusState = await page.evaluate(captureInteractionState, candidate.selector);
         await page.evaluate((selector) => {
           const element = document.querySelector(selector);
           if (element && typeof element.blur === 'function') {
@@ -1131,9 +1187,11 @@ function isSafeToggleCandidate(candidate) {
         ...candidate,
         hoverStyles,
         hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
+        hoverState,
         hoverError,
         focusStyles,
         focusDelta: diffStyleSnapshots(candidate.baseStyles, focusStyles),
+        focusState,
         focusError,
       });
       const hoverStep = pushTraceStep({
@@ -1148,6 +1206,7 @@ function isSafeToggleCandidate(candidate) {
         kind: hoverStep.kind,
         status: hoverError ? "failed" : "executed",
         changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, hoverStyles)),
+        stateSummary: summarizeInteractionState(hoverState),
         error: hoverError,
       });
       const focusStep = pushTraceStep({
@@ -1162,11 +1221,14 @@ function isSafeToggleCandidate(candidate) {
         kind: focusStep.kind,
         status: focusError ? "failed" : "executed",
         changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, focusStyles)),
+        stateSummary: summarizeInteractionState(focusState),
         error: focusError,
       });
 
       if (candidate.inputCapable) {
         const typeValue = safeReplayValue(candidate);
+        let beforeTypeState = null;
+        let afterTypeState = null;
         const typeStep = pushTraceStep({
           kind: "type",
           safeToExecute: true,
@@ -1176,9 +1238,11 @@ function isSafeToggleCandidate(candidate) {
           value: typeValue,
         });
         try {
+          beforeTypeState = await page.evaluate(captureInteractionState, candidate.selector);
           const beforeValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
           await page.fill(candidate.selector, typeValue);
           await page.waitForTimeout(80);
+          afterTypeState = await page.evaluate(captureInteractionState, candidate.selector);
           const afterValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
           await page.fill(candidate.selector, beforeValue);
           pushExecution({
@@ -1187,6 +1251,10 @@ function isSafeToggleCandidate(candidate) {
             status: "executed",
             beforeValue: trimText(beforeValue, 80),
             afterValue: trimText(afterValue, 80),
+            stateSummary: {
+              before: summarizeInteractionState(beforeTypeState),
+              after: summarizeInteractionState(afterTypeState),
+            },
           });
         } catch (error) {
           pushExecution({
@@ -1251,6 +1319,11 @@ function isSafeToggleCandidate(candidate) {
               afterState,
               restoredState,
               stateDelta,
+              stateSummary: {
+                before: summarizeInteractionState(beforeState),
+                after: summarizeInteractionState(afterState),
+                restored: summarizeInteractionState(restoredState),
+              },
               error: restoreError,
             });
           } catch (error) {
@@ -1272,9 +1345,11 @@ function isSafeToggleCandidate(candidate) {
         ...candidate,
         hoverStyles,
         hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
+        hoverState,
         hoverError,
         focusStyles,
         focusDelta: diffStyleSnapshots(candidate.baseStyles, focusStyles),
+        focusState,
         focusError,
         clickState,
       });

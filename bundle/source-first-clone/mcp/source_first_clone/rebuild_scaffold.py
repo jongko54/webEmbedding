@@ -35,6 +35,14 @@ def _is_transparent(color: str | None) -> bool:
     return lowered in {"transparent", "rgba(0, 0, 0, 0)", "rgba(0,0,0,0)", "none"}
 
 
+def _append_unique(items: list[str], value: str | None) -> None:
+    if not value:
+        return
+    cleaned = " ".join(str(value).split())
+    if cleaned and cleaned not in items:
+        items.append(cleaned)
+
+
 def _get_capture_sections(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     static = capture_bundle.get("static", {}) if isinstance(capture_bundle, dict) else {}
     runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle, dict) else {}
@@ -119,7 +127,19 @@ def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 8) -
                     "fontSize": styles.get("fontSize"),
                     "fontWeight": styles.get("fontWeight"),
                     "lineHeight": styles.get("lineHeight"),
+                    "letterSpacing": styles.get("letterSpacing"),
+                    "textAlign": styles.get("textAlign"),
+                    "textTransform": styles.get("textTransform"),
+                    "whiteSpace": styles.get("whiteSpace"),
+                    "boxShadow": styles.get("boxShadow"),
                     "borderRadius": styles.get("borderRadius"),
+                    "borderColor": styles.get("borderColor"),
+                    "borderStyle": styles.get("borderStyle"),
+                    "borderWidth": styles.get("borderWidth"),
+                    "gap": styles.get("gap"),
+                    "justifyContent": styles.get("justifyContent"),
+                    "alignItems": styles.get("alignItems"),
+                    "flexDirection": styles.get("flexDirection"),
                     "opacity": styles.get("opacity"),
                 },
             }
@@ -174,6 +194,8 @@ def _derive_typography(style_entries: list[dict[str, Any]]) -> dict[str, Any]:
     fonts: list[str | None] = []
     sizes: list[str | None] = []
     weights: list[str | None] = []
+    line_heights: list[str | None] = []
+    letter_spacings: list[str | None] = []
     for entry in style_entries:
         if not isinstance(entry, dict):
             continue
@@ -181,11 +203,158 @@ def _derive_typography(style_entries: list[dict[str, Any]]) -> dict[str, Any]:
         fonts.append(styles.get("fontFamily"))
         sizes.append(styles.get("fontSize"))
         weights.append(styles.get("fontWeight"))
+        line_heights.append(styles.get("lineHeight"))
+        letter_spacings.append(styles.get("letterSpacing"))
     return {
         "fonts": _collect_unique(fonts, limit=3),
         "sizes": _collect_unique(sizes, limit=4),
         "weights": _collect_unique(weights, limit=4),
+        "line_heights": _collect_unique(line_heights, limit=4),
+        "letter_spacings": _collect_unique(letter_spacings, limit=4),
     }
+
+
+def _derive_style_tokens(style_entries: list[dict[str, Any]]) -> dict[str, list[str]]:
+    token_values: dict[str, list[str | None]] = {
+        "display": [],
+        "position": [],
+        "font_families": [],
+        "font_sizes": [],
+        "font_weights": [],
+        "line_heights": [],
+        "letter_spacings": [],
+        "text_aligns": [],
+        "text_transforms": [],
+        "white_spaces": [],
+        "box_shadows": [],
+        "border_radii": [],
+        "border_colors": [],
+        "border_styles": [],
+        "border_widths": [],
+        "gaps": [],
+        "justify_contents": [],
+        "align_items": [],
+        "flex_directions": [],
+    }
+    for entry in style_entries:
+        if not isinstance(entry, dict):
+            continue
+        styles = entry.get("styles", {}) if isinstance(entry.get("styles", {}), dict) else {}
+        token_values["display"].append(styles.get("display"))
+        token_values["position"].append(styles.get("position"))
+        token_values["font_families"].append(styles.get("fontFamily"))
+        token_values["font_sizes"].append(styles.get("fontSize"))
+        token_values["font_weights"].append(styles.get("fontWeight"))
+        token_values["line_heights"].append(styles.get("lineHeight"))
+        token_values["letter_spacings"].append(styles.get("letterSpacing"))
+        token_values["text_aligns"].append(styles.get("textAlign"))
+        token_values["text_transforms"].append(styles.get("textTransform"))
+        token_values["white_spaces"].append(styles.get("whiteSpace"))
+        token_values["box_shadows"].append(styles.get("boxShadow"))
+        token_values["border_radii"].append(styles.get("borderRadius"))
+        token_values["border_colors"].append(styles.get("borderColor"))
+        token_values["border_styles"].append(styles.get("borderStyle"))
+        token_values["border_widths"].append(styles.get("borderWidth"))
+        token_values["gaps"].append(styles.get("gap"))
+        token_values["justify_contents"].append(styles.get("justifyContent"))
+        token_values["align_items"].append(styles.get("alignItems"))
+        token_values["flex_directions"].append(styles.get("flexDirection"))
+    return {key: _collect_unique(values, limit=4) for key, values in token_values.items()}
+
+
+def _collect_url_values(values: list[str | None], limit: int = 8) -> list[str]:
+    seen: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        cleaned = " ".join(str(value).split())
+        if cleaned and cleaned not in seen:
+            seen.append(cleaned)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _build_asset_manifest(
+    summary: dict[str, Any],
+    asset_content: dict[str, Any],
+    css_analysis: dict[str, Any],
+    typography: dict[str, Any],
+    style_tokens: dict[str, list[str]],
+) -> dict[str, Any]:
+    linked_stylesheets = css_analysis.get("linkedStylesheets", []) if isinstance(css_analysis, dict) else []
+    stylesheet_urls = _collect_url_values(
+        [
+            *(asset_content.get("stylesheets", []) or []),
+            *[
+                item.get("href")
+                for item in linked_stylesheets[:6]
+                if isinstance(item, dict)
+            ],
+        ],
+        limit=6,
+    )
+    font_families = _collect_unique(
+        [
+            *(typography.get("fonts") or []),
+            *(style_tokens.get("font_families") or []),
+            (css_analysis.get("bodyComputedStyle", {}) or {}).get("fontFamily") if isinstance(css_analysis, dict) else None,
+            (css_analysis.get("rootComputedStyle", {}) or {}).get("fontFamily") if isinstance(css_analysis, dict) else None,
+        ],
+        limit=4,
+    )
+    return {
+        "summary": {
+            "images": len(asset_content.get("images", []) or []),
+            "scripts": len(asset_content.get("scripts", []) or []),
+            "stylesheets": len(asset_content.get("stylesheets", []) or []),
+            "videos": len(asset_content.get("videos", []) or []),
+            "audios": len(asset_content.get("audios", []) or []),
+            "iframes": len(asset_content.get("iframes", []) or []),
+        },
+        "images": _collect_url_values(asset_content.get("images", []) or [], limit=12),
+        "scripts": _collect_url_values(asset_content.get("scripts", []) or [], limit=12),
+        "stylesheets": stylesheet_urls,
+        "videos": _collect_url_values(asset_content.get("videos", []) or [], limit=8),
+        "audios": _collect_url_values(asset_content.get("audios", []) or [], limit=8),
+        "iframes": _collect_url_values(asset_content.get("iframes", []) or [], limit=8),
+        "fonts": {
+            "families": font_families,
+            "bodyComputedStyle": (css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis, dict) else {}),
+            "rootComputedStyle": (css_analysis.get("rootComputedStyle", {}) if isinstance(css_analysis, dict) else {}),
+            "materializationStrategy": "stylesheet-imports-and-font-family-tokens",
+        },
+        "materialization": {
+            "stylesheetImports": stylesheet_urls[:4],
+            "fontFamilies": font_families[:4],
+        },
+        "styleTokens": style_tokens,
+    }
+
+
+def _render_next_app_fonts_css(summary: dict[str, Any]) -> str:
+    asset_manifest = summary.get("assetManifest", {}) if isinstance(summary, dict) else {}
+    fonts = asset_manifest.get("fonts", {}) if isinstance(asset_manifest, dict) else {}
+    families = fonts.get("families", []) if isinstance(fonts, dict) else []
+    stylesheet_imports = asset_manifest.get("materialization", {}).get("stylesheetImports", []) if isinstance(asset_manifest, dict) else []
+    base_font = families[0] if families else ((summary.get("typography", {}) or {}).get("fonts") or ["Inter, system-ui, sans-serif"])[0]
+    lines: list[str] = []
+    for href in stylesheet_imports[:4]:
+        lines.append(f'@import url("{href}");')
+    if lines:
+        lines.append("")
+    lines.extend(
+        [
+            ":root {",
+            f"  --bounded-font-sans: {base_font};",
+            "}",
+            "",
+            "html, body {",
+            "  font-family: var(--bounded-font-sans);",
+            "}",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_css(summary: dict[str, Any]) -> str:
@@ -689,6 +858,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
 
     meta_bits = [
         f"frame policy: {(summary.get('frame_policy', {}) or {}).get('reason') or 'unknown'}",
+        f"platform: {summary.get('platform') or 'generic'}",
         f"blocks: {len(section_cards)}",
         f"assets: {(summary.get('assets', {}) or {}).get('image_count', 0)} images / {(summary.get('assets', {}) or {}).get('script_count', 0)} scripts",
         f"interactive states: {(summary.get('interactions', {}) or {}).get('count', 0)}",
@@ -698,6 +868,19 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         for label, enabled in ((summary.get("signals", {}) or {}).items())
         if enabled
     ]
+    adapter = summary.get("platform_adapter", {}) if isinstance(summary.get("platform_adapter", {}), dict) else {}
+    def add_signal_bit(value: str | None) -> None:
+        if not value:
+            return
+        cleaned = " ".join(str(value).split())
+        if cleaned and cleaned not in signal_bits:
+            signal_bits.append(cleaned)
+    for signal in summary.get("source_signals", [])[:6] if isinstance(summary.get("source_signals", []), list) else []:
+        add_signal_bit(f"source signal: {signal}")
+    for note in adapter.get("notes", [])[:4] if isinstance(adapter.get("notes", []), list) else []:
+        add_signal_bit(f"adapter note: {_clean_text(note, 96)}")
+    if summary.get("candidate_count"):
+        add_signal_bit(f"candidate urls: {summary.get('candidate_count')}")
 
     subtitle = (
         summary.get("description")
@@ -757,7 +940,11 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "fonts": typography.get("fonts") or [],
             "sizes": typography.get("sizes") or [],
             "weights": typography.get("weights") or [],
+            "line_heights": typography.get("line_heights") or [],
+            "letter_spacings": typography.get("letter_spacings") or [],
         },
+        "styleTokens": summary.get("styleTokens") or {},
+        "assetManifest": summary.get("assetManifest") or {},
         "sections": section_cards,
         "masthead": {
             "brand": str(summary.get("title") or "Captured reference"),
@@ -781,6 +968,10 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "remainingGaps": _remaining_gaps(summary),
             "layoutRhythm": rhythm,
         },
+        "platform": summary.get("platform") or "generic",
+        "platformAdapter": adapter,
+        "sourceSignals": summary.get("source_signals") or [],
+        "candidateSample": summary.get("candidate_sample") or [],
         "note": str(summary.get("note") or ""),
     }
 
@@ -1078,6 +1269,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             '  <meta charset="utf-8" />',
             '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
             f'  <title>{escape(str(app_model.get("title") or "Captured reference"))}</title>',
+            '  <link rel="stylesheet" href="./next-app/app/fonts.css" />',
             '  <link rel="stylesheet" href="./next-app/app/globals.css" />',
             "</head>",
             "<body>",
@@ -1170,6 +1362,7 @@ def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
     )
     return "\n".join(
         [
+            'import "./fonts.css";',
             'import "./globals.css";',
             'import type { Metadata } from "next";',
             'import type { ReactNode } from "react";',
@@ -1202,6 +1395,8 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
     surface_color = palette.get("surface") or "#0f172a"
     surface_alt = palette.get("surface_alt") or "#172033"
     accent = palette.get("accent") or "#7c3aed"
+    line_height = (typography.get("line_heights") or ["1.5"])[0]
+    letter_spacing = (typography.get("letter_spacings") or ["-0.01em"])[0]
     return "\n".join(
         [
             ":root {",
@@ -1212,6 +1407,8 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  --bounded-muted: rgba(226, 232, 240, 0.72);",
             "  --bounded-border: rgba(255, 255, 255, 0.12);",
             f"  --bounded-font-sans: {base_font};",
+            f"  --bounded-body-line-height: {line_height};",
+            f"  --bounded-heading-letter-spacing: {letter_spacing};",
             "}",
             "",
             "* { box-sizing: border-box; }",
@@ -1287,7 +1484,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-hero h1, .bounded-card h2 {",
             "  margin: 0;",
-            "  letter-spacing: -0.04em;",
+            "  letter-spacing: var(--bounded-heading-letter-spacing);",
             "}",
             ".bounded-hero h1 {",
             "  font-size: clamp(2.2rem, 4vw, 4.4rem);",
@@ -1295,7 +1492,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-lede, .bounded-copy, .bounded-mini-card p, .bounded-outline-item p {",
             "  color: var(--bounded-muted);",
-            "  line-height: 1.6;",
+            "  line-height: var(--bounded-body-line-height);",
             "}",
             ".bounded-lede {",
             "  max-width: 62ch;",
@@ -1444,6 +1641,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
     breakpoint_variants = breakpoint_summary.get("variants", []) if isinstance(breakpoint_summary, dict) else []
     css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
+    typography = _derive_typography(style_entries)
+    style_tokens = _derive_style_tokens(style_entries)
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
@@ -1454,6 +1653,11 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "description": meta.get("description"),
         "policy_mode": policy.get("mode"),
         "frame_policy": frame_policy,
+        "platform": static.get("platform") or "generic",
+        "platform_adapter": static.get("platform_adapter") or {},
+        "source_signals": static.get("source_signals") or [],
+        "candidate_count": len(static.get("candidate_urls") or []),
+        "candidate_sample": (static.get("candidate_urls") or [])[:6],
         "viewport": {
             "width": session_request.get("viewport_width"),
             "height": session_request.get("viewport_height"),
@@ -1475,7 +1679,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "outline": outline[:12],
         "blocks": blocks,
         "palette": _derive_palette(style_entries),
-        "typography": _derive_typography(style_entries),
+        "typography": typography,
+        "styleTokens": style_tokens,
         "assets": {
             "image_count": image_count,
             "script_count": script_count,
@@ -1512,6 +1717,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         },
         "note": "This scaffold is intentionally bounded. It is a starter for reconstruction when an exact reuse path is unavailable.",
     }
+    asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens)
+    summary["assetManifest"] = asset_manifest
     html = _render_html(summary)
     css = _render_css(summary)
     tsx = _render_tsx(summary)
@@ -1522,6 +1729,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     app_page_tsx = _render_next_app_page_tsx()
     app_layout_tsx = _render_next_app_layout_tsx(summary)
     app_globals_css = _render_next_app_globals_css(summary)
+    app_fonts_css = _render_next_app_fonts_css(summary)
     app_preview_html = _render_bounded_reference_page_html(app_model)
 
     artifacts = {
@@ -1533,10 +1741,13 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "prompt.txt": prompt,
         "next-app/app/layout.tsx": app_layout_tsx,
         "next-app/app/page.tsx": app_page_tsx,
+        "next-app/app/fonts.css": app_fonts_css,
         "next-app/app/globals.css": app_globals_css,
         "app-preview.html": app_preview_html,
         "next-app/components/BoundedReferencePage.tsx": app_component_tsx,
         "next-app/components/reference-data.ts": app_data_ts,
+        "assets/asset-manifest.json": asset_manifest,
+        "assets/font-manifest.json": asset_manifest.get("fonts", {}),
         "manifest.json": {
             "schema_version": SCAFFOLD_SCHEMA_VERSION,
             "coverage": summary["coverage"],
@@ -1549,10 +1760,13 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "prompt.txt",
                 "next-app/app/layout.tsx",
                 "next-app/app/page.tsx",
+                "next-app/app/fonts.css",
                 "next-app/app/globals.css",
                 "app-preview.html",
                 "next-app/components/BoundedReferencePage.tsx",
                 "next-app/components/reference-data.ts",
+                "assets/asset-manifest.json",
+                "assets/font-manifest.json",
             ],
             "app_entrypoints": summary["renderer"]["entrypoints"],
         },
