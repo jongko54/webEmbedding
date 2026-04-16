@@ -203,6 +203,7 @@ The inspection layer now includes initial platform adapters for:
 - `Figma`
   - generated `figma-embed` reuse target from share/community URLs
   - duplicate/community source signals
+  - URL-only fallback keeps adapter routing alive even when `figma.com` blocks static fetch with `403`
 - `Framer`
   - published-site detection via host/generator hints
 - `Webflow`
