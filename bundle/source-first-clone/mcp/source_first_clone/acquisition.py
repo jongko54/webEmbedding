@@ -438,6 +438,206 @@ function safeReplayValue(candidate) {
   return "web embedding";
 }
 
+function captureToggleState(selector) {
+  const element = document.querySelector(selector);
+  if (!element) {
+    return { available: false, selector };
+  }
+  const style = window.getComputedStyle(element);
+  const ids = String(element.getAttribute("aria-controls") || "")
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const controlledTargets = ids.map((id) => {
+    const target = document.getElementById(id);
+    if (!target) {
+      return { id, missing: true };
+    }
+    const targetStyle = window.getComputedStyle(target);
+    const targetRect = target.getBoundingClientRect();
+    return {
+      id,
+      tag: target.tagName.toLowerCase(),
+      role: target.getAttribute("role"),
+      open: target.open === true,
+      hidden: Boolean(target.hidden),
+      ariaHidden: target.getAttribute("aria-hidden"),
+      ariaExpanded: target.getAttribute("aria-expanded"),
+      ariaSelected: target.getAttribute("aria-selected"),
+      display: targetStyle.display,
+      visibility: targetStyle.visibility,
+      rect: {
+        x: Math.round(targetRect.x),
+        y: Math.round(targetRect.y),
+        width: Math.round(targetRect.width),
+        height: Math.round(targetRect.height),
+      },
+      text: (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    };
+  });
+  return {
+    available: true,
+    selector,
+    tag: element.tagName.toLowerCase(),
+    role: element.getAttribute("role"),
+    type: element.getAttribute("type"),
+    href: element.getAttribute("href"),
+    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    ariaExpanded: element.getAttribute("aria-expanded"),
+    ariaPressed: element.getAttribute("aria-pressed"),
+    ariaSelected: element.getAttribute("aria-selected"),
+    ariaControls: element.getAttribute("aria-controls"),
+    open: element.open === true,
+    hidden: Boolean(element.hidden),
+    disabled: Boolean(element.disabled),
+    inForm: Boolean(element.closest("form")),
+    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
+    controlledTargets,
+    baseStyles: {
+      display: style.display,
+      position: style.position,
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      borderColor: style.borderColor,
+      borderWidth: style.borderWidth,
+      borderRadius: style.borderRadius,
+      boxShadow: style.boxShadow,
+      opacity: style.opacity,
+      transform: style.transform,
+      filter: style.filter,
+      textDecoration: style.textDecoration,
+      outline: style.outline,
+      outlineOffset: style.outlineOffset,
+      cursor: style.cursor,
+    },
+  };
+}
+
+function captureControlledTargetState(element) {
+  const ids = String(element.getAttribute("aria-controls") || "")
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return ids.map((id) => {
+    const target = document.getElementById(id);
+    if (!target) {
+      return { id, missing: true };
+    }
+    const style = window.getComputedStyle(target);
+    const rect = target.getBoundingClientRect();
+    return {
+      id,
+      tag: target.tagName.toLowerCase(),
+      role: target.getAttribute("role"),
+      open: target.open === true,
+      hidden: Boolean(target.hidden),
+      ariaHidden: target.getAttribute("aria-hidden"),
+      ariaExpanded: target.getAttribute("aria-expanded"),
+      ariaSelected: target.getAttribute("aria-selected"),
+      display: style.display,
+      visibility: style.visibility,
+      rect: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      text: (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    };
+  });
+}
+
+function captureInteractionState(selector) {
+  const element = document.querySelector(selector);
+  if (!element) {
+    return { available: false, selector };
+  }
+  const style = window.getComputedStyle(element);
+  return {
+    available: true,
+    selector,
+    tag: element.tagName.toLowerCase(),
+    role: element.getAttribute("role"),
+    type: element.getAttribute("type"),
+    href: element.getAttribute("href"),
+    text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+    ariaExpanded: element.getAttribute("aria-expanded"),
+    ariaPressed: element.getAttribute("aria-pressed"),
+    ariaSelected: element.getAttribute("aria-selected"),
+    ariaControls: element.getAttribute("aria-controls"),
+    open: element.open === true,
+    hidden: Boolean(element.hidden),
+    disabled: Boolean(element.disabled),
+    inForm: Boolean(element.closest("form")),
+    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
+    controlledTargets: captureControlledTargetState(element),
+    baseStyles: styleSnapshotFromComputed(style),
+  };
+}
+
+function diffInteractionStates(before, after) {
+  if (!before || !after) {
+    return {};
+  }
+  const keys = [
+    "ariaExpanded",
+    "ariaPressed",
+    "ariaSelected",
+    "open",
+    "hidden",
+    "disabled",
+    "scrollY",
+    "activeElementTag",
+  ];
+  const diff = {};
+  for (const key of keys) {
+    if ((before[key] ?? null) !== (after[key] ?? null)) {
+      diff[key] = {
+        before: before[key] ?? null,
+        after: after[key] ?? null,
+      };
+    }
+  }
+  const beforeTargets = JSON.stringify(before.controlledTargets || []);
+  const afterTargets = JSON.stringify(after.controlledTargets || []);
+  if (beforeTargets !== afterTargets) {
+    diff.controlledTargets = {
+      before: before.controlledTargets || [],
+      after: after.controlledTargets || [],
+    };
+  }
+  return diff;
+}
+
+function isSafeToggleCandidate(candidate) {
+  if (!candidate || candidate.href) {
+    return false;
+  }
+  if (candidate.inForm) {
+    return false;
+  }
+  const tag = String(candidate.tag || "").toLowerCase();
+  const role = String(candidate.role || "").toLowerCase();
+  const type = String(candidate.type || "").toLowerCase();
+  if (tag === "summary") {
+    return true;
+  }
+  if (candidate.ariaExpanded !== null || candidate.ariaControls) {
+    return true;
+  }
+  if (role === "tab" || role === "menuitem") {
+    return true;
+  }
+  if (tag === "button" && type === "button") {
+    return true;
+  }
+  return false;
+}
+
 (async () => {
   let browser = null;
   let context = null;
@@ -678,6 +878,11 @@ function safeReplayValue(candidate) {
           href: element.getAttribute('href'),
           type: element.getAttribute('type'),
           ariaLabel: element.getAttribute('aria-label'),
+          ariaExpanded: element.getAttribute('aria-expanded'),
+          ariaPressed: element.getAttribute('aria-pressed'),
+          ariaSelected: element.getAttribute('aria-selected'),
+          ariaControls: element.getAttribute('aria-controls'),
+          inForm: Boolean(element.closest('form')),
           inputCapable: (
             element.tagName.toLowerCase() === 'textarea' ||
             (
@@ -772,6 +977,7 @@ function safeReplayValue(candidate) {
       let focusStyles = null;
       let hoverError = null;
       let focusError = null;
+      let clickState = null;
 
       try {
         await page.mouse.move(x, y);
@@ -909,20 +1115,85 @@ function safeReplayValue(candidate) {
       }
 
       if (candidate.clickCapable) {
+        const safeToggleLike = isSafeToggleCandidate(candidate);
         const clickStep = pushTraceStep({
           kind: "click",
-          safeToExecute: false,
+          safeToExecute: safeToggleLike,
           targetId: candidate.id,
           selector: candidate.selector,
           label: candidate.text || candidate.ariaLabel || candidate.tag,
         });
-        pushExecution({
-          stepId: clickStep.id,
-          kind: clickStep.kind,
-          status: "planned",
-          reason: "Click replay is captured as a plan only in v1 to avoid destructive navigation or mutation.",
-        });
+        if (!safeToggleLike) {
+          pushExecution({
+            stepId: clickStep.id,
+            kind: clickStep.kind,
+            status: "planned",
+            reason: "Click replay is captured as a plan only unless the control looks like a safe toggle.",
+          });
+        } else {
+          try {
+            const beforeState = await page.evaluate(captureToggleState, candidate.selector);
+            await page.click(candidate.selector, { timeout: 2500 });
+            await page.waitForTimeout(80);
+            const afterState = await page.evaluate(captureToggleState, candidate.selector);
+            const stateDelta = diffInteractionStates(beforeState, afterState);
+            const stateChanged = Object.keys(stateDelta).length > 0;
+            let restoredState = null;
+            let restoreError = null;
+            if (stateChanged) {
+              try {
+                await page.click(candidate.selector, { timeout: 2500 });
+                await page.waitForTimeout(60);
+                restoredState = await page.evaluate(captureToggleState, candidate.selector);
+              } catch (error) {
+                restoreError = error.message;
+              }
+            }
+            clickState = {
+              safeToggleLike,
+              before: beforeState,
+              after: afterState,
+              restored: restoredState,
+              stateDelta,
+              restoreError,
+            };
+            pushExecution({
+              stepId: clickStep.id,
+              kind: clickStep.kind,
+              status: "executed",
+              safeToggleLike,
+              stateChanged,
+              beforeState,
+              afterState,
+              restoredState,
+              stateDelta,
+              error: restoreError,
+            });
+          } catch (error) {
+            clickState = {
+              safeToggleLike,
+              error: error.message,
+            };
+            pushExecution({
+              stepId: clickStep.id,
+              kind: clickStep.kind,
+              status: "failed",
+              safeToggleLike,
+              error: error.message,
+            });
+          }
+        }
       }
+      interactionStates.push({
+        ...candidate,
+        hoverStyles,
+        hoverDelta: diffStyleSnapshots(candidate.baseStyles, hoverStyles),
+        hoverError,
+        focusStyles,
+        focusDelta: diffStyleSnapshots(candidate.baseStyles, focusStyles),
+        focusError,
+        clickState,
+      });
     }
     await page.mouse.move(1, 1);
     const networkManifest = {

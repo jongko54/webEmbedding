@@ -300,6 +300,10 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                 changed_states.append(f"hover {', '.join(entry['hoverDelta'].keys())}")
             if entry.get("focusDelta"):
                 changed_states.append(f"focus {', '.join(entry['focusDelta'].keys())}")
+            click_state = entry.get("clickState") or {}
+            click_delta = click_state.get("stateDelta") if isinstance(click_state, dict) else {}
+            if isinstance(click_delta, dict) and click_delta:
+                changed_states.append(f"click {', '.join(click_delta.keys())}")
             descriptor = " ".join(
                 value
                 for value in [

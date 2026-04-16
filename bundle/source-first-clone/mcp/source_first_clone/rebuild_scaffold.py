@@ -647,6 +647,9 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             states.append(f"hover: {', '.join(str(key) for key in hover_keys)}")
         if focus_keys:
             states.append(f"focus: {', '.join(str(key) for key in focus_keys)}")
+        click_keys = entry.get("clickStateDeltaKeys", [])
+        if click_keys:
+            states.append(f"click: {', '.join(str(key) for key in click_keys)}")
         interaction_cards.append(
             {
                 "id": f"interaction-{index + 1}",
@@ -947,6 +950,200 @@ def _render_bounded_reference_page_tsx() -> str:
     )
 
 
+def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
+    masthead = app_model.get("masthead", {}) if isinstance(app_model, dict) else {}
+    hero = app_model.get("hero", {}) if isinstance(app_model, dict) else {}
+    reconstruction = app_model.get("reconstruction", {}) if isinstance(app_model, dict) else {}
+    meta_bits = app_model.get("metaBits", []) if isinstance(app_model.get("metaBits", []), list) else []
+    signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
+    body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
+    interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
+    layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
+
+    nav_items = []
+    for link in masthead.get("links", []) if isinstance(masthead.get("links", []), list) else []:
+        if not isinstance(link, dict):
+            continue
+        label = escape(str(link.get("label") or "Captured link"))
+        href = escape(str(link.get("href") or "#"))
+        nav_items.append(f'              <a class="bounded-nav-link" href="{href}">{label}</a>')
+    if not nav_items:
+        nav_items.append('              <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
+
+    hero_detail_bits = [f'          <span class="bounded-chip bounded-chip--muted">{escape(str(hero.get("meta") or ""))}</span>'] if hero.get("meta") else []
+    for detail in hero.get("details", [])[:3] if isinstance(hero.get("details", []), list) else []:
+        hero_detail_bits.append(f'          <span class="bounded-chip bounded-chip--muted">{escape(str(detail))}</span>')
+    for action in hero.get("actions", []) if isinstance(hero.get("actions", []), list) else []:
+        if not isinstance(action, dict):
+            continue
+        label = escape(str(action.get("label") or "Captured action"))
+        href = escape(str(action.get("href") or "#"))
+        hero_detail_bits.append(f'          <a class="bounded-cta" href="{href}">{label}</a>')
+
+    section_cards = []
+    for section in body_sections:
+        if not isinstance(section, dict):
+            continue
+        detail_bits = [f'                  <span class="bounded-chip">{escape(str(section.get("meta") or ""))}</span>'] if section.get("meta") else []
+        for detail in section.get("details", [])[:3] if isinstance(section.get("details", []), list) else []:
+            detail_bits.append(f'                  <span class="bounded-chip bounded-chip--muted">{escape(str(detail))}</span>')
+        section_cards.append(
+            "\n".join(
+                [
+                    f'              <article class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}">',
+                    '                <div class="bounded-card-head">',
+                    f'                  <p class="bounded-kicker">{escape(str(section.get("role") or "content"))}</p>',
+                    f'                  <span class="bounded-chip bounded-chip--muted">{escape(str(section.get("tag") or "div"))}</span>',
+                    "                </div>",
+                    f'                <h2>{escape(str(section.get("title") or "Captured section"))}</h2>',
+                    f'                <p class="bounded-copy">{escape(str(section.get("copy") or ""))}</p>',
+                    '                <div class="bounded-meta bounded-meta--inline">',
+                    *detail_bits,
+                    "                </div>",
+                    "              </article>",
+                ]
+            )
+        )
+    if not section_cards:
+        section_cards.append(
+            "\n".join(
+                [
+                    '              <article class="bounded-card bounded-panel" data-role="content">',
+                    '                <div class="bounded-card-head">',
+                    '                  <p class="bounded-kicker">content</p>',
+                    '                  <span class="bounded-chip bounded-chip--muted">fallback</span>',
+                    "                </div>",
+                    "                <h2>No sampled body sections</h2>",
+                    '                <p class="bounded-copy">The capture bundle did not expose enough structure for a richer body layout.</p>',
+                    "              </article>",
+                ]
+            )
+        )
+
+    interaction_cards = []
+    for entry in interactions:
+        if not isinstance(entry, dict):
+            continue
+        state_bits = []
+        for state in entry.get("states", []) if isinstance(entry.get("states", []), list) else []:
+            state_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">{escape(str(state))}</span>')
+        interaction_cards.append(
+            "\n".join(
+                [
+                    '                <article class="bounded-mini-card">',
+                    f'                  <strong>{escape(str(entry.get("label") or "Captured interaction"))}</strong>',
+                    f'                  <p>{escape(str(entry.get("copy") or ""))}</p>',
+                    '                  <div class="bounded-meta bounded-meta--inline">',
+                    *(state_bits or ['                      <span class="bounded-chip bounded-chip--muted">interaction detected</span>']),
+                    "                  </div>",
+                    "                </article>",
+                ]
+            )
+        )
+    if not interaction_cards:
+        interaction_cards.append(
+            "\n".join(
+                [
+                    '                <article class="bounded-mini-card">',
+                    "                  <strong>No sampled interactions</strong>",
+                    "                  <p>Interaction data was not available in the capture bundle.</p>",
+                    "                </article>",
+                ]
+            )
+        )
+
+    rhythm_cards = []
+    for item in layout_rhythm[:6]:
+        if not isinstance(item, dict):
+            continue
+        rhythm_cards.append(
+            "\n".join(
+                [
+                    '                <article class="bounded-outline-item">',
+                    f'                  <strong>{escape(str(item.get("role") or "section"))}</strong>',
+                    f'                  <p>{escape(str(item.get("size") or ""))}</p>',
+                    f'                  <span class="bounded-outline-meta">y: {escape(str(item.get("y") if item.get("y") is not None else 0))}</span>',
+                    "                </article>",
+                ]
+            )
+        )
+
+    return "\n".join(
+        [
+            "<!doctype html>",
+            '<html lang="en">',
+            "<head>",
+            '  <meta charset="utf-8" />',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
+            f'  <title>{escape(str(app_model.get("title") or "Captured reference"))}</title>',
+            '  <link rel="stylesheet" href="./next-app/app/globals.css" />',
+            "</head>",
+            "<body>",
+            '  <main class="bounded-shell">',
+            '    <header class="bounded-masthead bounded-panel">',
+            '      <div class="bounded-brand-block">',
+            '        <p class="bounded-eyebrow">Captured reference</p>',
+            f'        <strong class="bounded-brand">{escape(str(masthead.get("brand") or app_model.get("title") or "Captured reference"))}</strong>',
+            "      </div>",
+            '      <nav class="bounded-nav" aria-label="Captured navigation sample">',
+            *nav_items,
+            "      </nav>",
+            "    </header>",
+            '    <section class="bounded-hero bounded-panel">',
+            f'      <p class="bounded-eyebrow">{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>',
+            f'      <h1>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>',
+            f'      <p class="bounded-lede">{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>',
+            '      <div class="bounded-meta">',
+            *[f'        <span class="bounded-chip">{escape(str(bit))}</span>' for bit in meta_bits],
+            "      </div>",
+            '      <div class="bounded-hero-actions">',
+            *hero_detail_bits,
+            "      </div>",
+            "    </section>",
+            '    <section class="bounded-layout">',
+            '      <div class="bounded-main">',
+            '        <section class="bounded-section-grid">',
+            *section_cards,
+            "        </section>",
+            "      </div>",
+            '      <aside class="bounded-rail">',
+            '        <section class="bounded-panel bounded-stack">',
+            '          <p class="bounded-kicker">Renderer status</p>',
+            '          <div class="bounded-status-row">',
+            f'            <strong>{escape(str(reconstruction.get("strategy") or "role-inferred-next-app"))}</strong>',
+            f'            <span class="bounded-chip">{escape(str(reconstruction.get("confidence") or "medium"))}</span>',
+            "          </div>",
+            '          <ul class="bounded-list">',
+            *[f'            <li>{escape(str(item))}</li>' for item in reconstruction.get("remainingGaps", [])[:4] if isinstance(reconstruction.get("remainingGaps", []), list)],
+            "          </ul>",
+            "        </section>",
+            '        <section class="bounded-panel bounded-stack">',
+            '          <p class="bounded-kicker">Signals</p>',
+            '          <div class="bounded-meta bounded-meta--inline">',
+            *([f'            <span class="bounded-chip bounded-chip--muted">{escape(str(signal))}</span>' for signal in signal_bits] or ['            <span class="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>']),
+            "          </div>",
+            "        </section>",
+            '        <section class="bounded-panel bounded-stack">',
+            '          <p class="bounded-kicker">Interaction samples</p>',
+            '          <div class="bounded-stack">',
+            *interaction_cards,
+            "          </div>",
+            "        </section>",
+            '        <section class="bounded-panel bounded-stack">',
+            '          <p class="bounded-kicker">Layout rhythm</p>',
+            '          <div class="bounded-stack bounded-stack--tight">',
+            *rhythm_cards,
+            "          </div>",
+            "        </section>",
+            "      </aside>",
+            "    </section>",
+            "  </main>",
+            "</body>",
+            "</html>",
+        ]
+    )
+
+
 def _render_next_app_page_tsx() -> str:
     return "\n".join(
         [
@@ -1233,6 +1430,9 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "rect": entry.get("rect"),
                 "hoverDeltaKeys": sorted((entry.get("hoverDelta") or {}).keys()) if isinstance(entry.get("hoverDelta"), dict) else [],
                 "focusDeltaKeys": sorted((entry.get("focusDelta") or {}).keys()) if isinstance(entry.get("focusDelta"), dict) else [],
+                "clickStateDeltaKeys": sorted((((entry.get("clickState") or {}).get("stateDelta")) or {}).keys())
+                if isinstance(((entry.get("clickState") or {}).get("stateDelta")), dict)
+                else [],
             }
         )
 
@@ -1301,6 +1501,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     app_page_tsx = _render_next_app_page_tsx()
     app_layout_tsx = _render_next_app_layout_tsx(summary)
     app_globals_css = _render_next_app_globals_css(summary)
+    app_preview_html = _render_bounded_reference_page_html(app_model)
 
     artifacts = {
         "layout-summary.json": summary,
@@ -1312,6 +1513,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "next-app/app/layout.tsx": app_layout_tsx,
         "next-app/app/page.tsx": app_page_tsx,
         "next-app/app/globals.css": app_globals_css,
+        "app-preview.html": app_preview_html,
         "next-app/components/BoundedReferencePage.tsx": app_component_tsx,
         "next-app/components/reference-data.ts": app_data_ts,
         "manifest.json": {
@@ -1327,6 +1529,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "next-app/app/layout.tsx",
                 "next-app/app/page.tsx",
                 "next-app/app/globals.css",
+                "app-preview.html",
                 "next-app/components/BoundedReferencePage.tsx",
                 "next-app/components/reference-data.ts",
             ],

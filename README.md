@@ -298,27 +298,31 @@ The persisted output directory will include:
 - `reproduction/rebuild/starter.html`
 - `reproduction/rebuild/starter.css`
 - `reproduction/rebuild/starter.tsx`
+- `reproduction/rebuild/app-preview.html`
 - `reproduction/rebuild/next-app/app/layout.tsx`
 - `reproduction/rebuild/next-app/app/page.tsx`
 - `reproduction/rebuild/next-app/app/globals.css`
 - `reproduction/rebuild/next-app/components/BoundedReferencePage.tsx`
 - `reproduction/rebuild/next-app/components/reference-data.ts`
 - `reproduction/rebuild/manifest.json`
-- `reproduction/self-verify/verification.json`
+- `reproduction/self-verify/renderers/*/verification.json`
+- `reproduction/self-verify/repair-plan.json`
+- `reproduction/self-verify/repair-prompt.txt`
 - `reproduction/self-verify/summary.json`
 
-When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical role-inferred `next-app/` renderer skeleton to continue from.
+When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a low-level HTML/CSS/TSX starter, an `app-model` snapshot, an `app-preview.html` render target, and a more practical role-inferred `next-app/` renderer skeleton to continue from.
 
-When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now also renders `starter.html`, captures that rendered preview back into a bundle, and writes a self-verify report under `reproduction/self-verify/`. That closes the loop from `reference -> scaffold -> rendered preview -> verify`, even though it still does not boot a full Next.js runtime.
+When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now renders multiple bounded preview targets such as `starter.html` and `app-preview.html`, captures those rendered previews back into bundles, compares them, selects the stronger renderer, and writes a repair plan under `reproduction/self-verify/`. That closes the loop from `reference -> scaffold -> rendered preview -> verify -> repair guidance`, even though it still does not boot a full Next.js runtime.
 
 The capture bundle now includes two interaction layers for visible interactive elements:
 
 - `interactions/states.json`
   - hover style deltas
   - focus style deltas
+  - conservative click/toggle state deltas for safe non-navigational controls
   - interactive element bounds and text labels
 - `interactions/trace.json`
-  - ordered replay steps for `scroll`, `hover`, `focus`, `type`, and planned `click`
+  - ordered replay steps for `scroll`, `hover`, `focus`, `type`, and conservative toggle `click`
   - execution results for safe replay steps
   - viewport and page metrics for downstream reconstruction
 - `breakpoints/*/capture.json`
@@ -359,8 +363,8 @@ The new tools are still scaffolds for the next phase:
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
 - `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded role-inferred `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
-- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus interaction-trace coverage as a core exact-clone readiness signal
-- `build_reproduction_bundle` now closes a bounded self-verify loop for rebuild paths by rendering the starter scaffold, recapturing it, and comparing the rendered preview against the original bundle across the primary viewport plus any requested breakpoint variants
+- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downsampled pixel-diff signals and interaction-trace coverage as a core exact-clone readiness signal
+- `build_reproduction_bundle` now closes a bounded self-verify loop for rebuild paths by rendering multiple scaffold previews, recapturing them, choosing the stronger renderer, and emitting a repair plan across the primary viewport plus any requested breakpoint variants
 
 ## Guardrails
 
