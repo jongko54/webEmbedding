@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .planning import plan_reproduction_path
+from .repair_scaffold import build_repair_scaffold
 from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
 from .self_verify import run_rebuild_self_verify
 
@@ -438,6 +439,28 @@ def build_reproduction_bundle(
             )
             result["self_verify"] = self_verify
             persisted["self_verify"] = self_verify.get("persisted")
+            if not self_verify.get("overall_ready_for_exact_clone"):
+                repair_pass = build_repair_scaffold(
+                    capture_bundle=capture_bundle,
+                    rebuild_artifacts=rebuild_artifacts,
+                    self_verify=self_verify,
+                )
+                if repair_pass.get("available"):
+                    repair_root = output_root / "reproduction" / "repair-pass"
+                    persisted_repair = persist_rebuild_scaffold(repair_root, repair_pass)
+                    repair_verify = run_rebuild_self_verify(
+                        reference_bundle=capture_bundle,
+                        rebuild_artifacts=persisted_repair,
+                        output_dir=output_root,
+                        stage_path="repair-pass/self-verify",
+                    )
+                    repair_pass["persisted"] = persisted_repair
+                    repair_pass["self_verify"] = repair_verify
+                    result["repair_pass"] = repair_pass
+                    persisted["repair_pass"] = {
+                        "artifacts": persisted_repair,
+                        "self_verify": repair_verify.get("persisted"),
+                    }
             plan_path = persisted.get("plan")
             if isinstance(plan_path, str):
                 Path(plan_path).write_text(json.dumps(result, indent=2) + "\n")

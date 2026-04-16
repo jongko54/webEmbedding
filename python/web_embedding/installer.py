@@ -379,6 +379,19 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
                 "reports": reports[:3] if isinstance(reports, list) else [],
             }
         summary["self_verify"] = compact
+    repair_pass = summary.get("repair_pass")
+    if isinstance(repair_pass, dict):
+        compact_repair = compact_rebuild_scaffold_summary(repair_pass)
+        repair_verify = repair_pass.get("self_verify")
+        if isinstance(repair_verify, dict):
+            compact_repair["self_verify"] = {
+                "status": repair_verify.get("status"),
+                "overall_ready_for_exact_clone": repair_verify.get("overall_ready_for_exact_clone"),
+                "preferred_renderer": repair_verify.get("preferred_renderer"),
+                "root_report": repair_verify.get("root_report"),
+                "persisted": repair_verify.get("persisted"),
+            }
+        summary["repair_pass"] = compact_repair
     return summary
 
 

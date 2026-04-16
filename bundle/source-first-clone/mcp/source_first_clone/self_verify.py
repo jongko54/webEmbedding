@@ -154,6 +154,7 @@ def run_rebuild_self_verify(
     reference_bundle: dict[str, Any],
     rebuild_artifacts: dict[str, str],
     output_dir: Path,
+    stage_path: str = "self-verify",
 ) -> dict[str, Any]:
     if not isinstance(rebuild_artifacts, dict):
         return {
@@ -174,7 +175,7 @@ def run_rebuild_self_verify(
     primary_request = reference_bundle.get("session_request", {}) if isinstance(reference_bundle, dict) else {}
     breakpoint_summary = reference_bundle.get("breakpoints", {}) if isinstance(reference_bundle, dict) else {}
     breakpoint_profiles = breakpoint_summary.get("requested_profiles") if isinstance(breakpoint_summary, dict) else []
-    self_verify_dir = output_dir / "reproduction" / "self-verify"
+    self_verify_dir = output_dir / "reproduction" / Path(stage_path)
     persisted: dict[str, Any] = {"renderers": {}}
     renderer_results: list[dict[str, Any]] = []
 
