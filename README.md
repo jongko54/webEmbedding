@@ -375,6 +375,7 @@ The new tools are still scaffolds for the next phase:
 - `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downsampled pixel-diff signals and interaction-trace coverage as a core exact-clone readiness signal
 - `build_reproduction_bundle` now closes a bounded self-verify loop for rebuild paths by rendering multiple scaffold previews, recapturing them, choosing the stronger renderer, and emitting a repair plan across the primary viewport plus any requested breakpoint variants
 - the same reproduction flow now runs a bounded auto-repair loop, keeps each persisted repair iteration on disk, and promotes the strongest repaired scaffold candidate into the top-level `repair_pass` response for downstream tooling
+- repair passes can now rewrite both `reference-data.ts` and `BoundedReferencePage.tsx` when the renderer itself needs a tighter composition, not just token updates
 
 ## Guardrails
 
