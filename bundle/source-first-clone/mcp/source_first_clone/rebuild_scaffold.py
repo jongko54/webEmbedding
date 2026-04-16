@@ -569,6 +569,8 @@ def _remaining_gaps(summary: dict[str, Any]) -> list[str]:
         gaps.append("DOM snapshot coverage is incomplete.")
     if not signals.get("styles_available"):
         gaps.append("Computed style coverage is incomplete.")
+    if not signals.get("css_analysis_available"):
+        gaps.append("Stylesheet and inline-style analysis is incomplete.")
     if not signals.get("interactions_available"):
         gaps.append("Interaction-state coverage is incomplete.")
     return gaps[:4]
@@ -1403,6 +1405,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
+    css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures, dict) else {}
 
     style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
     if not isinstance(style_entries, list):
@@ -1440,6 +1443,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     meta = static.get("meta", {}) if isinstance(static.get("meta", {}), dict) else {}
     breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
     breakpoint_variants = breakpoint_summary.get("variants", []) if isinstance(breakpoint_summary, dict) else []
+    css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
@@ -1457,6 +1461,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "signals": {
             "dom_available": bool(dom_capture.get("available")),
             "styles_available": bool(styles_capture.get("available")),
+            "css_analysis_available": bool(css_analysis_capture.get("available")),
             "assets_available": bool(assets_capture.get("available")),
             "interactions_available": bool(interactions_capture.get("available")),
             "runtime_available": bool(runtime.get("available")),
@@ -1475,6 +1480,22 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "image_count": image_count,
             "script_count": script_count,
             "iframe_count": iframe_count,
+        },
+        "cssAnalysis": {
+            "stylesheet_count": css_analysis.get("stylesheetCount", 0) if isinstance(css_analysis, dict) else 0,
+            "accessible_stylesheet_count": css_analysis.get("accessibleStylesheetCount", 0) if isinstance(css_analysis, dict) else 0,
+            "inline_style_tag_count": css_analysis.get("inlineStyleTagCount", 0) if isinstance(css_analysis, dict) else 0,
+            "style_attribute_count": css_analysis.get("styleAttributeCount", 0) if isinstance(css_analysis, dict) else 0,
+            "stylesheet_sample": [
+                {
+                    "href": item.get("href"),
+                    "ownerTag": item.get("ownerTag"),
+                    "ruleCount": item.get("ruleCount"),
+                    "restricted": item.get("crossOriginRestricted"),
+                }
+                for item in (css_analysis.get("linkedStylesheets", [])[:4] if isinstance(css_analysis.get("linkedStylesheets", []), list) else [])
+                if isinstance(item, dict)
+            ],
         },
         "interactions": {
             "count": len(interaction_entries) if isinstance(interaction_entries, list) else 0,
