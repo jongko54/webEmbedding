@@ -23,7 +23,7 @@ def compact_capture_bundle(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         runtime["html_matches_sample"] = runtime["htmlMatches"][:15]
         runtime.pop("htmlMatches", None)
 
-    for key in ("html", "dom", "accessibility", "styles", "network", "assets", "interactions"):
+    for key in ("html", "dom", "accessibility", "styles", "network", "assets", "interactions", "interactionTrace"):
         capture = captures.get(key)
         if isinstance(capture, dict):
             capture.pop("content", None)

@@ -215,6 +215,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
+    interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
 
     prompt_lines = [
         "Rebuild this reference as faithfully as possible using the captured structure and styling summary.",
@@ -290,10 +291,27 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
             elif descriptor:
                 prompt_lines.append(f"- {descriptor}: interactive element detected")
 
+    interaction_trace = interaction_trace_capture.get("content", {}) if isinstance(interaction_trace_capture, dict) else {}
+    trace_steps = interaction_trace.get("steps", []) if isinstance(interaction_trace, dict) else []
+    if trace_steps:
+        prompt_lines.append("Replay trace sample:")
+        for step in trace_steps[:10]:
+            if not isinstance(step, dict):
+                continue
+            parts = [
+                str(step.get("kind") or "").strip(),
+                str(step.get("label") or "").strip(),
+                f"scrollY={step.get('scrollY')}" if step.get("kind") == "scroll" and step.get("scrollY") is not None else "",
+                f"value=\"{step.get('value')}\"" if step.get("kind") == "type" and step.get("value") else "",
+            ]
+            descriptor = " ".join(part for part in parts if part)
+            if descriptor:
+                prompt_lines.append(f"- {descriptor}")
+
     prompt_lines.extend(
         [
             "If an exact iframe, preview, or source reuse path is unavailable, rebuild the page but do not claim it is exact.",
-            "Preserve the same hierarchy, copy rhythm, dominant blocks, viewport composition, and interaction state changes from the capture bundle.",
+            "Preserve the same hierarchy, copy rhythm, dominant blocks, viewport composition, interaction state changes, and replay trace intent from the capture bundle.",
         ]
     )
     return "\n".join(prompt_lines)

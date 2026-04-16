@@ -18,13 +18,15 @@ CORE_ARTIFACTS = (
     "dom_snapshot",
     "computed_styles",
     "interaction_states",
+    "interaction_trace",
 )
 
 CHECK_WEIGHTS = {
-    "screenshot": 45,
+    "screenshot": 40,
     "dom snapshot": 20,
     "computed styles": 20,
-    "interaction states": 15,
+    "interaction states": 10,
+    "interaction trace": 10,
 }
 
 SCREENSHOT_GRID_SIZE = 16
@@ -66,6 +68,7 @@ def build_fidelity_report(
         _dom_check(reference_artifacts["dom_snapshot"], candidate_artifacts["dom_snapshot"]),
         _styles_check(reference_artifacts["computed_styles"], candidate_artifacts["computed_styles"]),
         _interaction_check(reference_artifacts["interaction_states"], candidate_artifacts["interaction_states"]),
+        _interaction_trace_check(reference_artifacts["interaction_trace"], candidate_artifacts["interaction_trace"]),
         _supporting_check(
             "accessibility tree",
             reference_artifacts["accessibility_tree"],
@@ -122,7 +125,7 @@ def build_fidelity_report(
         "priority_findings": priority_findings,
         "recommended_actions": recommended_actions,
         "missing_core_artifacts": {
-            side: [name for name in missing if name in {"screenshot", "DOM snapshot", "computed styles", "interaction states"}]
+            side: [name for name in missing if name in {"screenshot", "DOM snapshot", "computed styles", "interaction states", "interaction trace"}]
             for side, missing in missing_artifacts.items()
         },
     }
@@ -172,6 +175,7 @@ def _normalize_bundle(bundle: dict[str, Any] | None, fallback_url: str | None) -
         "dom_snapshot": _resolve_artifact(source, "dom_snapshot", ("bundle", "captured_artifacts", "dom"), ("runtime", "captures", "dom"), ("captures", "dom")),
         "computed_styles": _resolve_artifact(source, "computed_styles", ("bundle", "captured_artifacts", "styles"), ("runtime", "captures", "styles"), ("captures", "styles")),
         "interaction_states": _resolve_artifact(source, "interaction_states", ("bundle", "captured_artifacts", "interactions"), ("runtime", "captures", "interactions"), ("captures", "interactions")),
+        "interaction_trace": _resolve_artifact(source, "interaction_trace", ("bundle", "captured_artifacts", "interaction_trace"), ("runtime", "captures", "interactionTrace"), ("captures", "interactionTrace")),
         "accessibility_tree": _resolve_artifact(source, "accessibility_tree", ("bundle", "captured_artifacts", "accessibility"), ("runtime", "captures", "accessibility"), ("captures", "accessibility")),
         "network_manifest": _resolve_artifact(source, "network_manifest", ("bundle", "captured_artifacts", "network"), ("runtime", "captures", "network"), ("captures", "network")),
         "asset_inventory": _resolve_artifact(source, "asset_inventory", ("bundle", "captured_artifacts", "assets"), ("runtime", "captures", "assets"), ("captures", "assets")),
@@ -228,6 +232,8 @@ def _extract_persisted_path(source: dict[str, Any], name: str) -> Path | None:
         path_value = persisted_files.get("computed_styles")
     elif name == "interaction_states":
         path_value = persisted_files.get("interaction_states")
+    elif name == "interaction_trace":
+        path_value = persisted_files.get("interaction_trace")
     elif name == "accessibility_tree":
         path_value = persisted_files.get("accessibility_tree")
     elif name == "network_manifest":
@@ -797,6 +803,40 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
     }
 
 
+def _interaction_trace_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    ref_present = bool(reference.get("available"))
+    cand_present = bool(candidate.get("available"))
+    ref_stats = _interaction_trace_stats(reference.get("content"))
+    cand_stats = _interaction_trace_stats(candidate.get("content"))
+    status = "present" if ref_present and cand_present else "missing"
+    kind_overlap = _set_overlap(ref_stats.get("step_kinds", set()), cand_stats.get("step_kinds", set()))
+    target_overlap = _set_overlap(ref_stats.get("targets", set()), cand_stats.get("targets", set()))
+    summary = (
+        f"interaction trace present; steps {ref_stats.get('step_count', 0)} vs {cand_stats.get('step_count', 0)}"
+    )
+    if ref_stats.get("step_count") and cand_stats.get("step_count"):
+        summary += f"; action overlap {kind_overlap:.2f}"
+    step_score = _count_similarity(ref_stats.get("step_count"), cand_stats.get("step_count"))
+    executed_score = _count_similarity(ref_stats.get("executed_count"), cand_stats.get("executed_count"))
+    similarity_parts = [score for score in [kind_overlap, target_overlap, step_score, executed_score] if score is not None]
+    similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
+    return {
+        "name": "interaction trace",
+        "core": True,
+        "status": status,
+        "summary": summary if status == "present" else "interaction trace missing on one or both sides",
+        "reference": _artifact_report_entry(reference, extra=ref_stats),
+        "candidate": _artifact_report_entry(candidate, extra=cand_stats),
+        "similarity": similarity if status == "present" else 0.0,
+        "details": {
+            "step_count_delta": _numeric_delta(ref_stats.get("step_count"), cand_stats.get("step_count")),
+            "executed_count_delta": _numeric_delta(ref_stats.get("executed_count"), cand_stats.get("executed_count")),
+            "kind_overlap": kind_overlap,
+            "target_overlap": target_overlap,
+        },
+    }
+
+
 def _supporting_check(name: str, reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     ref_present = bool(reference.get("available"))
     cand_present = bool(candidate.get("available"))
@@ -829,7 +869,7 @@ def _coverage_summary(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         name: bool(artifact.get("available"))
         for name, artifact in artifacts.items()
-        if name in CORE_ARTIFACTS or name in {"accessibility_tree", "network_manifest", "asset_inventory", "html", "session"}
+        if name in CORE_ARTIFACTS or name in {"interaction_trace", "accessibility_tree", "network_manifest", "asset_inventory", "html", "session"}
     }
 
 
@@ -944,6 +984,8 @@ def _focus_hint(detail: dict[str, Any]) -> str:
         return "typography, spacing, or palette token drift"
     if name == "interaction states":
         return "hover/focus interaction coverage drift"
+    if name == "interaction trace":
+        return "scroll/type/click replay coverage drift"
     return "supporting evidence drift"
 
 
@@ -963,6 +1005,8 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
             actions.append("Audit font, spacing, and color tokens against the reference before polishing micro-detail.")
         elif detail["name"] == "interaction states":
             actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
+        elif detail["name"] == "interaction trace":
+            actions.append("Extend replay capture to cover the scroll, type, and click sequence used by the reference.")
     deduped: list[str] = []
     for action in actions:
         if action not in deduped:
@@ -978,6 +1022,7 @@ def _missing_artifacts(artifacts: dict[str, dict[str, Any]]) -> list[str]:
             ("DOM snapshot", "dom_snapshot"),
             ("computed styles", "computed_styles"),
             ("interaction states", "interaction_states"),
+            ("interaction trace", "interaction_trace"),
         )
         if not artifacts.get(key, {}).get("available")
     ]
@@ -1144,6 +1189,35 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         "label_sample": sorted(labels)[:8],
         "hover_changed": hover_changed,
         "focus_changed": focus_changed,
+    }
+
+
+def _interaction_trace_stats(content: Any) -> dict[str, Any]:
+    trace = content if isinstance(content, dict) else {}
+    steps = trace.get("steps") if isinstance(trace.get("steps"), list) else []
+    executions = trace.get("executions") if isinstance(trace.get("executions"), list) else []
+    step_kinds: set[str] = set()
+    targets: set[str] = set()
+    for step in steps[:48]:
+        if not isinstance(step, dict):
+            continue
+        kind = _clean_text(step.get("kind"))
+        target = _clean_text(step.get("targetId")) or _clean_text(step.get("selector")) or _clean_text(step.get("label"))
+        if kind:
+            step_kinds.add(kind)
+        if target:
+            targets.add(target)
+    executed_count = sum(
+        1
+        for execution in executions[:64]
+        if isinstance(execution, dict) and execution.get("status") in {"executed", "planned"}
+    )
+    return {
+        "step_count": len(steps),
+        "executed_count": executed_count,
+        "step_kinds": sorted(step_kinds),
+        "targets": sorted(targets),
+        "step_sample": steps[:6],
     }
 
 

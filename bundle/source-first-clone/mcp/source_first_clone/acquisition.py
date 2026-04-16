@@ -343,6 +343,15 @@ function diffStyleSnapshots(before, after) {
   return diff;
 }
 
+function safeReplayValue(candidate) {
+  if (candidate && candidate.type) {
+    const lowered = String(candidate.type).toLowerCase();
+    if (["email"].includes(lowered)) return "web@example.com";
+    if (["search", "text", "url", "tel"].includes(lowered)) return "web embedding";
+  }
+  return "web embedding";
+}
+
 (async () => {
   let browser = null;
   let context = null;
@@ -516,6 +525,20 @@ function diffStyleSnapshots(before, after) {
         iframes: uniq(Array.from(document.querySelectorAll("iframe"), (node) => normalize(node.src))),
       };
     });
+    const pageMetrics = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      scrollHeight: Math.max(
+        document.documentElement ? document.documentElement.scrollHeight : 0,
+        document.body ? document.body.scrollHeight : 0
+      ),
+      scrollWidth: Math.max(
+        document.documentElement ? document.documentElement.scrollWidth : 0,
+        document.body ? document.body.scrollWidth : 0
+      ),
+      initialScrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+      initialScrollX: Math.round(window.scrollX || window.pageXOffset || 0),
+    }));
     const interactiveCandidates = await page.evaluate(() => {
       const styleSnapshotFromComputed = (style) => ({
         display: style.display,
@@ -569,6 +592,22 @@ function diffStyleSnapshots(before, after) {
           href: element.getAttribute('href'),
           type: element.getAttribute('type'),
           ariaLabel: element.getAttribute('aria-label'),
+          inputCapable: (
+            element.tagName.toLowerCase() === 'textarea' ||
+            (
+              element.tagName.toLowerCase() === 'input' &&
+              !['hidden', 'password', 'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'range', 'color', 'date', 'datetime-local', 'month', 'time', 'week'].includes((element.getAttribute('type') || 'text').toLowerCase())
+            )
+          ),
+          clickCapable: (
+            !element.getAttribute('href') &&
+            (
+              ['button', 'summary'].includes(element.tagName.toLowerCase()) ||
+              ['button', 'tab', 'menuitem'].includes((element.getAttribute('role') || '').toLowerCase()) ||
+              Boolean(element.getAttribute('aria-controls')) ||
+              element.hasAttribute('aria-expanded')
+            )
+          ),
           rect: {
             x: Math.round(rect.x),
             y: Math.round(rect.y),
@@ -580,6 +619,66 @@ function diffStyleSnapshots(before, after) {
       });
     });
     const interactionStates = [];
+    const interactionTrace = {
+      version: "interaction-trace.v1",
+      viewport: {
+        width: pageMetrics.viewportWidth,
+        height: pageMetrics.viewportHeight,
+      },
+      pageMetrics,
+      steps: [],
+      executions: [],
+    };
+    let traceOrder = 0;
+    const pushTraceStep = (step) => {
+      traceOrder += 1;
+      const entry = {
+        id: `trace-${traceOrder}`,
+        order: traceOrder,
+        ...step,
+      };
+      interactionTrace.steps.push(entry);
+      return entry;
+    };
+    const pushExecution = (execution) => {
+      interactionTrace.executions.push({
+        order: interactionTrace.executions.length + 1,
+        ...execution,
+      });
+    };
+    const maxScrollY = Math.max(0, (pageMetrics.scrollHeight || 0) - (pageMetrics.viewportHeight || 0));
+    const scrollTargets = [0];
+    if (maxScrollY > 40) {
+      scrollTargets.push(Math.round(maxScrollY * 0.5), maxScrollY);
+    }
+    for (const scrollY of [...new Set(scrollTargets)]) {
+      const step = pushTraceStep({
+        kind: "scroll",
+        safeToExecute: true,
+        targetId: null,
+        scrollY,
+        label: scrollY === 0 ? "scroll top" : `scroll ${scrollY}px`,
+      });
+      try {
+        await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), scrollY);
+        await page.waitForTimeout(60);
+        const observedScroll = await page.evaluate(() => Math.round(window.scrollY || window.pageYOffset || 0));
+        pushExecution({
+          stepId: step.id,
+          kind: step.kind,
+          status: "executed",
+          observed: { scrollY: observedScroll },
+        });
+      } catch (error) {
+        pushExecution({
+          stepId: step.id,
+          kind: step.kind,
+          status: "failed",
+          error: error.message,
+        });
+      }
+    }
+    await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), pageMetrics.initialScrollY || 0);
     for (const candidate of interactiveCandidates) {
       const x = Math.max(1, Math.round(candidate.rect.x + Math.min(candidate.rect.width / 2, Math.max(candidate.rect.width - 1, 1))));
       const y = Math.max(1, Math.round(candidate.rect.y + Math.min(candidate.rect.height / 2, Math.max(candidate.rect.height - 1, 1))));
@@ -661,6 +760,83 @@ function diffStyleSnapshots(before, after) {
         focusDelta: diffStyleSnapshots(candidate.baseStyles, focusStyles),
         focusError,
       });
+      const hoverStep = pushTraceStep({
+        kind: "hover",
+        safeToExecute: true,
+        targetId: candidate.id,
+        selector: candidate.selector,
+        label: candidate.text || candidate.ariaLabel || candidate.tag,
+      });
+      pushExecution({
+        stepId: hoverStep.id,
+        kind: hoverStep.kind,
+        status: hoverError ? "failed" : "executed",
+        changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, hoverStyles)),
+        error: hoverError,
+      });
+      const focusStep = pushTraceStep({
+        kind: "focus",
+        safeToExecute: true,
+        targetId: candidate.id,
+        selector: candidate.selector,
+        label: candidate.text || candidate.ariaLabel || candidate.tag,
+      });
+      pushExecution({
+        stepId: focusStep.id,
+        kind: focusStep.kind,
+        status: focusError ? "failed" : "executed",
+        changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, focusStyles)),
+        error: focusError,
+      });
+
+      if (candidate.inputCapable) {
+        const typeValue = safeReplayValue(candidate);
+        const typeStep = pushTraceStep({
+          kind: "type",
+          safeToExecute: true,
+          targetId: candidate.id,
+          selector: candidate.selector,
+          label: candidate.text || candidate.ariaLabel || candidate.tag,
+          value: typeValue,
+        });
+        try {
+          const beforeValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
+          await page.fill(candidate.selector, typeValue);
+          await page.waitForTimeout(80);
+          const afterValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
+          await page.fill(candidate.selector, beforeValue);
+          pushExecution({
+            stepId: typeStep.id,
+            kind: typeStep.kind,
+            status: "executed",
+            beforeValue: trimText(beforeValue, 80),
+            afterValue: trimText(afterValue, 80),
+          });
+        } catch (error) {
+          pushExecution({
+            stepId: typeStep.id,
+            kind: typeStep.kind,
+            status: "failed",
+            error: error.message,
+          });
+        }
+      }
+
+      if (candidate.clickCapable) {
+        const clickStep = pushTraceStep({
+          kind: "click",
+          safeToExecute: false,
+          targetId: candidate.id,
+          selector: candidate.selector,
+          label: candidate.text || candidate.ariaLabel || candidate.tag,
+        });
+        pushExecution({
+          stepId: clickStep.id,
+          kind: clickStep.kind,
+          status: "planned",
+          reason: "Click replay is captured as a plan only in v1 to avoid destructive navigation or mutation.",
+        });
+      }
     }
     await page.mouse.move(1, 1);
     const networkManifest = {
@@ -739,6 +915,12 @@ function diffStyleSnapshots(before, after) {
           available: interactionStates.length > 0,
           entryCount: interactionStates.length,
           content: interactionStates,
+        },
+        interactionTrace: {
+          available: interactionTrace.steps.length > 0,
+          stepCount: interactionTrace.steps.length,
+          replayedCount: interactionTrace.executions.length,
+          content: interactionTrace,
         },
         html: captureHtml ? {
           available: true,

@@ -211,6 +211,7 @@ When runtime capture succeeds, the bundle can now persist:
 - `network/manifest.json`
 - `assets/inventory.json`
 - `interactions/states.json`
+- `interactions/trace.json`
 - `screenshots/runtime.png`
 - `session/storage-state.json`
 - `capture.json`
@@ -282,11 +283,16 @@ The persisted output directory will include:
 
 When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical role-inferred `next-app/` renderer skeleton to continue from.
 
-The capture bundle now includes an interaction-state layer for visible interactive elements:
+The capture bundle now includes two interaction layers for visible interactive elements:
 
-- hover style deltas
-- focus style deltas
-- interactive element bounds and text labels
+- `interactions/states.json`
+  - hover style deltas
+  - focus style deltas
+  - interactive element bounds and text labels
+- `interactions/trace.json`
+  - ordered replay steps for `scroll`, `hover`, `focus`, `type`, and planned `click`
+  - execution results for safe replay steps
+  - viewport and page metrics for downstream reconstruction
 
 CLI helpers:
 
@@ -296,6 +302,11 @@ web-embedding capture \
   --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
   --user-data-dir "$PWD/.tmp/browser-profile" \
   --output-dir "$PWD/.tmp/captures/spline-community"
+
+web-embedding clone \
+  --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
+  --user-data-dir "$PWD/.tmp/browser-profile" \
+  --output-dir "$PWD/.tmp/reproductions/spline-community"
 
 web-embedding reproduce \
   --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
@@ -315,7 +326,7 @@ The new tools are still scaffolds for the next phase:
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
 - `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded role-inferred `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
-- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downstream priority findings without overstating exactness
+- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus interaction-trace coverage as a core exact-clone readiness signal
 
 ## Guardrails
 

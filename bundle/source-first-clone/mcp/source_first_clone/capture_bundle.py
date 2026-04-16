@@ -77,6 +77,7 @@ def capture_reference_bundle(
     network_capture = capture_state.get("network", {}) if isinstance(capture_state, dict) else {}
     assets_capture = capture_state.get("assets", {}) if isinstance(capture_state, dict) else {}
     interactions_capture = capture_state.get("interactions", {}) if isinstance(capture_state, dict) else {}
+    interaction_trace_capture = capture_state.get("interactionTrace", {}) if isinstance(capture_state, dict) else {}
     runtime_session = runtime.get("session", {}) if isinstance(runtime, dict) else {}
     gaps = [
         "DOM snapshot",
@@ -84,6 +85,7 @@ def capture_reference_bundle(
         "computed styles",
         "network manifest",
         "interaction states",
+        "interaction replay trace",
         "asset manifest",
         "viewport screenshot set",
         "exported storage state",
@@ -100,6 +102,8 @@ def capture_reference_bundle(
         gaps = [gap for gap in gaps if gap != "asset manifest"]
     if interactions_capture.get("available"):
         gaps = [gap for gap in gaps if gap != "interaction states"]
+    if interaction_trace_capture.get("available"):
+        gaps = [gap for gap in gaps if gap != "interaction replay trace"]
     if screenshot_capture.get("available"):
         gaps = [gap for gap in gaps if gap != "viewport screenshot set"]
     if runtime_session.get("storageStateExported"):
@@ -126,6 +130,7 @@ def capture_reference_bundle(
                 "network_manifest": bool(network_capture.get("available")),
                 "assets": bool(assets_capture.get("available")),
                 "interaction_states": bool(interactions_capture.get("available")),
+                "interaction_trace": bool(interaction_trace_capture.get("available")),
             },
             "missing_artifacts": gaps,
             "captured_artifacts": {
@@ -135,6 +140,7 @@ def capture_reference_bundle(
                 "network": network_capture if network_capture.get("available") else None,
                 "assets": assets_capture if assets_capture.get("available") else None,
                 "interactions": interactions_capture if interactions_capture.get("available") else None,
+                "interaction_trace": interaction_trace_capture if interaction_trace_capture.get("available") else None,
                 "html": html_capture if html_capture.get("available") else None,
                 "screenshot": screenshot_capture if screenshot_capture.get("available") else None,
                 "session": runtime_session if runtime_session else None,
@@ -241,6 +247,18 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "available": True,
             "entry_count": interactions_capture.get("entryCount"),
             "path": str(interactions_path),
+        }
+
+    interaction_trace_capture = runtime_capture.get("interactionTrace", {}) if isinstance(runtime_capture, dict) else {}
+    if interaction_trace_capture.get("available") and interaction_trace_capture.get("content") is not None:
+        interaction_trace_path = output_dir / "interactions" / "trace.json"
+        interaction_trace_path.write_text(json.dumps(interaction_trace_capture["content"], indent=2) + "\n")
+        persisted["files"]["interaction_trace"] = str(interaction_trace_path)
+        bundle_payload["bundle"]["captured_artifacts"]["interaction_trace"] = {
+            "available": True,
+            "step_count": interaction_trace_capture.get("stepCount"),
+            "replayed_count": interaction_trace_capture.get("replayedCount"),
+            "path": str(interaction_trace_path),
         }
 
     html_capture = runtime_capture.get("html", {}) if isinstance(runtime_capture, dict) else {}
