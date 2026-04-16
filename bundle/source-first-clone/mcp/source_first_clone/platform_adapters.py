@@ -13,6 +13,8 @@ FIGMA_DUPLICATE_RE = re.compile(r"duplicate\s+this\s+file", re.I)
 WEBFLOW_ASSET_RE = re.compile(r"(webflow|website-files\.com|webflow\.io)", re.I)
 FRAMER_ASSET_RE = re.compile(r"(framerusercontent|framer\.website|framer\.app|framer\.com)", re.I)
 FIGMA_PATH_RE = re.compile(r"^/(?:community/file|file|proto|design|board|slides)/", re.I)
+FRAMER_RUNTIME_RE = re.compile(r"(data-framer|__framer|framer-embed|framer-motion)", re.I)
+WEBFLOW_RUNTIME_RE = re.compile(r"(data-wf-site|data-wf-page|webflow\.js|cdn\.prod\.website-files\.com|assets\.website-files\.com)", re.I)
 
 
 def _dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -31,6 +33,17 @@ def _dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _append_unique(items: list[str], value: str | None) -> None:
+    if not value:
+        return
+    if value not in items:
+        items.append(value)
+
+
+def _host(final_url: str) -> str:
+    return (urlparse(final_url).hostname or "").lower()
 
 
 def inspect_platform_adapter(
@@ -57,9 +70,9 @@ def inspect_platform_adapter(
     elif "figma.com" in lowered_url or "figma.com" in lowered_html:
         adapter.update(_inspect_figma(final_url, html))
     elif _looks_like_framer(final_url, generator, lowered_html):
-        adapter.update(_inspect_framer(final_url, generator))
+        adapter.update(_inspect_framer(final_url, html, generator))
     elif _looks_like_webflow(final_url, generator, lowered_html):
-        adapter.update(_inspect_webflow(final_url, generator))
+        adapter.update(_inspect_webflow(final_url, html, generator))
     else:
         adapter["notes"].append("No platform-specific adapter matched; generic candidate extraction remains active.")
 
@@ -93,7 +106,7 @@ def _extract_generator(html: str) -> str | None:
 
 
 def _looks_like_framer(final_url: str, generator: str | None, lowered_html: str) -> bool:
-    host = (urlparse(final_url).hostname or "").lower()
+    host = _host(final_url)
     generator_text = (generator or "").lower()
     return (
         host.endswith(".framer.website")
@@ -104,7 +117,7 @@ def _looks_like_framer(final_url: str, generator: str | None, lowered_html: str)
 
 
 def _looks_like_webflow(final_url: str, generator: str | None, lowered_html: str) -> bool:
-    host = (urlparse(final_url).hostname or "").lower()
+    host = _host(final_url)
     generator_text = (generator or "").lower()
     return (
         host.endswith(".webflow.io")
@@ -193,29 +206,79 @@ def _inspect_figma(final_url: str, html: str) -> dict[str, Any]:
     }
 
 
-def _inspect_framer(final_url: str, generator: str | None) -> dict[str, Any]:
+def _inspect_framer(final_url: str, html: str, generator: str | None) -> dict[str, Any]:
+    lowered_url = final_url.lower()
+    lowered_html = (html or "").lower()
+    host = _host(final_url)
     notes = ["Framer publish surface detected."]
+    source_signals: list[str] = []
+
+    if host.endswith(".framer.website") or host.endswith(".framer.app"):
+        notes.append("Framer-managed host detected.")
+        _append_unique(source_signals, "published")
+
     if generator:
         notes.append(f"Generator meta: {generator}")
+        notes.append("Generator metadata suggests a published Framer surface, even on a custom domain.")
+
+    if FRAMER_ASSET_RE.search(lowered_html):
+        notes.append("Framer asset/CDN markers were found in the HTML.")
+        _append_unique(source_signals, "asset-backed")
+
+    if "framerusercontent" in lowered_html:
+        notes.append("framerusercontent assets suggest a published Framer surface backed by Framer-hosted assets.")
+        _append_unique(source_signals, "export-like")
+
+    if "/embed" in lowered_url or "embed=" in lowered_url or "embed_host=" in lowered_url:
+        notes.append("Embed-shaped Framer URL detected.")
+        _append_unique(source_signals, "embed-like")
+
+    if FRAMER_RUNTIME_RE.search(lowered_html):
+        notes.append("Framer runtime markers were found in the page HTML.")
+        _append_unique(source_signals, "export-like")
+
     return {
         "platform": "framer",
         "confidence": "medium",
-        "source_signals": [],
+        "source_signals": source_signals,
         "candidates": [],
-        "notes": notes,
+        "notes": notes or ["Framer publish surface detected."],
     }
 
 
-def _inspect_webflow(final_url: str, generator: str | None) -> dict[str, Any]:
+def _inspect_webflow(final_url: str, html: str, generator: str | None) -> dict[str, Any]:
+    lowered_url = final_url.lower()
+    lowered_html = (html or "").lower()
+    host = _host(final_url)
     notes = ["Webflow publish surface detected."]
+    source_signals: list[str] = []
+
+    if host.endswith(".webflow.io"):
+        notes.append("Webflow-managed host detected.")
+        _append_unique(source_signals, "published")
+
     if generator:
         notes.append(f"Generator meta: {generator}")
-    if urlparse(final_url).hostname and urlparse(final_url).hostname.lower().endswith(".webflow.io"):
+        notes.append("Generator metadata suggests a published Webflow surface, even on a custom domain.")
+
+    if WEBFLOW_ASSET_RE.search(lowered_html):
+        notes.append("Webflow asset/CDN markers were found in the HTML.")
+        _append_unique(source_signals, "asset-backed")
+
+    if WEBFLOW_RUNTIME_RE.search(lowered_html):
+        notes.append("Webflow runtime markers were found in the page HTML.")
+        _append_unique(source_signals, "export-like")
+
+    if "/embed" in lowered_url or "embed=" in lowered_url or "embed-code" in lowered_html:
+        notes.append("Embed-shaped Webflow URL or embed code marker detected.")
+        _append_unique(source_signals, "embed-like")
+
+    if host.endswith(".webflow.io"):
         notes.append("webflow.io host suggests a publish preview rather than a custom production domain.")
     return {
         "platform": "webflow",
         "confidence": "medium",
-        "source_signals": [],
+        "source_signals": source_signals,
         "candidates": [],
         "notes": notes,
     }

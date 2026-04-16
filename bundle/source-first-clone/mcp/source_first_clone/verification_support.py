@@ -32,6 +32,8 @@ CHECK_WEIGHTS = {
 SCREENSHOT_GRID_SIZE = 16
 SCREENSHOT_HASH_GRID_SIZE = 8
 SCREENSHOT_HISTOGRAM_BINS = 12
+SCREENSHOT_QUADRANT_COUNT = 4
+SCREENSHOT_BAND_COUNT = 3
 
 
 @dataclass
@@ -325,9 +327,16 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
     hash_bucket_counts = [0] * (SCREENSHOT_HASH_GRID_SIZE * SCREENSHOT_HASH_GRID_SIZE)
     grid_bucket_sums = [0.0] * (SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
     grid_bucket_counts = [0] * (SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
+    quadrant_luma_sums = [0.0] * SCREENSHOT_QUADRANT_COUNT
+    quadrant_luma_counts = [0] * SCREENSHOT_QUADRANT_COUNT
+    band_luma_sums = [0.0] * SCREENSHOT_BAND_COUNT
+    band_luma_counts = [0] * SCREENSHOT_BAND_COUNT
     histogram = [0] * SCREENSHOT_HISTOGRAM_BINS
     luma_total = 0.0
     luma_squared_total = 0.0
+    red_total = 0.0
+    green_total = 0.0
+    blue_total = 0.0
     opaque_pixels = 0
 
     for y in range(height):
@@ -345,6 +354,9 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
             luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
             luma_total += luma
             luma_squared_total += luma * luma
+            red_total += red
+            green_total += green
+            blue_total += blue
             opaque_pixels += 1
             hash_bucket_x = min(SCREENSHOT_HASH_GRID_SIZE - 1, (x * SCREENSHOT_HASH_GRID_SIZE) // width)
             hash_bucket_index = hash_bucket_y * SCREENSHOT_HASH_GRID_SIZE + hash_bucket_x
@@ -354,6 +366,12 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
             grid_bucket_index = grid_bucket_y * SCREENSHOT_GRID_SIZE + grid_bucket_x
             grid_bucket_sums[grid_bucket_index] += luma
             grid_bucket_counts[grid_bucket_index] += 1
+            quadrant_index = (0 if y < (height / 2) else 2) + (0 if x < (width / 2) else 1)
+            quadrant_luma_sums[quadrant_index] += luma
+            quadrant_luma_counts[quadrant_index] += 1
+            band_index = min(SCREENSHOT_BAND_COUNT - 1, (y * SCREENSHOT_BAND_COUNT) // height)
+            band_luma_sums[band_index] += luma
+            band_luma_counts[band_index] += 1
             histogram_index = min(SCREENSHOT_HISTOGRAM_BINS - 1, int((luma / 256.0) * SCREENSHOT_HISTOGRAM_BINS))
             histogram[histogram_index] += 1
 
@@ -368,6 +386,14 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
         (grid_bucket_sums[index] / grid_bucket_counts[index]) if grid_bucket_counts[index] else 0.0
         for index in range(SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
     ]
+    quadrant_values = [
+        (quadrant_luma_sums[index] / quadrant_luma_counts[index]) if quadrant_luma_counts[index] else 0.0
+        for index in range(SCREENSHOT_QUADRANT_COUNT)
+    ]
+    band_values = [
+        (band_luma_sums[index] / band_luma_counts[index]) if band_luma_counts[index] else 0.0
+        for index in range(SCREENSHOT_BAND_COUNT)
+    ]
     average = sum(hash_bucket_values) / len(hash_bucket_values)
     bits = "".join("1" if value >= average else "0" for value in hash_bucket_values)
     mean_luma = luma_total / opaque_pixels
@@ -379,8 +405,15 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
         "contrast": round(math.sqrt(variance), 4),
         "aspect_ratio": round(width / height, 4),
         "opaque_ratio": round(opaque_pixels / (width * height), 4),
+        "rgb_mean": [
+            round(red_total / opaque_pixels, 2),
+            round(green_total / opaque_pixels, 2),
+            round(blue_total / opaque_pixels, 2),
+        ],
         "histogram": [round(count / opaque_pixels, 4) for count in histogram],
         "grid_luma": [round(value, 2) for value in grid_values],
+        "quadrant_luma": [round(value, 2) for value in quadrant_values],
+        "band_luma": [round(value, 2) for value in band_values],
         "edge_density": round(_grid_edge_density(grid_values, SCREENSHOT_GRID_SIZE), 4),
         "ahash": f"{int(bits, 2):016x}",
     }
@@ -563,8 +596,11 @@ def _signature_summary(signature: dict[str, Any] | None) -> dict[str, Any] | Non
         "contrast": signature.get("contrast"),
         "edge_density": signature.get("edge_density"),
         "opaque_ratio": signature.get("opaque_ratio"),
+        "rgb_mean": signature.get("rgb_mean"),
         "ahash": signature.get("ahash"),
         "histogram": signature.get("histogram"),
+        "quadrant_luma": signature.get("quadrant_luma"),
+        "band_luma": signature.get("band_luma"),
     }
 
 
@@ -592,10 +628,16 @@ def _screenshot_drift_flags(
     flags: list[str] = []
     if reference_dimensions and candidate_dimensions and reference_dimensions != candidate_dimensions:
         flags.append("viewport-or-breakpoint drift")
+    if metrics.get("quadrant_similarity", 1.0) < 0.8:
+        flags.append("composition drift")
+    if metrics.get("band_similarity", 1.0) < 0.78:
+        flags.append("vertical-flow drift")
     if metrics.get("grid_similarity", 1.0) < 0.78:
         flags.append("layout-or-large-visual drift")
     if metrics.get("histogram_similarity", 1.0) < 0.72:
         flags.append("palette-or-background drift")
+    if metrics.get("rgb_similarity", 1.0) < 0.8:
+        flags.append("color-balance drift")
     if metrics.get("edge_similarity", 1.0) < 0.72:
         flags.append("shape-and-contrast drift")
     if metrics.get("contrast_similarity", 1.0) < 0.7:
@@ -635,6 +677,7 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         contrast_similarity = _count_similarity(ref_fingerprint.get("contrast"), cand_fingerprint.get("contrast"))
         aspect_similarity = _count_similarity(ref_fingerprint.get("aspect_ratio"), cand_fingerprint.get("aspect_ratio"))
         opaque_similarity = _count_similarity(ref_fingerprint.get("opaque_ratio"), cand_fingerprint.get("opaque_ratio"))
+        rgb_similarity = _series_similarity(ref_fingerprint.get("rgb_mean"), cand_fingerprint.get("rgb_mean"), scale=255.0)
         histogram_similarity = _histogram_similarity(
             ref_fingerprint.get("histogram"),
             cand_fingerprint.get("histogram"),
@@ -642,6 +685,16 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         grid_similarity = _series_similarity(
             ref_fingerprint.get("grid_luma"),
             cand_fingerprint.get("grid_luma"),
+            scale=255.0,
+        )
+        quadrant_similarity = _series_similarity(
+            ref_fingerprint.get("quadrant_luma"),
+            cand_fingerprint.get("quadrant_luma"),
+            scale=255.0,
+        )
+        band_similarity = _series_similarity(
+            ref_fingerprint.get("band_luma"),
+            cand_fingerprint.get("band_luma"),
             scale=255.0,
         )
         edge_similarity = _count_similarity(ref_fingerprint.get("edge_density"), cand_fingerprint.get("edge_density"))
@@ -654,12 +707,21 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         if contrast_similarity is not None:
             detail.append(f"contrast similarity {contrast_similarity:.2f}")
             metrics["contrast_similarity"] = contrast_similarity
+        if rgb_similarity is not None:
+            detail.append(f"rgb-balance similarity {rgb_similarity:.2f}")
+            metrics["rgb_similarity"] = rgb_similarity
         if histogram_similarity is not None:
             detail.append(f"histogram similarity {histogram_similarity:.2f}")
             metrics["histogram_similarity"] = histogram_similarity
         if grid_similarity is not None:
             detail.append(f"grid similarity {grid_similarity:.2f}")
             metrics["grid_similarity"] = grid_similarity
+        if quadrant_similarity is not None:
+            detail.append(f"quadrant similarity {quadrant_similarity:.2f}")
+            metrics["quadrant_similarity"] = quadrant_similarity
+        if band_similarity is not None:
+            detail.append(f"band similarity {band_similarity:.2f}")
+            metrics["band_similarity"] = band_similarity
         if edge_similarity is not None:
             detail.append(f"edge similarity {edge_similarity:.2f}")
             metrics["edge_similarity"] = edge_similarity
@@ -677,8 +739,11 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
             "ahash_similarity": 0.12,
             "mean_luma_similarity": 0.08,
             "contrast_similarity": 0.1,
+            "rgb_similarity": 0.08,
             "histogram_similarity": 0.16,
-            "grid_similarity": 0.26,
+            "grid_similarity": 0.2,
+            "quadrant_similarity": 0.08,
+            "band_similarity": 0.05,
             "edge_similarity": 0.12,
             "aspect_similarity": 0.03,
             "opaque_similarity": 0.03,
@@ -977,6 +1042,14 @@ def _focus_hint(detail: dict[str, Any]) -> str:
     detail_payload = detail.get("details") or {}
     if name == "screenshot":
         drift_flags = detail_payload.get("drift_flags") or []
+        if "viewport-or-breakpoint drift" in drift_flags:
+            return "viewport or breakpoint mismatch"
+        if "composition drift" in drift_flags:
+            return "hero/section placement drift"
+        if "color-balance drift" in drift_flags or "palette-or-background drift" in drift_flags:
+            return "palette or background drift"
+        if "shape-and-contrast drift" in drift_flags or "contrast-or-depth drift" in drift_flags:
+            return "contrast, typography, or icon-shape drift"
         return drift_flags[0] if drift_flags else "coarse visual drift"
     if name == "dom snapshot":
         return "section structure or node hierarchy drift"
@@ -998,7 +1071,17 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
         if severity not in {"blocker", "high"}:
             continue
         if detail["name"] == "screenshot":
-            actions.append("Recheck viewport, breakpoint, and hero composition; screenshot drift is still materially off.")
+            drift_flags = (detail.get("details") or {}).get("drift_flags") or []
+            if "viewport-or-breakpoint drift" in drift_flags:
+                actions.append("Recheck viewport and breakpoint first; the screenshot footprint shifted.")
+            if "composition drift" in drift_flags:
+                actions.append("Align hero and section placement before tuning fine styling; the large-scale composition diverges.")
+            if "color-balance drift" in drift_flags or "palette-or-background drift" in drift_flags:
+                actions.append("Audit palette, background, and accent token usage against the reference capture.")
+            if "shape-and-contrast drift" in drift_flags or "contrast-or-depth drift" in drift_flags:
+                actions.append("Compare typography weight, contrast, and icon/button shapes against the reference.")
+            if not drift_flags:
+                actions.append("Recheck viewport, breakpoint, and hero composition; screenshot drift is still materially off.")
         elif detail["name"] == "dom snapshot":
             actions.append("Align major section order and DOM depth before tuning styling; structure diverges too early.")
         elif detail["name"] == "computed styles":
