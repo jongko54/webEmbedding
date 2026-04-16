@@ -1,6 +1,6 @@
 # webEmbedding
 
-`webEmbedding` is a distributable Codex plugin repo for source-first web cloning.
+`webEmbedding` is a distributable Codex plugin repo for source-first webpage intake, session-aware capture planning, and exact-clone decisioning.
 
 The install flow is opinionated:
 
@@ -8,6 +8,29 @@ The install flow is opinionated:
 2. Try to find the original embed, preview, viewer, remix, or export source.
 3. Use the original when possible.
 4. Rebuild only when exact reuse is unavailable or not allowed.
+
+In the current `v0.3.1` worktree, the MCP server is organized around:
+
+- acquisition
+- policy
+- capture bundle scaffolding
+- reproduction planning
+- fidelity verification scaffolding
+
+The `v0.3.1` baseline adds session-aware Playwright capture options for:
+
+- persistent browser profiles via `user_data_dir`
+- reusable auth snapshots via `storage_state_path`
+- optional storage state export via `storage_state_output_path`
+- optional runtime HTML and screenshot capture
+
+This is intentionally honest about the current boundary: `webEmbedding` now goes beyond URL inspection, but it is still not a full DOM/CSS reproduction engine yet.
+
+What changed in the current worktree is that the plugin can now:
+
+- detect when the original page itself is safely frameable and use it as a `direct-iframe` exact-reuse target
+- run a one-shot `clone` workflow from a single URL
+- persist both an exact-reuse bundle and a rebuild prompt when exact reuse is unavailable
 
 The repo ships three install entrypoints that all converge on the same Python installer core:
 
@@ -28,8 +51,10 @@ curl -fsSL https://github.com/jongko54/webEmbedding/releases/latest/download/ins
 Use a specific release tag:
 
 ```bash
-curl -fsSL https://github.com/jongko54/webEmbedding/releases/download/v0.1.2/install.sh | bash
+curl -fsSL https://github.com/jongko54/webEmbedding/releases/download/v0.2.0/install.sh | bash
 ```
+
+The repo currently contains unreleased `v0.3.1` worktree changes. Until the next release is tagged, use `latest` or an existing published tag such as `v0.2.0`.
 
 ### After registry publish
 
@@ -87,6 +112,10 @@ It also creates or updates the local Codex marketplace entry at:
 
 - `bundle/source-first-clone`
   The actual Codex plugin bundle that gets installed.
+- `docs/webEmbedding-v0.2-architecture.md`
+  The recommended v0.2 architecture and phased roadmap.
+- `docs/webEmbedding-v0.3-playwright-integration.md`
+  The session-aware Playwright integration notes for the v0.3 baseline.
 - `python/web_embedding/installer.py`
   Shared installer core used by the npm wrapper, uvx script entrypoint, and curl bootstrap flow.
 - `bin/web-embedding.mjs`
@@ -132,7 +161,7 @@ After you publish this repo, release these artifacts:
 ### First release flow
 
 1. Commit and push `main`
-2. Create a version tag such as `v0.1.1`
+2. Create a version tag such as `v0.3.1`
 3. Push the tag
 4. Let the GitHub Actions release workflow build and upload:
    - `source-first-clone-bundle.tar.gz`
@@ -148,13 +177,114 @@ The installed plugin includes:
 
 - A skill named `exact-clone-intake`
 - An MCP server with tools for:
+  - `clone_reference_url`
+  - `detect_runtime_capabilities`
   - `inspect_url`
   - `discover_embed_candidates`
   - `trace_runtime_sources`
   - `classify_clone_mode`
   - `generate_embed_snippet`
+- `capture_reference_bundle`
+- `build_reproduction_bundle`
+- `plan_reproduction_path`
+- `verify_fidelity_report`
+
+`clone_reference_url` is the current one-shot entrypoint. It runs inspection, policy, session-aware capture, and reproduction bundle generation in one pass.
 
 `trace_runtime_sources` is optional and works best when the host has `node` plus `playwright` or `playwright-core`.
+
+The current v0.3 baseline adds session-aware runtime options:
+
+- `user_data_dir`
+- `storage_state_path`
+- `storage_state_output_path`
+- `capture_html`
+- `capture_screenshot`
+- `output_dir` for writing a canonical on-disk capture bundle
+
+When runtime capture succeeds, the bundle can now persist:
+
+- `dom/snapshot.json`
+- `dom/runtime.html`
+- `styles/computed-summary.json`
+- `network/manifest.json`
+- `assets/inventory.json`
+- `interactions/states.json`
+- `screenshots/runtime.png`
+- `session/storage-state.json`
+- `capture.json`
+
+Example local capture flow:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+from pathlib import Path
+import sys
+repo = Path.cwd()
+sys.path.insert(0, str(repo / "bundle/source-first-clone/mcp"))
+from source_first_clone.capture_bundle import capture_reference_bundle
+
+capture_reference_bundle(
+    url="https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee",
+    user_data_dir=str(repo / ".tmp/browser-profile"),
+    capture_html=True,
+    capture_screenshot=True,
+    output_dir=str(repo / ".tmp/captures/spline-community"),
+)
+PY
+```
+
+Example one-shot clone flow:
+
+```bash
+node ./bin/web-embedding.mjs clone \
+  --url "https://example.com" \
+  --output-dir "$PWD/.tmp/reproductions/example-clone"
+```
+
+When the original page is frameable, the result now comes back as `coverage: exact-reuse` with `exact_reuse.kind: direct-iframe`.
+
+The persisted output directory will include:
+
+- `capture.json`
+- `reproduction/plan.json`
+- `reproduction/embed.html`
+- `reproduction/embed.tsx`
+- `reproduction/rebuild-prompt.txt`
+
+The capture bundle now includes an interaction-state layer for visible interactive elements:
+
+- hover style deltas
+- focus style deltas
+- interactive element bounds and text labels
+
+CLI helpers:
+
+```bash
+web-embedding capabilities
+web-embedding capture \
+  --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
+  --user-data-dir "$PWD/.tmp/browser-profile" \
+  --output-dir "$PWD/.tmp/captures/spline-community"
+
+web-embedding reproduce \
+  --url "https://app.spline.design/community/file/1da90e69-17f1-4cdc-ab49-d3ee07c4edee" \
+  --user-data-dir "$PWD/.tmp/browser-profile" \
+  --output-dir "$PWD/.tmp/reproductions/spline-community"
+```
+
+When exact reuse is available, `reproduce` also writes:
+
+- `reproduction/plan.json`
+- `reproduction/embed.html`
+- `reproduction/embed.tsx`
+- `reproduction/prompt.txt`
+
+The new tools are still scaffolds for the next phase:
+
+- `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
+- `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
+- `verify_fidelity_report` reports what is still missing before real fidelity comparison is possible
 
 ## Guardrails
 
@@ -164,3 +294,7 @@ This plugin is source-first, not piracy-first.
 - Respect license and ownership signals.
 - Say when an exact copy is unavailable.
 - Fall back to rebuilding only after the exact paths are exhausted.
+
+## Architecture
+
+See [docs/webEmbedding-v0.2-architecture.md](./docs/webEmbedding-v0.2-architecture.md) for the architectural roadmap and [docs/webEmbedding-v0.3-playwright-integration.md](./docs/webEmbedding-v0.3-playwright-integration.md) for the current session-aware capture boundary.

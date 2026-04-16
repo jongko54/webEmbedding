@@ -50,6 +50,18 @@ def default_bundle_dir() -> Path:
     return repo_root() / "bundle" / PLUGIN_NAME
 
 
+def load_capture_api() -> tuple[Any, Any, Any, Any]:
+    capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
+    if str(capture_root) not in sys.path:
+        sys.path.insert(0, str(capture_root))
+    from source_first_clone.acquisition import detect_runtime_capabilities
+    from source_first_clone.capture_bundle import capture_reference_bundle
+    from source_first_clone.orchestration import clone_reference_url
+    from source_first_clone.reproduction import build_reproduction_bundle
+
+    return detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, clone_reference_url
+
+
 def build_paths(target_home: str | None) -> InstallPaths:
     home_root = Path(target_home).expanduser().resolve() if target_home else Path.home()
     return InstallPaths(
@@ -125,6 +137,16 @@ def copy_bundle(source_dir: Path, target_dir: Path, force: bool, dry_run: bool) 
     shutil.copytree(source_dir, target_dir, copy_function=shutil.copy2)
 
 
+def safe_extract_archive(archive: tarfile.TarFile, destination: Path) -> None:
+    destination = destination.resolve()
+    members = archive.getmembers()
+    for member in members:
+        member_path = (destination / member.name).resolve()
+        if destination not in member_path.parents and member_path != destination:
+            raise ValueError(f"Archive member escapes destination: {member.name}")
+    archive.extractall(destination)
+
+
 def resolve_bundle_source(bundle_dir: str | None, bundle_archive: str | None) -> tuple[Path, str | None]:
     if bundle_dir and bundle_archive:
         raise ValueError("Use either --bundle-dir or --bundle-archive, not both.")
@@ -135,7 +157,7 @@ def resolve_bundle_source(bundle_dir: str | None, bundle_archive: str | None) ->
             raise FileNotFoundError(f"Bundle archive does not exist: {archive_path}")
         temp_root = tempfile.mkdtemp(prefix="web-embedding-")
         with tarfile.open(archive_path, "r:gz") as archive:
-            archive.extractall(temp_root)
+            safe_extract_archive(archive, Path(temp_root))
         extracted = Path(temp_root) / PLUGIN_NAME
         if not extracted.exists():
             raise FileNotFoundError(
@@ -220,6 +242,170 @@ def command_paths(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_capabilities(args: argparse.Namespace) -> int:
+    del args
+    detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    print(json.dumps(detect_runtime_capabilities(), indent=2))
+    return 0
+
+
+def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
+    summary = json.loads(json.dumps(result))
+    runtime = summary.get("runtime", {})
+    captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    if isinstance(runtime.get("networkHits"), list):
+        hits = runtime["networkHits"]
+        runtime["networkHitCount"] = len(hits)
+        runtime["networkHitsSample"] = hits[:15]
+        runtime.pop("networkHits", None)
+    if isinstance(runtime.get("htmlMatches"), list):
+        matches = runtime["htmlMatches"]
+        runtime["htmlMatchCount"] = len(matches)
+        runtime["htmlMatchesSample"] = matches[:15]
+        runtime.pop("htmlMatches", None)
+    html_capture = captures.get("html")
+    if isinstance(html_capture, dict) and html_capture.get("available"):
+        html_capture.pop("content", None)
+    dom_capture = captures.get("dom")
+    if isinstance(dom_capture, dict):
+        dom_capture.pop("content", None)
+    accessibility_capture = captures.get("accessibility")
+    if isinstance(accessibility_capture, dict):
+        accessibility_capture.pop("content", None)
+    styles_capture = captures.get("styles")
+    if isinstance(styles_capture, dict):
+        styles_capture.pop("content", None)
+    network_capture = captures.get("network")
+    if isinstance(network_capture, dict):
+        network_capture.pop("content", None)
+    assets_capture = captures.get("assets")
+    if isinstance(assets_capture, dict):
+        assets_capture.pop("content", None)
+    interactions_capture = captures.get("interactions")
+    if isinstance(interactions_capture, dict):
+        interactions_capture.pop("content", None)
+    screenshot_capture = captures.get("screenshot")
+    if isinstance(screenshot_capture, dict) and screenshot_capture.get("available"):
+        screenshot_capture.pop("base64", None)
+    bundle = summary.get("bundle", {})
+    captured_artifacts = bundle.get("captured_artifacts", {}) if isinstance(bundle, dict) else {}
+    artifact_html = captured_artifacts.get("html")
+    if isinstance(artifact_html, dict):
+        artifact_html.pop("content", None)
+    return summary
+
+
+def command_capture(args: argparse.Namespace) -> int:
+    _detect_runtime_capabilities, capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    result = capture_reference_bundle(
+        url=args.url,
+        timeout_seconds=args.timeout_seconds,
+        wait_seconds=args.wait_seconds,
+        include_runtime_trace=not args.skip_runtime_trace,
+        user_data_dir=args.user_data_dir,
+        storage_state_path=args.storage_state_path,
+        storage_state_output_path=args.storage_state_output_path,
+        capture_html=not args.skip_html,
+        capture_screenshot=not args.skip_screenshot,
+        viewport_width=args.viewport_width,
+        viewport_height=args.viewport_height,
+        output_dir=args.output_dir,
+        exact_requested=not args.not_exact,
+        license_text=args.license_text,
+        source_signals=args.source_signals,
+    )
+    payload = result if args.full_json else compact_capture_result(result)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
+    summary = json.loads(json.dumps(result))
+    exact_reuse = summary.get("exact_reuse")
+    if isinstance(exact_reuse, dict):
+        exact_reuse.pop("snippets", None)
+    candidates = summary.get("candidates")
+    if isinstance(candidates, list):
+        summary["candidateCount"] = len(candidates)
+        summary["candidateSample"] = candidates[:15]
+        summary.pop("candidates", None)
+    return summary
+
+
+def command_reproduce(args: argparse.Namespace) -> int:
+    _detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    capture_bundle = capture_reference_bundle(
+        url=args.url,
+        timeout_seconds=args.timeout_seconds,
+        wait_seconds=args.wait_seconds,
+        include_runtime_trace=not args.skip_runtime_trace,
+        user_data_dir=args.user_data_dir,
+        storage_state_path=args.storage_state_path,
+        storage_state_output_path=args.storage_state_output_path,
+        capture_html=not args.skip_html,
+        capture_screenshot=not args.skip_screenshot,
+        viewport_width=args.viewport_width,
+        viewport_height=args.viewport_height,
+        output_dir=args.output_dir,
+        exact_requested=not args.not_exact,
+        license_text=args.license_text,
+        source_signals=args.source_signals,
+    )
+    result = build_reproduction_bundle(
+        capture_bundle=capture_bundle,
+        output_dir=args.output_dir,
+    )
+    payload = result if args.full_json else compact_reproduction_result(result)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
+    summary = json.loads(json.dumps(result))
+    exact_reuse = summary.get("exact_reuse")
+    if isinstance(exact_reuse, dict):
+        exact_reuse.pop("snippets", None)
+    reproduction = summary.get("reproduction")
+    if isinstance(reproduction, dict):
+        reproduction.pop("rebuild_prompt", None)
+        exact_reuse = reproduction.get("exact_reuse")
+        if isinstance(exact_reuse, dict):
+            exact_reuse.pop("snippets", None)
+        candidates = reproduction.get("candidates")
+        if isinstance(candidates, list):
+            reproduction["candidateCount"] = len(candidates)
+            reproduction["candidateSample"] = candidates[:15]
+            reproduction.pop("candidates", None)
+    capture_bundle = summary.get("capture_bundle")
+    if isinstance(capture_bundle, dict):
+        summary["capture_bundle"] = compact_capture_result(capture_bundle)
+    return summary
+
+
+def command_clone(args: argparse.Namespace) -> int:
+    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, clone_reference_url = load_capture_api()
+    result = clone_reference_url(
+        url=args.url,
+        timeout_seconds=args.timeout_seconds,
+        wait_seconds=args.wait_seconds,
+        include_runtime_trace=not args.skip_runtime_trace,
+        user_data_dir=args.user_data_dir,
+        storage_state_path=args.storage_state_path,
+        storage_state_output_path=args.storage_state_output_path,
+        capture_html=not args.skip_html,
+        capture_screenshot=not args.skip_screenshot,
+        viewport_width=args.viewport_width,
+        viewport_height=args.viewport_height,
+        output_dir=args.output_dir,
+        exact_requested=not args.not_exact,
+        license_text=args.license_text,
+        source_signals=args.source_signals,
+    )
+    payload = result if args.full_json else compact_clone_result(result)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install or inspect the source-first clone plugin.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -244,6 +430,66 @@ def build_parser() -> argparse.ArgumentParser:
     paths_parser = subparsers.add_parser("paths", help="Print the important install paths.")
     paths_parser.add_argument("--target-home", help="Override the home root used for inspection.")
     paths_parser.set_defaults(func=command_paths)
+
+    capabilities_parser = subparsers.add_parser("capabilities", help="Detect runtime capture dependencies.")
+    capabilities_parser.set_defaults(func=command_capabilities)
+
+    capture_parser = subparsers.add_parser("capture", help="Run a session-aware capture bundle flow.")
+    capture_parser.add_argument("--url", required=True, help="Reference URL to capture.")
+    capture_parser.add_argument("--output-dir", required=True, help="Directory where the capture bundle will be written.")
+    capture_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    capture_parser.add_argument("--wait-seconds", type=int, default=8, help="Browser settle time after navigation.")
+    capture_parser.add_argument("--user-data-dir", help="Persistent browser profile directory for Playwright.")
+    capture_parser.add_argument("--storage-state-path", help="Existing Playwright storage state JSON to apply.")
+    capture_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
+    capture_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
+    capture_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    capture_parser.add_argument("--license-text", help="Optional license text for policy classification.")
+    capture_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
+    capture_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
+    capture_parser.add_argument("--skip-html", action="store_true", help="Do not save runtime HTML.")
+    capture_parser.add_argument("--skip-screenshot", action="store_true", help="Do not save runtime screenshot.")
+    capture_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
+    capture_parser.add_argument("--full-json", action="store_true", help="Print the full capture payload including inline runtime artifacts.")
+    capture_parser.set_defaults(func=command_capture)
+
+    reproduce_parser = subparsers.add_parser("reproduce", help="Capture a reference and build an exact-reuse or reproduction bundle.")
+    reproduce_parser.add_argument("--url", required=True, help="Reference URL to reproduce.")
+    reproduce_parser.add_argument("--output-dir", required=True, help="Directory where the bundle and reproduction files will be written.")
+    reproduce_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    reproduce_parser.add_argument("--wait-seconds", type=int, default=8, help="Browser settle time after navigation.")
+    reproduce_parser.add_argument("--user-data-dir", help="Persistent browser profile directory for Playwright.")
+    reproduce_parser.add_argument("--storage-state-path", help="Existing Playwright storage state JSON to apply.")
+    reproduce_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
+    reproduce_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
+    reproduce_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    reproduce_parser.add_argument("--license-text", help="Optional license text for policy classification.")
+    reproduce_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
+    reproduce_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
+    reproduce_parser.add_argument("--skip-html", action="store_true", help="Do not save runtime HTML.")
+    reproduce_parser.add_argument("--skip-screenshot", action="store_true", help="Do not save runtime screenshot.")
+    reproduce_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
+    reproduce_parser.add_argument("--full-json", action="store_true", help="Print the full reproduction payload.")
+    reproduce_parser.set_defaults(func=command_reproduce)
+
+    clone_parser = subparsers.add_parser("clone", help="Run the full source-first clone workflow from a single URL.")
+    clone_parser.add_argument("--url", required=True, help="Reference URL to clone.")
+    clone_parser.add_argument("--output-dir", required=True, help="Directory where capture and reproduction files will be written.")
+    clone_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    clone_parser.add_argument("--wait-seconds", type=int, default=8, help="Browser settle time after navigation.")
+    clone_parser.add_argument("--user-data-dir", help="Persistent browser profile directory for Playwright.")
+    clone_parser.add_argument("--storage-state-path", help="Existing Playwright storage state JSON to apply.")
+    clone_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
+    clone_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
+    clone_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    clone_parser.add_argument("--license-text", help="Optional license text for policy classification.")
+    clone_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
+    clone_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
+    clone_parser.add_argument("--skip-html", action="store_true", help="Do not save runtime HTML.")
+    clone_parser.add_argument("--skip-screenshot", action="store_true", help="Do not save runtime screenshot.")
+    clone_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
+    clone_parser.add_argument("--full-json", action="store_true", help="Print the full clone payload.")
+    clone_parser.set_defaults(func=command_clone)
 
     return parser
 

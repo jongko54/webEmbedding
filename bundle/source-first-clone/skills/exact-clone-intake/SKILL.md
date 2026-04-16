@@ -11,12 +11,19 @@ Treat requests like `그대로 가져와줘`, `완전 똑같이`, `same`, `exact
 
 1. Inspect the reference URL before writing code.
 2. Use MCP tools in this order:
+   - `clone_reference_url` when you want the full workflow in one pass
+   - `detect_runtime_capabilities` when session-aware capture might be needed
    - `inspect_url`
    - `discover_embed_candidates`
    - `trace_runtime_sources` when static HTML is not enough
    - `classify_clone_mode`
-   - `generate_embed_snippet`
+   - `capture_reference_bundle` when exact reuse is still unclear
+   - `build_reproduction_bundle` after capture when you need an exact reuse output package
+   - `plan_reproduction_path`
+   - `generate_embed_snippet` only when an actual embed path exists
+   - `verify_fidelity_report` when comparing a reproduced result
 3. Prefer these outcomes in order:
+   - direct iframe reuse of the original page when frameable
    - original embed or preview
    - original remix, export, or source
    - rebuild with a clear note that it is not exact
@@ -30,6 +37,9 @@ Treat requests like `그대로 가져와줘`, `완전 똑같이`, `same`, `exact
 
 ## Tool notes
 
-- `trace_runtime_sources` is especially useful for pages that hide the real scene URL behind client-side rendering.
+- `trace_runtime_sources` is especially useful for pages that hide the real scene URL behind client-side rendering. Use `user_data_dir` or `storage_state_path` when authentication matters.
+- `capture_reference_bundle` is a scaffold, not a full DOM/CSS capture engine. It now persists DOM, style, asset, and basic hover/focus interaction-state artifacts. Use `storage_state_output_path` when you need to persist session state for later runs.
+- `clone_reference_url` is the fastest path when the user has pasted a link and wants the full source-first clone pipeline executed immediately.
+- `plan_reproduction_path` is useful when the policy decision is clear but the build sequence is not.
 - `generate_embed_snippet` is for fast HTML or Next.js integration once the exact source URL is known.
-
+- `verify_fidelity_report` should be used honestly: it lists what is still missing before a real exactness claim is possible.
