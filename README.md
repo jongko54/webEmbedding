@@ -269,12 +269,18 @@ The persisted output directory will include:
 - `reproduction/embed.tsx`
 - `reproduction/rebuild-prompt.txt`
 - `reproduction/rebuild/layout-summary.json`
+- `reproduction/rebuild/app-model.json`
 - `reproduction/rebuild/starter.html`
 - `reproduction/rebuild/starter.css`
 - `reproduction/rebuild/starter.tsx`
+- `reproduction/rebuild/next-app/app/layout.tsx`
+- `reproduction/rebuild/next-app/app/page.tsx`
+- `reproduction/rebuild/next-app/app/globals.css`
+- `reproduction/rebuild/next-app/components/BoundedReferencePage.tsx`
+- `reproduction/rebuild/next-app/components/reference-data.ts`
 - `reproduction/rebuild/manifest.json`
 
-When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a JSON layout summary plus starter HTML, CSS, and TSX files to continue from.
+When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has both a low-level HTML/CSS/TSX starter and a more practical `next-app/` renderer skeleton to continue from.
 
 The capture bundle now includes an interaction-state layer for visible interactive elements:
 
@@ -307,9 +313,9 @@ When exact reuse is available, `reproduce` also writes:
 The new tools are still scaffolds for the next phase:
 
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
-- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX plus a layout summary for frame-blocked pages
+- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS/TSX, an app-model snapshot, and a bounded `next-app/` renderer skeleton for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
-- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports with PNG fingerprinting and without overstating exactness
+- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports using persisted-PNG signatures, coarse grid drift, histogram and edge similarity, plus downstream priority findings without overstating exactness
 
 ## Guardrails
 

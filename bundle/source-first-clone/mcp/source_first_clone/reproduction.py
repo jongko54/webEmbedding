@@ -321,7 +321,7 @@ def build_reproduction_bundle(
         "exact_reuse": None,
         "coverage": "approximate",
         "next_action": "rebuild",
-        "note": "This reproduction bundle prefers exact reuse when a trusted preview, viewer, or embed URL is found.",
+        "note": "This reproduction bundle prefers exact reuse when a trusted preview, viewer, or embed URL is found. When that path is unavailable it falls back to a bounded rebuild scaffold plus a practical Next app starter.",
         "rebuild_prompt": build_rebuild_prompt(capture_bundle),
     }
 

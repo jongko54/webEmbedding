@@ -9,11 +9,23 @@ from typing import Any
 
 
 SCAFFOLD_SCHEMA_VERSION = "0.1.0"
+NOISY_TAGS = {"script", "style", "meta", "link", "noscript"}
 
 
 def _clean_text(value: Any, limit: int = 160) -> str:
     text = " ".join(str(value or "").split())
     return text[:limit]
+
+
+def _looks_like_code_noise(text: str) -> bool:
+    lowered = text.lower()
+    if len(text) > 72 and ("{" in text or "function(" in lowered or "window." in lowered):
+        return True
+    if len(text) > 72 and text.count(";") >= 2 and text.count(":") >= 2:
+        return True
+    if lowered.startswith((".", "#")) and "{" in lowered:
+        return True
+    return False
 
 
 def _is_transparent(color: str | None) -> bool:
@@ -45,6 +57,10 @@ def _collect_dom_outline(node: dict[str, Any] | None, bucket: list[dict[str, Any
     if node_type == "element":
         text = _clean_text(node.get("text"), 120)
         tag = _clean_text(node.get("tag"), 40)
+        if tag.lower() in NOISY_TAGS:
+            return
+        if _looks_like_code_noise(text):
+            text = ""
         if text or tag:
             bucket.append(
                 {
@@ -77,11 +93,16 @@ def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 8) -
         height = int(rect.get("height") or 0)
         if width <= 0 or height <= 0:
             continue
+        tag = _clean_text(entry.get("tag"), 40) or "div"
+        if tag.lower() in NOISY_TAGS:
+            continue
         text = _clean_text(entry.get("text"), 140)
+        if _looks_like_code_noise(text):
+            text = ""
         blocks.append(
             {
                 "index": index,
-                "tag": _clean_text(entry.get("tag"), 40) or "div",
+                "tag": tag,
                 "text": text or None,
                 "rect": {
                     "x": int(rect.get("x") or 0),
@@ -460,6 +481,453 @@ def _render_prompt(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _block_title(block: dict[str, Any], index: int) -> str:
+    text = _clean_text(block.get("text"), 64)
+    if text:
+        words = text.split()
+        return " ".join(words[:6])
+    tag = _clean_text(block.get("tag"), 24)
+    if tag:
+        return f"{tag.title()} block {index + 1}"
+    return f"Section {index + 1}"
+
+
+def _block_copy(block: dict[str, Any]) -> str:
+    text = _clean_text(block.get("text"), 180)
+    if text:
+        return text
+    return "Captured layout block derived from the source page structure."
+
+
+def _interaction_label(entry: dict[str, Any], index: int) -> str:
+    text = _clean_text(entry.get("text"), 56)
+    if text:
+        return text
+    tag = _clean_text(entry.get("tag"), 24) or "element"
+    return f"{tag.title()} interaction {index + 1}"
+
+
+def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
+    blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
+    outline = summary.get("outline", []) if isinstance(summary, dict) else []
+    interactions = (summary.get("interactions", {}) or {}).get("sample", [])
+    palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
+    typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+
+    section_cards: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks[:8]):
+        if not isinstance(block, dict):
+            continue
+        rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
+        styles = block.get("styles", {}) if isinstance(block.get("styles", {}), dict) else {}
+        detail_parts = [
+            str(styles.get(field))
+            for field in ("fontFamily", "fontSize", "fontWeight", "color", "backgroundColor")
+            if styles.get(field)
+        ]
+        section_cards.append(
+            {
+                "id": f"section-{index + 1}",
+                "title": _block_title(block, index),
+                "tag": str(block.get("tag") or "div"),
+                "copy": _block_copy(block),
+                "meta": f"{rect.get('width', 0)} x {rect.get('height', 0)} px",
+                "details": detail_parts,
+            }
+        )
+
+    if not section_cards:
+        section_cards.append(
+            {
+                "id": "section-1",
+                "title": "Captured shell",
+                "tag": "div",
+                "copy": "No rich DOM/style data was available, so this scaffold keeps a neutral shell and leaves the exact rebuild to downstream implementation.",
+                "meta": "Fallback state",
+                "details": [],
+            }
+        )
+
+    interaction_cards: list[dict[str, Any]] = []
+    for index, entry in enumerate(interactions[:6] if isinstance(interactions, list) else []):
+        if not isinstance(entry, dict):
+            continue
+        states: list[str] = []
+        hover_keys = entry.get("hoverDeltaKeys", [])
+        focus_keys = entry.get("focusDeltaKeys", [])
+        if hover_keys:
+            states.append(f"hover: {', '.join(str(key) for key in hover_keys)}")
+        if focus_keys:
+            states.append(f"focus: {', '.join(str(key) for key in focus_keys)}")
+        interaction_cards.append(
+            {
+                "id": f"interaction-{index + 1}",
+                "label": _interaction_label(entry, index),
+                "copy": _clean_text(entry.get("text"), 140) or "Interactive element sampled from runtime capture.",
+                "tag": str(entry.get("tag") or "element"),
+                "href": entry.get("href"),
+                "states": states or ["interaction detected"],
+            }
+        )
+
+    outline_cards: list[dict[str, Any]] = []
+    for index, entry in enumerate(outline[:8] if isinstance(outline, list) else []):
+        if not isinstance(entry, dict):
+            continue
+        descriptor = " ".join(
+            part
+            for part in [
+                str(entry.get("tag") or ""),
+                str(entry.get("role") or ""),
+                str(entry.get("id") or ""),
+                str(entry.get("className") or ""),
+            ]
+            if part
+        ).strip()
+        outline_cards.append(
+            {
+                "id": f"outline-{index + 1}",
+                "label": descriptor or f"Node {index + 1}",
+                "copy": _clean_text(entry.get("text"), 140) or "Structural node captured from the DOM outline.",
+                "depth": entry.get("depth", 0),
+            }
+        )
+
+    meta_bits = [
+        f"frame policy: {(summary.get('frame_policy', {}) or {}).get('reason') or 'unknown'}",
+        f"blocks: {len(section_cards)}",
+        f"assets: {(summary.get('assets', {}) or {}).get('image_count', 0)} images / {(summary.get('assets', {}) or {}).get('script_count', 0)} scripts",
+        f"interactive states: {(summary.get('interactions', {}) or {}).get('count', 0)}",
+    ]
+    signal_bits = [
+        label.replace("_", " ")
+        for label, enabled in ((summary.get("signals", {}) or {}).items())
+        if enabled
+    ]
+
+    subtitle = (
+        summary.get("description")
+        or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
+    )
+
+    return {
+        "title": str(summary.get("title") or "Captured reference"),
+        "subtitle": str(subtitle),
+        "metaBits": meta_bits,
+        "signalBits": signal_bits[:6],
+        "viewport": summary.get("viewport"),
+        "palette": {
+            "text": palette.get("text"),
+            "accent": palette.get("accent"),
+            "surface": palette.get("surface"),
+            "surfaceAlt": palette.get("surface_alt"),
+        },
+        "typography": {
+            "fonts": typography.get("fonts") or [],
+            "sizes": typography.get("sizes") or [],
+            "weights": typography.get("weights") or [],
+        },
+        "sections": section_cards,
+        "interactions": interaction_cards,
+        "outline": outline_cards,
+        "note": str(summary.get("note") or ""),
+    }
+
+
+def _render_reference_data_ts(app_model: dict[str, Any]) -> str:
+    model_literal = json.dumps(app_model, ensure_ascii=False, indent=2)
+    return "\n".join(
+        [
+            f"export const boundedReferenceData = {model_literal} as const;",
+            "",
+            "export type BoundedReferenceData = typeof boundedReferenceData;",
+        ]
+    )
+
+
+def _render_bounded_reference_page_tsx() -> str:
+    return "\n".join(
+        [
+            'import type { BoundedReferenceData } from "./reference-data";',
+            "",
+            "type Props = {",
+            "  data: BoundedReferenceData;",
+            "};",
+            "",
+            "export function BoundedReferencePage({ data }: Props) {",
+            "  return (",
+            '    <main className=\"bounded-shell\">',
+            '      <section className=\"bounded-hero bounded-panel\">',
+            '        <p className=\"bounded-eyebrow\">Bounded rebuild app scaffold</p>',
+            "        <h1>{data.title}</h1>",
+            '        <p className=\"bounded-lede\">{data.subtitle}</p>',
+            '        <div className=\"bounded-meta\">',
+            "          {data.metaBits.map((bit) => (",
+            '            <span className=\"bounded-chip\" key={bit}>',
+            "              {bit}",
+            "            </span>",
+            "          ))}",
+            "        </div>",
+            "      </section>",
+            "",
+            '      <section className=\"bounded-layout\">',
+            '        <div className=\"bounded-main\">',
+            '          <div className=\"bounded-section-grid\">',
+            "            {data.sections.map((section) => (",
+            '              <article className=\"bounded-card bounded-panel\" key={section.id}>',
+            '                <p className=\"bounded-kicker\">{section.tag}</p>',
+            "                <h2>{section.title}</h2>",
+            '                <p className=\"bounded-copy\">{section.copy}</p>',
+            '                <div className=\"bounded-meta bounded-meta--inline\">',
+            '                  <span className=\"bounded-chip\">{section.meta}</span>',
+            "                  {section.details.slice(0, 3).map((detail) => (",
+            '                    <span className=\"bounded-chip bounded-chip--muted\" key={detail}>',
+            "                      {detail}",
+            "                    </span>",
+            "                  ))}",
+            "                </div>",
+            "              </article>",
+            "            ))}",
+            "          </div>",
+            "        </div>",
+            "",
+            '        <aside className=\"bounded-rail\">',
+            '          <section className=\"bounded-panel bounded-stack\">',
+            '            <p className=\"bounded-kicker\">Signals</p>',
+            '            <ul className=\"bounded-list\">',
+            "              {data.signalBits.length ? (",
+            "                data.signalBits.map((signal) => <li key={signal}>{signal}</li>)",
+            "              ) : (",
+            "                <li>No extra runtime signals were captured.</li>",
+            "              )}",
+            "            </ul>",
+            "          </section>",
+            "",
+            '          <section className=\"bounded-panel bounded-stack\">',
+            '            <p className=\"bounded-kicker\">Interaction samples</p>',
+            '            <div className=\"bounded-stack\">',
+            "              {data.interactions.length ? (",
+            "                data.interactions.map((entry) => (",
+            '                  <article className=\"bounded-mini-card\" key={entry.id}>',
+            '                    <strong>{entry.label}</strong>',
+            '                    <p>{entry.copy}</p>',
+            '                    <div className=\"bounded-meta bounded-meta--inline\">',
+            "                      {entry.states.map((state) => (",
+            '                        <span className=\"bounded-chip bounded-chip--muted\" key={state}>',
+            "                          {state}",
+            "                        </span>",
+            "                      ))}",
+            "                    </div>",
+            "                  </article>",
+            "                ))",
+            "              ) : (",
+            '                <article className=\"bounded-mini-card\">',
+            "                  <strong>No sampled interactions</strong>",
+            "                  <p>Interaction data was not available in the capture bundle.</p>",
+            "                </article>",
+            "              )}",
+            "            </div>",
+            "          </section>",
+            "",
+            '          <section className=\"bounded-panel bounded-stack\">',
+            '            <p className=\"bounded-kicker\">DOM outline</p>',
+            '            <div className=\"bounded-stack bounded-stack--tight\">',
+            "              {data.outline.slice(0, 6).map((item) => (",
+            '                <article className=\"bounded-outline-item\" key={item.id}>',
+            '                  <strong>{item.label}</strong>',
+            '                  <p>{item.copy}</p>',
+            "                </article>",
+            "              ))}",
+            "            </div>",
+            "          </section>",
+            "        </aside>",
+            "      </section>",
+            "    </main>",
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _render_next_app_page_tsx() -> str:
+    return "\n".join(
+        [
+            'import { BoundedReferencePage } from "../components/BoundedReferencePage";',
+            'import { boundedReferenceData } from "../components/reference-data";',
+            "",
+            "export default function Page() {",
+            "  return <BoundedReferencePage data={boundedReferenceData} />;",
+            "}",
+        ]
+    )
+
+
+def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
+    title = json.dumps(str(summary.get("title") or "Captured reference"), ensure_ascii=False)
+    description = json.dumps(
+        str(
+            summary.get("description")
+            or "Bounded rebuild scaffold derived from capture data."
+        ),
+        ensure_ascii=False,
+    )
+    return "\n".join(
+        [
+            'import "./globals.css";',
+            'import type { Metadata } from "next";',
+            'import type { ReactNode } from "react";',
+            "",
+            "export const metadata: Metadata = {",
+            f"  title: {title},",
+            f"  description: {description},",
+            "  robots: {",
+            "    index: false,",
+            "    follow: false,",
+            "  },",
+            "};",
+            "",
+            "export default function RootLayout({ children }: { children: ReactNode }) {",
+            "  return (",
+            '    <html lang="en">',
+            "      <body>{children}</body>",
+            "    </html>",
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
+    palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
+    typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    base_font = (typography.get("fonts") or ["Inter, system-ui, sans-serif"])[0]
+    text_color = palette.get("text") or "#e5e7eb"
+    surface_color = palette.get("surface") or "#0f172a"
+    surface_alt = palette.get("surface_alt") or "#172033"
+    accent = palette.get("accent") or "#7c3aed"
+    return "\n".join(
+        [
+            ":root {",
+            f"  --bounded-bg: {surface_color};",
+            f"  --bounded-bg-alt: {surface_alt};",
+            f"  --bounded-text: {text_color};",
+            f"  --bounded-accent: {accent};",
+            "  --bounded-muted: rgba(226, 232, 240, 0.72);",
+            "  --bounded-border: rgba(255, 255, 255, 0.12);",
+            f"  --bounded-font-sans: {base_font};",
+            "}",
+            "",
+            "* { box-sizing: border-box; }",
+            "html, body { min-height: 100%; }",
+            "body {",
+            "  margin: 0;",
+            "  color: var(--bounded-text);",
+            "  font-family: var(--bounded-font-sans);",
+            "  background:",
+            "    radial-gradient(circle at top left, color-mix(in srgb, var(--bounded-accent) 18%, transparent), transparent 34%),",
+            "    linear-gradient(180deg, #060911 0%, var(--bounded-bg) 100%);",
+            "}",
+            ".bounded-shell {",
+            "  max-width: 1280px;",
+            "  margin: 0 auto;",
+            "  padding: 40px 20px 72px;",
+            "}",
+            ".bounded-layout {",
+            "  display: grid;",
+            "  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);",
+            "  gap: 20px;",
+            "  align-items: start;",
+            "}",
+            ".bounded-main, .bounded-rail { min-width: 0; }",
+            ".bounded-section-grid {",
+            "  display: grid;",
+            "  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));",
+            "  gap: 18px;",
+            "}",
+            ".bounded-panel {",
+            "  border: 1px solid var(--bounded-border);",
+            "  border-radius: 24px;",
+            "  background: rgba(255, 255, 255, 0.04);",
+            "  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);",
+            "  backdrop-filter: blur(14px);",
+            "}",
+            ".bounded-hero {",
+            "  padding: 28px;",
+            "  margin-bottom: 20px;",
+            "}",
+            ".bounded-eyebrow, .bounded-kicker {",
+            "  margin: 0 0 10px;",
+            "  text-transform: uppercase;",
+            "  letter-spacing: 0.16em;",
+            "  font-size: 12px;",
+            "  color: var(--bounded-muted);",
+            "}",
+            ".bounded-hero h1, .bounded-card h2 {",
+            "  margin: 0;",
+            "  letter-spacing: -0.04em;",
+            "}",
+            ".bounded-hero h1 {",
+            "  font-size: clamp(2.2rem, 4vw, 4.4rem);",
+            "  line-height: 0.94;",
+            "}",
+            ".bounded-lede, .bounded-copy, .bounded-mini-card p, .bounded-outline-item p {",
+            "  color: var(--bounded-muted);",
+            "  line-height: 1.6;",
+            "}",
+            ".bounded-lede {",
+            "  max-width: 62ch;",
+            "  margin: 16px 0 0;",
+            "}",
+            ".bounded-meta {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  gap: 10px;",
+            "  margin-top: 18px;",
+            "}",
+            ".bounded-meta--inline { margin-top: 12px; }",
+            ".bounded-chip {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  min-height: 32px;",
+            "  padding: 0 12px;",
+            "  border-radius: 999px;",
+            "  border: 1px solid color-mix(in srgb, var(--bounded-accent) 24%, white 10%);",
+            "  background: color-mix(in srgb, var(--bounded-accent) 14%, transparent);",
+            "  font-size: 12px;",
+            "}",
+            ".bounded-chip--muted {",
+            "  border-color: var(--bounded-border);",
+            "  background: rgba(255, 255, 255, 0.03);",
+            "}",
+            ".bounded-card, .bounded-stack { padding: 20px; }",
+            ".bounded-card h2 { font-size: 1.05rem; }",
+            ".bounded-copy { margin: 10px 0 0; }",
+            ".bounded-rail { display: grid; gap: 16px; }",
+            ".bounded-stack { display: grid; gap: 14px; }",
+            ".bounded-stack--tight { gap: 10px; }",
+            ".bounded-list {",
+            "  margin: 0;",
+            "  padding-left: 18px;",
+            "  color: var(--bounded-muted);",
+            "}",
+            ".bounded-mini-card, .bounded-outline-item {",
+            "  padding: 14px;",
+            "  border-radius: 18px;",
+            "  border: 1px solid rgba(255, 255, 255, 0.08);",
+            "  background: rgba(255, 255, 255, 0.03);",
+            "}",
+            ".bounded-mini-card strong, .bounded-outline-item strong {",
+            "  display: block;",
+            "  margin-bottom: 6px;",
+            "}",
+            ".bounded-mini-card p, .bounded-outline-item p { margin: 0; }",
+            "@media (max-width: 980px) {",
+            "  .bounded-layout { grid-template-columns: 1fr; }",
+            "}",
+        ]
+    )
+
+
 def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     sections = _get_capture_sections(capture_bundle)
     static = sections["static"]
@@ -537,23 +1005,56 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "count": len(interaction_entries) if isinstance(interaction_entries, list) else 0,
             "sample": interaction_sample,
         },
+        "renderer": {
+            "kind": "next-app-scaffold",
+            "entrypoints": [
+                "next-app/app/page.tsx",
+                "next-app/components/BoundedReferencePage.tsx",
+                "next-app/components/reference-data.ts",
+            ],
+        },
         "note": "This scaffold is intentionally bounded. It is a starter for reconstruction when an exact reuse path is unavailable.",
     }
     html = _render_html(summary)
     css = _render_css(summary)
     tsx = _render_tsx(summary)
     prompt = _render_prompt(summary)
+    app_model = _build_app_model(summary)
+    app_data_ts = _render_reference_data_ts(app_model)
+    app_component_tsx = _render_bounded_reference_page_tsx()
+    app_page_tsx = _render_next_app_page_tsx()
+    app_layout_tsx = _render_next_app_layout_tsx(summary)
+    app_globals_css = _render_next_app_globals_css(summary)
 
     artifacts = {
         "layout-summary.json": summary,
+        "app-model.json": app_model,
         "starter.html": html,
         "starter.css": css,
         "starter.tsx": tsx,
         "prompt.txt": prompt,
+        "next-app/app/layout.tsx": app_layout_tsx,
+        "next-app/app/page.tsx": app_page_tsx,
+        "next-app/app/globals.css": app_globals_css,
+        "next-app/components/BoundedReferencePage.tsx": app_component_tsx,
+        "next-app/components/reference-data.ts": app_data_ts,
         "manifest.json": {
             "schema_version": SCAFFOLD_SCHEMA_VERSION,
             "coverage": summary["coverage"],
-            "files": ["layout-summary.json", "starter.html", "starter.css", "starter.tsx", "prompt.txt"],
+            "files": [
+                "layout-summary.json",
+                "app-model.json",
+                "starter.html",
+                "starter.css",
+                "starter.tsx",
+                "prompt.txt",
+                "next-app/app/layout.tsx",
+                "next-app/app/page.tsx",
+                "next-app/app/globals.css",
+                "next-app/components/BoundedReferencePage.tsx",
+                "next-app/components/reference-data.ts",
+            ],
+            "app_entrypoints": summary["renderer"]["entrypoints"],
         },
     }
 
@@ -578,6 +1079,7 @@ def persist_rebuild_scaffold(output_dir: Path, scaffold: dict[str, Any]) -> dict
 
     for filename, content in artifacts.items():
         target = rebuild_dir / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
         if filename.endswith(".json"):
             target.write_text(json.dumps(content, indent=2) + "\n")
         elif isinstance(content, str):

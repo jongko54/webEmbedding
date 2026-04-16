@@ -356,6 +356,9 @@ def compact_rebuild_scaffold_summary(scaffold: dict[str, Any]) -> dict[str, Any]
     artifacts = summary.get("artifacts")
     if isinstance(artifacts, dict):
         summary["artifact_files"] = list(artifacts.keys())
+        manifest = artifacts.get("manifest.json")
+        if isinstance(manifest, dict):
+            summary["app_entrypoints"] = manifest.get("app_entrypoints")
         summary.pop("artifacts", None)
     nested_summary = summary.get("summary")
     if isinstance(nested_summary, dict):
@@ -371,6 +374,7 @@ def compact_rebuild_scaffold_summary(scaffold: dict[str, Any]) -> dict[str, Any]
             "block_count": len(nested_summary.get("blocks", []) or []),
             "outline_count": len(nested_summary.get("outline", []) or []),
             "interaction_count": (nested_summary.get("interactions", {}) or {}).get("count"),
+            "renderer": nested_summary.get("renderer"),
         }
     return summary
 

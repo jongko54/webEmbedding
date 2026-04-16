@@ -20,6 +20,17 @@ CORE_ARTIFACTS = (
     "interaction_states",
 )
 
+CHECK_WEIGHTS = {
+    "screenshot": 45,
+    "dom snapshot": 20,
+    "computed styles": 20,
+    "interaction states": 15,
+}
+
+SCREENSHOT_GRID_SIZE = 16
+SCREENSHOT_HASH_GRID_SIZE = 8
+SCREENSHOT_HISTOGRAM_BINS = 12
+
 
 @dataclass
 class ArtifactRecord:
@@ -71,6 +82,7 @@ def build_fidelity_report(
             candidate_artifacts["asset_inventory"],
         ),
     ]
+    check_details = [_finalize_check_detail(detail) for detail in check_details]
 
     core_blockers = [
         detail["name"]
@@ -86,6 +98,9 @@ def build_fidelity_report(
     confidence = _confidence_from_score(bounded_score, core_blockers)
     verdict = _choose_verdict(bounded_score, core_blockers)
     message = _build_message(reference, candidate, bounded_score, confidence, core_blockers)
+    score_breakdown = _score_breakdown(check_details)
+    priority_findings = _priority_findings(check_details)
+    recommended_actions = _recommended_actions(check_details, core_blockers)
 
     missing_artifacts = {
         "reference": _missing_artifacts(reference_artifacts),
@@ -98,23 +113,37 @@ def build_fidelity_report(
         "verdict": verdict,
         "core_blockers": core_blockers,
         "artifact_coverage": artifact_coverage,
+        "score_breakdown": score_breakdown,
+        "strongest_checks": _ranked_checks(check_details, reverse=True),
+        "weakest_checks": _ranked_checks(check_details, reverse=False),
+    }
+    downstream_guidance = {
+        "ready_for_exact_clone": verdict == "strong" and not core_blockers,
+        "priority_findings": priority_findings,
+        "recommended_actions": recommended_actions,
+        "missing_core_artifacts": {
+            side: [name for name in missing if name in {"screenshot", "DOM snapshot", "computed styles", "interaction states"}]
+            for side, missing in missing_artifacts.items()
+        },
     }
 
     return {
         "available": True,
         "status": "bounded",
+        "report_version": "verification.v2",
         "verdict": verdict,
         "reference_url": reference.url,
         "candidate_url": candidate.url,
         "message": message,
-        "checks": [detail["summary"] for detail in check_details],
+        "checks": [_check_summary(detail) for detail in check_details],
         "check_details": check_details,
         "comparison_summary": comparison_summary,
         "artifact_coverage": artifact_coverage,
         "missing_artifacts": missing_artifacts,
+        "downstream_guidance": downstream_guidance,
         "limitations": [
             "This report is bounded to persisted artifacts and metadata.",
-            "It uses bounded PNG fingerprinting, not full pixel-perfect diffing.",
+            "It uses bounded persisted-PNG comparison, not full pixel-perfect diffing.",
             "If screenshot bytes are missing, screenshot parity cannot be verified.",
             "If DOM or style content is absent, structural and visual alignment is only partially assessed.",
         ],
@@ -286,15 +315,19 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
     if width <= 0 or height <= 0 or not pixels:
         return None
 
-    bucket_count = 8
-    bucket_sums = [0.0] * (bucket_count * bucket_count)
-    bucket_counts = [0] * (bucket_count * bucket_count)
+    hash_bucket_sums = [0.0] * (SCREENSHOT_HASH_GRID_SIZE * SCREENSHOT_HASH_GRID_SIZE)
+    hash_bucket_counts = [0] * (SCREENSHOT_HASH_GRID_SIZE * SCREENSHOT_HASH_GRID_SIZE)
+    grid_bucket_sums = [0.0] * (SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
+    grid_bucket_counts = [0] * (SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
+    histogram = [0] * SCREENSHOT_HISTOGRAM_BINS
     luma_total = 0.0
+    luma_squared_total = 0.0
     opaque_pixels = 0
 
     for y in range(height):
         row_start = y * width * 4
-        bucket_y = min(bucket_count - 1, (y * bucket_count) // height)
+        hash_bucket_y = min(SCREENSHOT_HASH_GRID_SIZE - 1, (y * SCREENSHOT_HASH_GRID_SIZE) // height)
+        grid_bucket_y = min(SCREENSHOT_GRID_SIZE - 1, (y * SCREENSHOT_GRID_SIZE) // height)
         for x in range(width):
             offset = row_start + x * 4
             red = pixels[offset]
@@ -305,25 +338,44 @@ def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
                 continue
             luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
             luma_total += luma
+            luma_squared_total += luma * luma
             opaque_pixels += 1
-            bucket_x = min(bucket_count - 1, (x * bucket_count) // width)
-            bucket_index = bucket_y * bucket_count + bucket_x
-            bucket_sums[bucket_index] += luma
-            bucket_counts[bucket_index] += 1
+            hash_bucket_x = min(SCREENSHOT_HASH_GRID_SIZE - 1, (x * SCREENSHOT_HASH_GRID_SIZE) // width)
+            hash_bucket_index = hash_bucket_y * SCREENSHOT_HASH_GRID_SIZE + hash_bucket_x
+            hash_bucket_sums[hash_bucket_index] += luma
+            hash_bucket_counts[hash_bucket_index] += 1
+            grid_bucket_x = min(SCREENSHOT_GRID_SIZE - 1, (x * SCREENSHOT_GRID_SIZE) // width)
+            grid_bucket_index = grid_bucket_y * SCREENSHOT_GRID_SIZE + grid_bucket_x
+            grid_bucket_sums[grid_bucket_index] += luma
+            grid_bucket_counts[grid_bucket_index] += 1
+            histogram_index = min(SCREENSHOT_HISTOGRAM_BINS - 1, int((luma / 256.0) * SCREENSHOT_HISTOGRAM_BINS))
+            histogram[histogram_index] += 1
 
     if opaque_pixels == 0:
         return None
 
-    bucket_values = [
-        (bucket_sums[index] / bucket_counts[index]) if bucket_counts[index] else 0.0
-        for index in range(bucket_count * bucket_count)
+    hash_bucket_values = [
+        (hash_bucket_sums[index] / hash_bucket_counts[index]) if hash_bucket_counts[index] else 0.0
+        for index in range(SCREENSHOT_HASH_GRID_SIZE * SCREENSHOT_HASH_GRID_SIZE)
     ]
-    average = sum(bucket_values) / len(bucket_values)
-    bits = "".join("1" if value >= average else "0" for value in bucket_values)
+    grid_values = [
+        (grid_bucket_sums[index] / grid_bucket_counts[index]) if grid_bucket_counts[index] else 0.0
+        for index in range(SCREENSHOT_GRID_SIZE * SCREENSHOT_GRID_SIZE)
+    ]
+    average = sum(hash_bucket_values) / len(hash_bucket_values)
+    bits = "".join("1" if value >= average else "0" for value in hash_bucket_values)
+    mean_luma = luma_total / opaque_pixels
+    variance = max(0.0, (luma_squared_total / opaque_pixels) - (mean_luma * mean_luma))
     return {
         "width": width,
         "height": height,
-        "mean_luma": round(luma_total / opaque_pixels, 4),
+        "mean_luma": round(mean_luma, 4),
+        "contrast": round(math.sqrt(variance), 4),
+        "aspect_ratio": round(width / height, 4),
+        "opaque_ratio": round(opaque_pixels / (width * height), 4),
+        "histogram": [round(count / opaque_pixels, 4) for count in histogram],
+        "grid_luma": [round(value, 2) for value in grid_values],
+        "edge_density": round(_grid_edge_density(grid_values, SCREENSHOT_GRID_SIZE), 4),
         "ahash": f"{int(bits, 2):016x}",
     }
 
@@ -457,6 +509,94 @@ def _hash_similarity(reference_hash: Any, candidate_hash: Any) -> float | None:
     return max(0.0, 1.0 - (distance / total)) if total else None
 
 
+def _grid_edge_density(values: list[float], side_length: int) -> float:
+    if side_length <= 1 or len(values) != side_length * side_length:
+        return 0.0
+    total = 0.0
+    comparisons = 0
+    for y in range(side_length):
+        for x in range(side_length):
+            value = values[(y * side_length) + x]
+            if x > 0:
+                total += abs(value - values[(y * side_length) + (x - 1)])
+                comparisons += 1
+            if y > 0:
+                total += abs(value - values[((y - 1) * side_length) + x])
+                comparisons += 1
+    return (total / comparisons) / 255.0 if comparisons else 0.0
+
+
+def _series_similarity(reference: Any, candidate: Any, scale: float = 1.0) -> float | None:
+    if not isinstance(reference, list) or not isinstance(candidate, list):
+        return None
+    if not reference or len(reference) != len(candidate):
+        return None
+    comparisons = []
+    denominator = max(scale, 1.0)
+    for left, right in zip(reference, candidate):
+        if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+            continue
+        comparisons.append(max(0.0, 1.0 - abs(float(left) - float(right)) / denominator))
+    if not comparisons:
+        return None
+    return sum(comparisons) / len(comparisons)
+
+
+def _histogram_similarity(reference: Any, candidate: Any) -> float | None:
+    return _series_similarity(reference, candidate, scale=1.0)
+
+
+def _signature_summary(signature: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(signature, dict):
+        return None
+    return {
+        "width": signature.get("width"),
+        "height": signature.get("height"),
+        "aspect_ratio": signature.get("aspect_ratio"),
+        "mean_luma": signature.get("mean_luma"),
+        "contrast": signature.get("contrast"),
+        "edge_density": signature.get("edge_density"),
+        "opaque_ratio": signature.get("opaque_ratio"),
+        "ahash": signature.get("ahash"),
+        "histogram": signature.get("histogram"),
+    }
+
+
+def _weighted_similarity(metrics: dict[str, float], weights: dict[str, float]) -> float | None:
+    total = 0.0
+    used_weight = 0.0
+    for name, value in metrics.items():
+        if not isinstance(value, (int, float)):
+            continue
+        weight = float(weights.get(name, 0.0))
+        if weight <= 0:
+            continue
+        total += max(0.0, min(1.0, float(value))) * weight
+        used_weight += weight
+    if used_weight <= 0:
+        return None
+    return total / used_weight
+
+
+def _screenshot_drift_flags(
+    metrics: dict[str, float],
+    reference_dimensions: tuple[int, int] | None,
+    candidate_dimensions: tuple[int, int] | None,
+) -> list[str]:
+    flags: list[str] = []
+    if reference_dimensions and candidate_dimensions and reference_dimensions != candidate_dimensions:
+        flags.append("viewport-or-breakpoint drift")
+    if metrics.get("grid_similarity", 1.0) < 0.78:
+        flags.append("layout-or-large-visual drift")
+    if metrics.get("histogram_similarity", 1.0) < 0.72:
+        flags.append("palette-or-background drift")
+    if metrics.get("edge_similarity", 1.0) < 0.72:
+        flags.append("shape-and-contrast drift")
+    if metrics.get("contrast_similarity", 1.0) < 0.7:
+        flags.append("contrast-or-depth drift")
+    return flags
+
+
 def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     ref_meta = reference.get("metadata") or {}
     cand_meta = candidate.get("metadata") or {}
@@ -472,35 +612,75 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
     cand_fingerprint = _png_fingerprint(cand_path) if cand_path else None
     status = "present" if ref_present and cand_present else "missing"
     detail = []
+    metrics: dict[str, float] = {}
     if ref_dims and cand_dims:
         if ref_dims == cand_dims:
             detail.append(f"matching PNG dimensions {ref_dims[0]}x{ref_dims[1]}")
         else:
             detail.append(f"PNG dimensions differ {ref_dims[0]}x{ref_dims[1]} vs {cand_dims[0]}x{cand_dims[1]}")
+        metrics["dimension_similarity"] = 1.0 if ref_dims == cand_dims else _safe_ratio(ref_dims[0] * ref_dims[1], cand_dims[0] * cand_dims[1])
     if ref_size and cand_size:
         ratio = _safe_ratio(ref_size, cand_size)
         detail.append(f"byte-size ratio {ratio:.2f}")
-    visual_similarity = None
+        metrics["byte_ratio"] = ratio
     if ref_fingerprint and cand_fingerprint:
         hash_similarity = _hash_similarity(ref_fingerprint.get("ahash"), cand_fingerprint.get("ahash"))
         luma_similarity = _count_similarity(ref_fingerprint.get("mean_luma"), cand_fingerprint.get("mean_luma"))
+        contrast_similarity = _count_similarity(ref_fingerprint.get("contrast"), cand_fingerprint.get("contrast"))
+        aspect_similarity = _count_similarity(ref_fingerprint.get("aspect_ratio"), cand_fingerprint.get("aspect_ratio"))
+        opaque_similarity = _count_similarity(ref_fingerprint.get("opaque_ratio"), cand_fingerprint.get("opaque_ratio"))
+        histogram_similarity = _histogram_similarity(
+            ref_fingerprint.get("histogram"),
+            cand_fingerprint.get("histogram"),
+        )
+        grid_similarity = _series_similarity(
+            ref_fingerprint.get("grid_luma"),
+            cand_fingerprint.get("grid_luma"),
+            scale=255.0,
+        )
+        edge_similarity = _count_similarity(ref_fingerprint.get("edge_density"), cand_fingerprint.get("edge_density"))
         if hash_similarity is not None:
             detail.append(f"ahash similarity {hash_similarity:.2f}")
+            metrics["ahash_similarity"] = hash_similarity
         if luma_similarity is not None:
             detail.append(f"mean-luma similarity {luma_similarity:.2f}")
-        visual_parts = [score for score in (hash_similarity, luma_similarity) if score is not None]
-        visual_similarity = sum(visual_parts) / len(visual_parts) if visual_parts else None
+            metrics["mean_luma_similarity"] = luma_similarity
+        if contrast_similarity is not None:
+            detail.append(f"contrast similarity {contrast_similarity:.2f}")
+            metrics["contrast_similarity"] = contrast_similarity
+        if histogram_similarity is not None:
+            detail.append(f"histogram similarity {histogram_similarity:.2f}")
+            metrics["histogram_similarity"] = histogram_similarity
+        if grid_similarity is not None:
+            detail.append(f"grid similarity {grid_similarity:.2f}")
+            metrics["grid_similarity"] = grid_similarity
+        if edge_similarity is not None:
+            detail.append(f"edge similarity {edge_similarity:.2f}")
+            metrics["edge_similarity"] = edge_similarity
+        if aspect_similarity is not None:
+            metrics["aspect_similarity"] = aspect_similarity
+        if opaque_similarity is not None:
+            metrics["opaque_similarity"] = opaque_similarity
     summary = "screenshot parity present" if status == "present" else "screenshot parity missing"
     if detail:
         summary = f"{summary} ({'; '.join(detail)})"
-    similarity_parts = []
-    if ref_dims and cand_dims:
-        similarity_parts.append(1.0 if ref_dims == cand_dims else 0.0)
-    if ref_size and cand_size:
-        similarity_parts.append(_count_similarity(ref_size, cand_size))
-    if visual_similarity is not None:
-        similarity_parts.append(visual_similarity)
-    similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.5
+    similarity = _weighted_similarity(
+        metrics,
+        {
+            "dimension_similarity": 0.1,
+            "ahash_similarity": 0.12,
+            "mean_luma_similarity": 0.08,
+            "contrast_similarity": 0.1,
+            "histogram_similarity": 0.16,
+            "grid_similarity": 0.26,
+            "edge_similarity": 0.12,
+            "aspect_similarity": 0.03,
+            "opaque_similarity": 0.03,
+        },
+    )
+    if similarity is None:
+        similarity = 0.5
+    drift_flags = _screenshot_drift_flags(metrics, ref_dims, cand_dims) if status == "present" else []
     return {
         "name": "screenshot",
         "core": True,
@@ -511,8 +691,10 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         "similarity": similarity if status == "present" else 0.0,
         "details": {
             "notes": detail,
-            "reference_fingerprint": ref_fingerprint,
-            "candidate_fingerprint": cand_fingerprint,
+            "metrics": metrics,
+            "drift_flags": drift_flags,
+            "reference_fingerprint": _signature_summary(ref_fingerprint),
+            "candidate_fingerprint": _signature_summary(cand_fingerprint),
         },
     }
 
@@ -651,6 +833,143 @@ def _coverage_summary(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _finalize_check_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(detail)
+    weight = CHECK_WEIGHTS.get(detail["name"], 0)
+    similarity = detail.get("similarity")
+    try:
+        similarity_value = max(0.0, min(1.0, float(similarity)))
+    except (TypeError, ValueError):
+        similarity_value = 0.0
+    normalized["weight"] = weight
+    normalized["weighted_score"] = round(weight * similarity_value, 2)
+    normalized["severity"] = _check_severity(detail, similarity_value)
+    return normalized
+
+
+def _check_summary(detail: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": detail["name"],
+        "status": detail["status"],
+        "severity": detail.get("severity"),
+        "similarity": detail.get("similarity"),
+        "weighted_score": detail.get("weighted_score"),
+        "summary": detail["summary"],
+    }
+
+
+def _check_severity(detail: dict[str, Any], similarity_value: float) -> str:
+    if detail.get("status") != "present":
+        return "blocker" if detail.get("core") else "low"
+    if similarity_value >= 0.92:
+        return "low"
+    if similarity_value >= 0.72:
+        return "medium"
+    return "high"
+
+
+def _score_breakdown(check_details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": detail["name"],
+            "weight": detail.get("weight", 0),
+            "similarity": detail.get("similarity"),
+            "weighted_score": detail.get("weighted_score", 0.0),
+            "severity": detail.get("severity"),
+            "status": detail.get("status"),
+        }
+        for detail in check_details
+        if detail.get("weight")
+    ]
+
+
+def _ranked_checks(check_details: list[dict[str, Any]], reverse: bool) -> list[dict[str, Any]]:
+    sorted_checks = sorted(
+        check_details,
+        key=lambda detail: (
+            float(detail.get("similarity") or 0.0),
+            float(detail.get("weighted_score") or 0.0),
+        ),
+        reverse=reverse,
+    )
+    ranked: list[dict[str, Any]] = []
+    for detail in sorted_checks[:3]:
+        ranked.append(
+            {
+                "name": detail["name"],
+                "similarity": detail.get("similarity"),
+                "severity": detail.get("severity"),
+                "summary": detail.get("summary"),
+            }
+        )
+    return ranked
+
+
+def _priority_findings(check_details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    severity_rank = {"blocker": 3, "high": 2, "medium": 1, "low": 0}
+    findings: list[dict[str, Any]] = []
+    for detail in check_details:
+        severity = str(detail.get("severity") or "low")
+        if severity == "low":
+            continue
+        similarity = float(detail.get("similarity") or 0.0)
+        findings.append(
+            {
+                "check": detail["name"],
+                "severity": severity,
+                "gap": round(max(0.0, 1.0 - similarity), 4),
+                "summary": detail["summary"],
+                "focus": _focus_hint(detail),
+            }
+        )
+    findings.sort(
+        key=lambda finding: (
+            severity_rank.get(finding["severity"], 0),
+            finding["gap"],
+        ),
+        reverse=True,
+    )
+    return findings[:4]
+
+
+def _focus_hint(detail: dict[str, Any]) -> str:
+    name = detail["name"]
+    detail_payload = detail.get("details") or {}
+    if name == "screenshot":
+        drift_flags = detail_payload.get("drift_flags") or []
+        return drift_flags[0] if drift_flags else "coarse visual drift"
+    if name == "dom snapshot":
+        return "section structure or node hierarchy drift"
+    if name == "computed styles":
+        return "typography, spacing, or palette token drift"
+    if name == "interaction states":
+        return "hover/focus interaction coverage drift"
+    return "supporting evidence drift"
+
+
+def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: list[str]) -> list[str]:
+    actions: list[str] = []
+    if core_blockers:
+        actions.append("Recapture missing core artifacts before treating this comparison as exact-clone evidence.")
+    for detail in check_details:
+        severity = detail.get("severity")
+        if severity not in {"blocker", "high"}:
+            continue
+        if detail["name"] == "screenshot":
+            actions.append("Recheck viewport, breakpoint, and hero composition; screenshot drift is still materially off.")
+        elif detail["name"] == "dom snapshot":
+            actions.append("Align major section order and DOM depth before tuning styling; structure diverges too early.")
+        elif detail["name"] == "computed styles":
+            actions.append("Audit font, spacing, and color tokens against the reference before polishing micro-detail.")
+        elif detail["name"] == "interaction states":
+            actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
+    deduped: list[str] = []
+    for action in actions:
+        if action not in deduped:
+            deduped.append(action)
+    return deduped[:4]
+
+
 def _missing_artifacts(artifacts: dict[str, dict[str, Any]]) -> list[str]:
     return [
         label
@@ -665,15 +984,9 @@ def _missing_artifacts(artifacts: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def _compute_bounded_score(check_details: list[dict[str, Any]]) -> int:
-    weights = {
-        "screenshot": 45,
-        "dom snapshot": 20,
-        "computed styles": 20,
-        "interaction states": 15,
-    }
     total = 0.0
     for detail in check_details:
-        weight = weights.get(detail["name"], 0)
+        weight = CHECK_WEIGHTS.get(detail["name"], 0)
         if not weight:
             continue
         similarity = detail.get("similarity")
@@ -884,7 +1197,7 @@ def _count_similarity(reference: Any, candidate: Any) -> float:
     if reference_value < 0 or candidate_value < 0:
         return 0.0
     if reference_value == 0 and candidate_value == 0:
-        return 0.0
+        return 1.0
     denominator = max(reference_value, candidate_value, 1.0)
     return max(0.0, 1.0 - abs(reference_value - candidate_value) / denominator)
 
