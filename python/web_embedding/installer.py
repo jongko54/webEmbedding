@@ -383,6 +383,7 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(repair_pass, dict):
         compact_repair = compact_rebuild_scaffold_summary(repair_pass)
         repair_verify = repair_pass.get("self_verify")
+        iteration = repair_pass.get("iteration")
         if isinstance(repair_verify, dict):
             compact_repair["self_verify"] = {
                 "status": repair_verify.get("status"),
@@ -391,7 +392,49 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
                 "root_report": repair_verify.get("root_report"),
                 "persisted": repair_verify.get("persisted"),
             }
+        if isinstance(iteration, dict):
+            compact_repair["iteration"] = {
+                "index": iteration.get("index"),
+                "source_score": iteration.get("source_score"),
+                "score": iteration.get("score"),
+                "score_delta": iteration.get("score_delta"),
+                "meets_minimum_delta": iteration.get("meets_minimum_delta"),
+                "overall_ready_for_exact_clone": iteration.get("overall_ready_for_exact_clone"),
+            }
         summary["repair_pass"] = compact_repair
+    repair_passes = summary.get("repair_passes")
+    if isinstance(repair_passes, list):
+        condensed_passes = []
+        for item in repair_passes[:3]:
+            if not isinstance(item, dict):
+                continue
+            condensed_passes.append(
+                {
+                    "summary": compact_rebuild_scaffold_summary(item).get("summary"),
+                    "iteration": item.get("iteration"),
+                    "self_verify": {
+                        "overall_ready_for_exact_clone": ((item.get("self_verify") or {}).get("overall_ready_for_exact_clone")),
+                        "preferred_renderer": ((item.get("self_verify") or {}).get("preferred_renderer")),
+                        "root_report": ((item.get("self_verify") or {}).get("root_report")),
+                    },
+                }
+            )
+        summary["repair_passes"] = condensed_passes
+    repair_loop = summary.get("repair_loop")
+    if isinstance(repair_loop, dict):
+        summary["repair_loop"] = {
+            "status": repair_loop.get("status"),
+            "pass_count": repair_loop.get("pass_count"),
+            "max_passes": repair_loop.get("max_passes"),
+            "minimum_score_delta": repair_loop.get("minimum_score_delta"),
+            "initial_score": repair_loop.get("initial_score"),
+            "best_score": repair_loop.get("best_score"),
+            "best_pass_index": repair_loop.get("best_pass_index"),
+            "overall_ready_for_exact_clone": repair_loop.get("overall_ready_for_exact_clone"),
+            "stop_reason": repair_loop.get("stop_reason"),
+            "persisted": repair_loop.get("persisted"),
+            "note": repair_loop.get("note"),
+        }
     return summary
 
 
