@@ -185,6 +185,7 @@ The installed plugin includes:
   - `classify_clone_mode`
   - `generate_embed_snippet`
 - `capture_reference_bundle`
+- `build_rebuild_scaffold`
 - `build_reproduction_bundle`
 - `plan_reproduction_path`
 - `verify_fidelity_report`
@@ -244,6 +245,22 @@ node ./bin/web-embedding.mjs clone \
 
 When the original page is frameable, the result now comes back as `coverage: exact-reuse` with `exact_reuse.kind: direct-iframe`.
 
+Example bounded rebuild scaffold flow from an existing capture bundle:
+
+```bash
+node ./bin/web-embedding.mjs scaffold \
+  --capture-bundle "$PWD/.tmp/reproductions/example-clone4/capture.json" \
+  --output-dir "$PWD/.tmp/scaffolds/example-from-capture"
+```
+
+Example bounded fidelity verification:
+
+```bash
+node ./bin/web-embedding.mjs verify \
+  --reference-bundle "$PWD/.tmp/reproductions/example-clone4/capture.json" \
+  --candidate-bundle "$PWD/.tmp/reproductions/example-clone4/capture.json"
+```
+
 The persisted output directory will include:
 
 - `capture.json`
@@ -251,6 +268,12 @@ The persisted output directory will include:
 - `reproduction/embed.html`
 - `reproduction/embed.tsx`
 - `reproduction/rebuild-prompt.txt`
+- `reproduction/rebuild/layout-summary.json`
+- `reproduction/rebuild/starter.html`
+- `reproduction/rebuild/starter.css`
+- `reproduction/rebuild/manifest.json`
+
+When exact reuse is unavailable, the reproduction bundle also writes a bounded rebuild scaffold under `reproduction/rebuild/` so downstream tooling has a JSON layout summary plus a starter HTML/CSS pair to continue from.
 
 The capture bundle now includes an interaction-state layer for visible interactive elements:
 
@@ -283,8 +306,9 @@ When exact reuse is available, `reproduce` also writes:
 The new tools are still scaffolds for the next phase:
 
 - `capture_reference_bundle` builds a canonical capture-bundle skeleton from currently available signals
+- `build_rebuild_scaffold` turns a saved capture bundle into starter HTML/CSS plus a layout summary for frame-blocked pages
 - `plan_reproduction_path` turns policy and bundle state into a source-first execution plan
-- `verify_fidelity_report` reports what is still missing before real fidelity comparison is possible
+- `verify_fidelity_report` and `web-embedding verify` produce bounded artifact-based fidelity reports without overstating exactness
 
 ## Guardrails
 

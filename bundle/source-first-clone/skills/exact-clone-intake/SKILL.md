@@ -18,6 +18,7 @@ Treat requests like `그대로 가져와줘`, `완전 똑같이`, `same`, `exact
    - `trace_runtime_sources` when static HTML is not enough
    - `classify_clone_mode`
    - `capture_reference_bundle` when exact reuse is still unclear
+   - `build_rebuild_scaffold` when exact reuse is blocked and you need a bounded reconstruction starter
    - `build_reproduction_bundle` after capture when you need an exact reuse output package
    - `plan_reproduction_path`
    - `generate_embed_snippet` only when an actual embed path exists
@@ -39,7 +40,8 @@ Treat requests like `그대로 가져와줘`, `완전 똑같이`, `same`, `exact
 
 - `trace_runtime_sources` is especially useful for pages that hide the real scene URL behind client-side rendering. Use `user_data_dir` or `storage_state_path` when authentication matters.
 - `capture_reference_bundle` is a scaffold, not a full DOM/CSS capture engine. It now persists DOM, style, asset, and basic hover/focus interaction-state artifacts. Use `storage_state_output_path` when you need to persist session state for later runs.
+- `build_rebuild_scaffold` is for frame-blocked or source-blocked references. Use it to output a starter HTML/CSS scaffold plus layout summary instead of pretending an exact clone exists.
 - `clone_reference_url` is the fastest path when the user has pasted a link and wants the full source-first clone pipeline executed immediately.
 - `plan_reproduction_path` is useful when the policy decision is clear but the build sequence is not.
 - `generate_embed_snippet` is for fast HTML or Next.js integration once the exact source URL is known.
-- `verify_fidelity_report` should be used honestly: it lists what is still missing before a real exactness claim is possible.
+- `verify_fidelity_report` should be used honestly: it is bounded to the persisted artifacts and does not claim pixel-perfect equivalence.

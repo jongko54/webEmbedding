@@ -50,16 +50,32 @@ def default_bundle_dir() -> Path:
     return repo_root() / "bundle" / PLUGIN_NAME
 
 
-def load_capture_api() -> tuple[Any, Any, Any, Any]:
+def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any]:
     capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
     if str(capture_root) not in sys.path:
         sys.path.insert(0, str(capture_root))
     from source_first_clone.acquisition import detect_runtime_capabilities
     from source_first_clone.capture_bundle import capture_reference_bundle
     from source_first_clone.orchestration import clone_reference_url
+    from source_first_clone.rebuild_scaffold import build_rebuild_scaffold
     from source_first_clone.reproduction import build_reproduction_bundle
+    from source_first_clone.verification import verify_fidelity_report
 
-    return detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, clone_reference_url
+    return (
+        detect_runtime_capabilities,
+        capture_reference_bundle,
+        build_reproduction_bundle,
+        clone_reference_url,
+        verify_fidelity_report,
+        build_rebuild_scaffold,
+    )
+
+
+def load_json_file(path: str) -> dict[str, Any]:
+    payload = json.loads(Path(path).expanduser().resolve().read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a JSON object.")
+    return payload
 
 
 def build_paths(target_home: str | None) -> InstallPaths:
@@ -244,7 +260,7 @@ def command_paths(args: argparse.Namespace) -> int:
 
 def command_capabilities(args: argparse.Namespace) -> int:
     del args
-    detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     print(json.dumps(detect_runtime_capabilities(), indent=2))
     return 0
 
@@ -296,7 +312,7 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def command_capture(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    _detect_runtime_capabilities, capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     result = capture_reference_bundle(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -324,6 +340,12 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
     exact_reuse = summary.get("exact_reuse")
     if isinstance(exact_reuse, dict):
         exact_reuse.pop("snippets", None)
+    rebuild_scaffold = summary.get("rebuild_scaffold")
+    if isinstance(rebuild_scaffold, dict):
+        artifacts = rebuild_scaffold.get("artifacts")
+        if isinstance(artifacts, dict):
+            rebuild_scaffold["artifact_files"] = list(artifacts.keys())
+            rebuild_scaffold.pop("artifacts", None)
     candidates = summary.get("candidates")
     if isinstance(candidates, list):
         summary["candidateCount"] = len(candidates)
@@ -333,7 +355,7 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def command_reproduce(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, _clone_reference_url = load_capture_api()
+    _detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     capture_bundle = capture_reference_bundle(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -371,6 +393,12 @@ def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
         exact_reuse = reproduction.get("exact_reuse")
         if isinstance(exact_reuse, dict):
             exact_reuse.pop("snippets", None)
+        rebuild_scaffold = reproduction.get("rebuild_scaffold")
+        if isinstance(rebuild_scaffold, dict):
+            artifacts = rebuild_scaffold.get("artifacts")
+            if isinstance(artifacts, dict):
+                rebuild_scaffold["artifact_files"] = list(artifacts.keys())
+                rebuild_scaffold.pop("artifacts", None)
         candidates = reproduction.get("candidates")
         if isinstance(candidates, list):
             reproduction["candidateCount"] = len(candidates)
@@ -383,7 +411,7 @@ def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def command_clone(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, clone_reference_url = load_capture_api()
+    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     result = clone_reference_url(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -403,6 +431,43 @@ def command_clone(args: argparse.Namespace) -> int:
     )
     payload = result if args.full_json else compact_clone_result(result)
     print(json.dumps(payload, indent=2))
+    return 0
+
+
+def compact_scaffold_result(result: dict[str, Any]) -> dict[str, Any]:
+    summary = json.loads(json.dumps(result))
+    artifacts = summary.get("artifacts")
+    if isinstance(artifacts, dict):
+        summary["artifact_files"] = list(artifacts.keys())
+        summary.pop("artifacts", None)
+    return summary
+
+
+def command_scaffold(args: argparse.Namespace) -> int:
+    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, build_rebuild_scaffold = load_capture_api()
+    capture_bundle = load_json_file(args.capture_bundle)
+    result = build_rebuild_scaffold(capture_bundle)
+    if args.output_dir:
+        output_dir = Path(args.output_dir).expanduser().resolve()
+        from source_first_clone.rebuild_scaffold import persist_rebuild_scaffold
+
+        result["persisted"] = persist_rebuild_scaffold(output_dir, result)
+    payload = result if args.full_json else compact_scaffold_result(result)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def command_verify(args: argparse.Namespace) -> int:
+    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    reference_bundle = load_json_file(args.reference_bundle)
+    candidate_bundle = load_json_file(args.candidate_bundle)
+    result = verify_fidelity_report(
+        reference_bundle=reference_bundle,
+        candidate_bundle=candidate_bundle,
+        reference_url=args.reference_url,
+        candidate_url=args.candidate_url,
+    )
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -490,6 +555,19 @@ def build_parser() -> argparse.ArgumentParser:
     clone_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
     clone_parser.add_argument("--full-json", action="store_true", help="Print the full clone payload.")
     clone_parser.set_defaults(func=command_clone)
+
+    scaffold_parser = subparsers.add_parser("scaffold", help="Generate a bounded rebuild scaffold from an existing capture bundle JSON.")
+    scaffold_parser.add_argument("--capture-bundle", required=True, help="Path to a capture bundle JSON file.")
+    scaffold_parser.add_argument("--output-dir", help="Optional directory where scaffold artifacts will be written.")
+    scaffold_parser.add_argument("--full-json", action="store_true", help="Print the full scaffold payload.")
+    scaffold_parser.set_defaults(func=command_scaffold)
+
+    verify_parser = subparsers.add_parser("verify", help="Compare two capture/reproduction bundle JSON files with bounded fidelity checks.")
+    verify_parser.add_argument("--reference-bundle", required=True, help="Path to the reference bundle JSON file.")
+    verify_parser.add_argument("--candidate-bundle", required=True, help="Path to the candidate bundle JSON file.")
+    verify_parser.add_argument("--reference-url", help="Optional explicit reference URL.")
+    verify_parser.add_argument("--candidate-url", help="Optional explicit candidate URL.")
+    verify_parser.set_defaults(func=command_verify)
 
     return parser
 
