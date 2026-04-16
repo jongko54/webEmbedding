@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .planning import plan_reproduction_path
+from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
 
 
 ANALYTICS_HOST_HINTS = (
@@ -335,11 +336,13 @@ def build_reproduction_bundle(
         }
         result["coverage"] = "exact-reuse"
         result["next_action"] = "embed"
-    elif any(candidate["kind"] == "spline-code" for candidate in candidates):
-        result["coverage"] = "source-reuse"
-        result["next_action"] = "source"
     else:
-        result["next_action"] = "rebuild"
+        result["rebuild_scaffold"] = build_rebuild_scaffold(capture_bundle)
+        if any(candidate["kind"] == "spline-code" for candidate in candidates):
+            result["coverage"] = "source-reuse"
+            result["next_action"] = "source"
+        else:
+            result["next_action"] = "rebuild"
 
     if output_dir:
         persisted = persist_reproduction_bundle(Path(output_dir).expanduser().resolve(), result)
@@ -362,6 +365,10 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
         rebuild_prompt_path = reproduction_dir / "rebuild-prompt.txt"
         rebuild_prompt_path.write_text(rebuild_prompt.rstrip() + "\n")
         persisted["rebuild_prompt"] = str(rebuild_prompt_path)
+
+    rebuild_scaffold = result.get("rebuild_scaffold")
+    if isinstance(rebuild_scaffold, dict):
+        persisted["rebuild_scaffold"] = persist_rebuild_scaffold(reproduction_dir, rebuild_scaffold)
 
     exact_reuse = result.get("exact_reuse")
     if isinstance(exact_reuse, dict):

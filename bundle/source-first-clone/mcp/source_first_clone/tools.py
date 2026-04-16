@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from .acquisition import detect_runtime_capabilities
@@ -11,6 +12,7 @@ from .capture_bundle import capture_reference_bundle
 from .orchestration import clone_reference_url
 from .policy import classify_clone_mode
 from .planning import plan_reproduction_path
+from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
 from .reproduction import build_reproduction_bundle
 from .verification import verify_fidelity_report
 
@@ -114,6 +116,14 @@ def build_reproduction_bundle_tool(arguments: dict[str, Any]) -> dict[str, Any]:
         capture_bundle=arguments.get("capture_bundle", {}),
         output_dir=arguments.get("output_dir"),
     )
+
+
+def build_rebuild_scaffold_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    scaffold = build_rebuild_scaffold(arguments.get("capture_bundle", {}))
+    if arguments.get("output_dir"):
+        persisted = persist_rebuild_scaffold(Path(arguments["output_dir"]).expanduser().resolve(), scaffold)
+        scaffold["persisted"] = persisted
+    return scaffold
 
 
 def clone_reference_url_tool(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -280,6 +290,18 @@ TOOLS = [
         },
     },
     {
+        "name": "build_rebuild_scaffold",
+        "description": "Generate a bounded rebuild scaffold from an existing capture bundle when exact reuse is unavailable.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capture_bundle": {"type": "object"},
+                "output_dir": {"type": "string"},
+            },
+            "required": ["capture_bundle"],
+        },
+    },
+    {
         "name": "clone_reference_url",
         "description": "Run the source-first exact-clone workflow end-to-end from a single URL, including session-aware capture and reproduction bundle output.",
         "inputSchema": {
@@ -318,6 +340,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "plan_reproduction_path": plan_reproduction_path_tool,
     "verify_fidelity_report": verify_fidelity_report_tool,
     "build_reproduction_bundle": build_reproduction_bundle_tool,
+    "build_rebuild_scaffold": build_rebuild_scaffold_tool,
     "clone_reference_url": clone_reference_url_tool,
 }
 
