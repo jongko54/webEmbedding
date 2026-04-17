@@ -420,7 +420,9 @@ function styleSnapshotFromComputed(style) {
     fontWeight: style.fontWeight,
     lineHeight: style.lineHeight,
     letterSpacing: style.letterSpacing,
+    textAlign: style.textAlign,
     textTransform: style.textTransform,
+    whiteSpace: style.whiteSpace,
     overflow: style.overflow,
     overflowX: style.overflowX,
     overflowY: style.overflowY,
@@ -435,6 +437,11 @@ function styleSnapshotFromComputed(style) {
     marginRight: style.marginRight,
     marginBottom: style.marginBottom,
     marginLeft: style.marginLeft,
+    gap: style.gap,
+    alignItems: style.alignItems,
+    justifyContent: style.justifyContent,
+    flexDirection: style.flexDirection,
+    boxSizing: style.boxSizing,
   };
 }
 
@@ -506,6 +513,33 @@ function resolveAssociatedLabel(element) {
   const wrappingLabel = element.closest("label");
   if (wrappingLabel) {
     return normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 80);
+  }
+  return null;
+}
+
+function resolveFormContextLabel(element) {
+  if (!element || !element.tagName) {
+    return null;
+  }
+  const fieldset = element.closest("fieldset");
+  if (fieldset) {
+    const legend = fieldset.querySelector("legend");
+    if (legend) {
+      const legendText = normalizeText(legend.innerText || legend.textContent || "", 80);
+      if (legendText) {
+        return legendText;
+      }
+    }
+  }
+  const labelledGroup = element.closest('[role="group"], [role="radiogroup"], [role="toolbar"], [role="menu"], [role="tablist"]');
+  if (labelledGroup) {
+    const groupLabel =
+      normalizeText(labelledGroup.getAttribute("aria-label"), 80) ||
+      normalizeText(labelledGroup.getAttribute("aria-labelledby"), 80) ||
+      normalizeText(labelledGroup.innerText || labelledGroup.textContent || "", 80);
+    if (groupLabel) {
+      return groupLabel;
+    }
   }
   return null;
 }
@@ -584,18 +618,59 @@ function isFocusableElement(node, style) {
   return false;
 }
 
+function compactLabelText(node, maxLength = 80) {
+  if (!node || !node.tagName) {
+    return null;
+  }
+  const tag = node.tagName.toLowerCase();
+  const role = String(node.getAttribute("role") || "").toLowerCase();
+  const direct = Array.from(node.childNodes || [])
+    .filter((child) => child && child.nodeType === Node.TEXT_NODE)
+    .map((child) => String(child.textContent || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+  const directText = normalizeText(direct, maxLength);
+  if (directText) {
+    return directText;
+  }
+  const fullText = normalizeText(node.innerText || node.textContent || "", maxLength);
+  if (!fullText) {
+    return null;
+  }
+  const words = fullText.split(/\s+/).filter(Boolean);
+  if (fullText.length <= 40 || words.length <= 6) {
+    return fullText;
+  }
+  if (
+    ["a", "button", "summary", "label", "option"].includes(tag) ||
+    ["button", "link", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio"].includes(role)
+  ) {
+    return fullText;
+  }
+  return null;
+}
+
 function getInteractionLabel(node) {
   if (!node || !node.tagName) {
     return null;
   }
+  const type = String(node.getAttribute("type") || "").toLowerCase();
   return (
     normalizeText(node.getAttribute("aria-label"), 80) ||
     resolveLabelFromReferences(node) ||
     resolveAssociatedLabel(node) ||
+    resolveFormContextLabel(node) ||
     normalizeText(node.getAttribute("title"), 80) ||
+    normalizeText(node.getAttribute("data-label"), 80) ||
+    normalizeText(node.getAttribute("data-title"), 80) ||
     normalizeText(node.getAttribute("alt"), 80) ||
+    (
+      node.tagName.toLowerCase() === "input" && ["submit", "button", "reset"].includes(type)
+        ? normalizeText("value" in node ? node.value : "", 80)
+        : null
+    ) ||
     normalizeText(node.getAttribute("placeholder"), 80) ||
-    normalizeText(node.innerText || node.textContent || "", 80) ||
+    compactLabelText(node, 80) ||
     normalizeText("value" in node ? node.value : "", 80) ||
     normalizeText(node.tagName.toLowerCase(), 80)
   );
@@ -1628,6 +1703,40 @@ function isSafeToggleCandidate(candidate) {
     });
     const styleSummary = await page.evaluate(() => {
       const normalizeValue = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+      const normalizeText = (value, maxLength = 160) => {
+        if (!value) return null;
+        const normalized = String(value).replace(/\s+/g, " ").trim();
+        return normalized ? normalized.slice(0, maxLength) : null;
+      };
+      const normalizeFontFamily = (value) => {
+        const normalized = normalizeValue(value);
+        if (!normalized || normalized === "none") return normalized;
+        return normalized
+          .split(",")
+          .map((part) => part.trim().replace(/^['"]|['"]$/g, ""))
+          .filter(Boolean)
+          .join(",");
+      };
+      const normalizePaintValue = (value) => {
+        const normalized = normalizeValue(value);
+        if (!normalized) return normalized;
+        if (normalized === "none" || normalized === "normal") return normalized;
+        return normalized.replace(/\s+/g, " ");
+      };
+      const normalizeCssUrl = (value) => {
+        const normalized = normalizeValue(value);
+        if (!normalized || normalized === "none") return normalized;
+        return normalized.replace(/url\((['"]?)(.*?)\1\)/g, (_, __, rawUrl) => {
+          const trimmed = String(rawUrl || "").trim();
+          if (!trimmed) return "url()";
+          try {
+            const parsed = new URL(trimmed, document.baseURI);
+            return `url(${parsed.pathname}${parsed.search || ""})`;
+          } catch (error) {
+            return `url(${trimmed.replace(/^https?:\/\/[^/]+/i, "")})`;
+          }
+        });
+      };
       const normalizeColor = (value) => normalizeValue(value).replace(/,\s+/g, ",");
       const bucketDimension = (value) => {
         const numeric = Number(value);
@@ -1640,6 +1749,27 @@ function isSafeToggleCandidate(candidate) {
         if (numeric >= 48) return "sm";
         return "xs";
       };
+      const bucketSpacing = (value) => {
+        const text = normalizeValue(value);
+        if (!text || text === "0" || text === "0px" || text === "0rem" || text === "0em" || text === "auto" || text === "normal" || text === "none") {
+          return "0";
+        }
+        if (/^(clamp|calc|var)\(/.test(text) || /^(fit-content|min-content|max-content|stretch|inherit|initial|unset)$/.test(text)) {
+          return "fluid";
+        }
+        const numeric = Number.parseFloat(text);
+        if (!Number.isFinite(numeric)) {
+          return text;
+        }
+        const scale = /(rem|em)\b/.test(text) ? numeric * 16 : numeric;
+        if (scale <= 1) return "hairline";
+        if (scale <= 4) return "xs";
+        if (scale <= 8) return "sm";
+        if (scale <= 16) return "md";
+        if (scale <= 24) return "lg";
+        if (scale <= 40) return "xl";
+        return "xxl";
+      };
       const textProfile = (value) => {
         const text = normalizeValue(value);
         if (!text) return "empty";
@@ -1648,6 +1778,242 @@ function isSafeToggleCandidate(candidate) {
         if (text.length <= 96) return "long";
         return "block";
       };
+      const getControlKind = (element) => {
+        const tag = element.tagName.toLowerCase();
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const type = String(element.getAttribute("type") || "").toLowerCase();
+        if (element.isContentEditable || role === "textbox" || role === "searchbox") return "text-entry";
+        if (tag === "input" && ["text", "search", "url", "tel", "email", "password"].includes(type)) return "text-entry";
+        if (tag === "textarea") return "text-entry";
+        if (tag === "select" || role === "combobox") return "select";
+        if (tag === "summary" || ["button", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio", "option", "treeitem"].includes(role) || ["checkbox", "radio", "button"].includes(type)) return "toggle";
+        if (role === "tab") return "tab";
+        if (role === "link" || tag === "a") return "link";
+        if (role === "slider" || type === "range") return "slider";
+        if (element.hasAttribute("aria-haspopup")) return "disclosure";
+        return null;
+      };
+      const getControlLabel = (element) => {
+        const labelledBy = String(element.getAttribute("aria-labelledby") || "")
+          .split(/\s+/)
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .slice(0, 4);
+        const labelParts = [];
+        for (const id of labelledBy) {
+          const labelNode = document.getElementById(id);
+          if (labelNode) {
+            const text = normalizeText(labelNode.innerText || labelNode.textContent || "", 120);
+            if (text) {
+              labelParts.push(text);
+            }
+          }
+        }
+        if (labelParts.length) {
+          return labelParts.join(" ").trim();
+        }
+        if (element.id) {
+          const directLabels = Array.from(document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`))
+            .map((node) => normalizeText(node.innerText || node.textContent || "", 120))
+            .filter(Boolean);
+          if (directLabels.length) {
+            return directLabels.join(" ").trim();
+          }
+        }
+        const wrappingLabel = element.closest("label");
+        if (wrappingLabel) {
+          const text = normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 120);
+          if (text) {
+            return text;
+          }
+        }
+        const fieldset = element.closest("fieldset");
+        if (fieldset) {
+          const legend = fieldset.querySelector("legend");
+          if (legend) {
+            const text = normalizeText(legend.innerText || legend.textContent || "", 120);
+            if (text) {
+              return text;
+            }
+          }
+        }
+        return (
+          normalizeText(element.getAttribute("aria-label"), 120) ||
+          normalizeText(element.getAttribute("title"), 120) ||
+          normalizeText(element.getAttribute("placeholder"), 120) ||
+          normalizeText(element.innerText || element.textContent || "", 120) ||
+          normalizeText("value" in element ? element.value : "", 120) ||
+          normalizeText(element.tagName.toLowerCase(), 80)
+        );
+      };
+      const directText = (element) =>
+        Array.from(element.childNodes || [])
+          .filter((node) => node && node.nodeType === Node.TEXT_NODE)
+          .map((node) => String(node.textContent || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join(" ")
+          .slice(0, 120);
+      const signatureText = (element) => {
+        const tag = element.tagName.toLowerCase();
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const inlineText = normalizeText(directText(element), 120);
+        if (inlineText) {
+          return inlineText;
+        }
+        if (["a", "button", "input", "textarea", "select", "label", "summary"].includes(tag) || role) {
+          return (
+            normalizeText(element.getAttribute("aria-label"), 120) ||
+            normalizeText(element.getAttribute("title"), 120) ||
+            normalizeText(element.getAttribute("placeholder"), 120) ||
+            normalizeText(element.innerText || element.textContent || "", 120)
+          );
+        }
+        return null;
+      };
+      const regionSelectors = [
+        { region: "banner", selector: 'header, [role="banner"]' },
+        { region: "navigation", selector: 'nav, [role="navigation"]' },
+        { region: "main", selector: 'main, [role="main"]' },
+        { region: "complementary", selector: 'aside, [role="complementary"]' },
+        { region: "contentinfo", selector: 'footer, [role="contentinfo"]' },
+        { region: "dialog", selector: 'dialog, [role="dialog"], [aria-modal="true"]' },
+        { region: "tabpanel", selector: '[role="tabpanel"]' },
+        { region: "tablist", selector: '[role="tablist"]' },
+        { region: "menu", selector: '[role="menu"]' },
+        { region: "form", selector: 'form, [role="form"]' },
+        { region: "article", selector: 'article, [role="article"]' },
+        { region: "section", selector: 'section' },
+      ];
+      const controlSelectors = [
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'select',
+        'textarea',
+        'summary',
+        '[role="button"]',
+        '[role="link"]',
+        '[role="tab"]',
+        '[role="menuitem"]',
+        '[role="menuitemcheckbox"]',
+        '[role="menuitemradio"]',
+        '[role="switch"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="combobox"]',
+        '[role="slider"]',
+        '[aria-controls]',
+        '[aria-expanded]',
+        '[aria-haspopup]',
+        '[tabindex]:not([tabindex="-1"])',
+      ];
+      const mediaSelectors = ['img', 'picture', 'video', 'canvas', 'svg', 'iframe', 'embed', 'object'];
+      const textSelectors = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'dt', 'dd', 'blockquote', 'pre', 'code', 'figcaption', 'label', 'small', 'strong', 'em'];
+      const containerSelectors = ['main > *', 'article > *', 'section > *', 'header > *', 'nav > *', 'aside > *', 'footer > *', 'dialog > *'];
+      const seen = new Set();
+      const entries = [];
+      const sampleLimit = 120;
+
+      const isVisible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+      };
+
+      const detectSemanticRegion = (element) => {
+        const map = [
+          { region: "banner", selector: 'header, [role="banner"]' },
+          { region: "navigation", selector: 'nav, [role="navigation"]' },
+          { region: "main", selector: 'main, [role="main"]' },
+          { region: "complementary", selector: 'aside, [role="complementary"]' },
+          { region: "contentinfo", selector: 'footer, [role="contentinfo"]' },
+          { region: "dialog", selector: 'dialog, [role="dialog"], [aria-modal="true"]' },
+          { region: "tabpanel", selector: '[role="tabpanel"]' },
+          { region: "tablist", selector: '[role="tablist"]' },
+          { region: "menu", selector: '[role="menu"]' },
+          { region: "form", selector: 'form, [role="form"]' },
+          { region: "article", selector: 'article, [role="article"]' },
+          { region: "section", selector: 'section' },
+        ];
+        for (const item of map) {
+          const root = element.closest(item.selector);
+          if (root) {
+            return {
+              region: item.region,
+              rootTag: root.tagName ? root.tagName.toLowerCase() : null,
+              rootRole: root.getAttribute ? root.getAttribute("role") : null,
+              rootLabel: normalizeText(root.getAttribute ? root.getAttribute("aria-label") : "", 120) || normalizeText(root.innerText || root.textContent || "", 80),
+            };
+          }
+        }
+        return { region: "content", rootTag: null, rootRole: null, rootLabel: null };
+      };
+
+      const describeSelectorPath = (element) => {
+        const segments = [];
+        let current = element;
+        for (let depth = 0; current && depth < 3; depth += 1, current = current.parentElement) {
+          if (!current.tagName) {
+            continue;
+          }
+          segments.push(current.tagName.toLowerCase());
+        }
+        return segments.reverse().join(" > ") || null;
+      };
+      const isPlainControl = (element) => {
+        const tag = element.tagName.toLowerCase();
+        if (!["a", "button", "input", "select", "textarea", "summary"].includes(tag)) {
+          return false;
+        }
+        return Boolean(getControlKind(element));
+      };
+      const isStructuralShell = (element) => {
+        if (!element || !element.tagName) {
+          return false;
+        }
+        const tag = element.tagName.toLowerCase();
+        if (["body", "html"].includes(tag)) {
+          return true;
+        }
+        if (["form", "fieldset", "main", "nav", "header", "footer", "aside", "article", "section", "dialog", "details", "ul", "ol", "li", "table", "thead", "tbody", "tfoot", "tr", "td", "th"].includes(tag)) {
+          return true;
+        }
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        if (["group", "search", "toolbar", "navigation", "main", "region", "dialog", "tabpanel", "tablist", "menu", "contentinfo", "banner", "complementary", "article", "form"].includes(role)) {
+          return true;
+        }
+        if (tag === "label") {
+          return Boolean(normalizeText(element.innerText || element.textContent || "", 80));
+        }
+        if (tag !== "div") {
+          return false;
+        }
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const hasStructure = element.children.length > 0 || rect.width > 160 || rect.height > 80;
+        const structuredDisplay = /block|flex|grid|inline-block|table|list-item|contents/.test(String(style.display || "").toLowerCase());
+        return hasStructure && (structuredDisplay || Boolean(normalizeText(element.textContent || "", 80)));
+      };
+      const getStructuralShell = (element) => {
+        let current = element ? element.parentElement : null;
+        let fallback = null;
+        for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+          if (!current.tagName || !isVisible(current)) {
+            continue;
+          }
+          if (isStructuralShell(current)) {
+            return current;
+          }
+          if (!fallback && current.tagName.toLowerCase() === "div") {
+            const rect = current.getBoundingClientRect();
+            if (current.children.length > 0 || rect.width > 220 || rect.height > 120) {
+              fallback = current;
+            }
+          }
+        }
+        return fallback;
+      };
+
       const buildStyleSignature = (entry) => {
         const styles = entry.styles || {};
         const rect = entry.rect || {};
@@ -1674,22 +2040,39 @@ function isSafeToggleCandidate(candidate) {
           normalizeValue(styles.gap),
         ].join("|");
       };
-      const nodes = Array.from(document.querySelectorAll("body *"))
-        .filter((element) => {
-          const text = (element.textContent || "").replace(/\s+/g, " ").trim();
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0 && (text || element.tagName === "IMG" || element.tagName === "VIDEO" || element.tagName === "CANVAS");
-        })
-        .slice(0, 80);
-      return nodes.map((element) => {
+
+      const addEntry = (element, sampleBucket, sampleReason) => {
+        if (!element || !element.tagName || seen.has(element)) {
+          return;
+        }
+        if (!isVisible(element)) {
+          return;
+        }
+        seen.add(element);
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
+        const semantic = detectSemanticRegion(element);
+        const labelText = getControlLabel(element);
+        const controlKind = getControlKind(element);
+        const text = signatureText(element) || normalizeText(directText(element), 160) || labelText || normalizeText(element.getAttribute("aria-label"), 120);
         const entry = {
           tag: element.tagName.toLowerCase(),
           id: element.id || null,
           className: typeof element.className === "string" && element.className ? element.className.slice(0, 120) : null,
           role: element.getAttribute("role"),
-          text: (element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+          text: text || null,
+          labelText: labelText || null,
+          controlKind,
+          accessibilityRole: element.getAttribute("aria-roledescription") || element.getAttribute("role") || null,
+          sampleBucket,
+          sampleReason,
+          semanticRegion: semantic.region,
+          semanticRootTag: semantic.rootTag,
+          semanticRootRole: semantic.rootRole,
+          semanticRootLabel: semantic.rootLabel,
+          semanticPath: describeSelectorPath(element),
+          childCount: element.children ? element.children.length : 0,
+          descendantCount: element.querySelectorAll ? Math.min(999, element.querySelectorAll("*").length) : 0,
           rect: {
             x: Math.round(rect.x),
             y: Math.round(rect.y),
@@ -1699,26 +2082,269 @@ function isSafeToggleCandidate(candidate) {
           styles: {
             display: style.display,
             position: style.position,
+            float: style.float,
+            clear: style.clear,
+            flexDirection: style.flexDirection,
+            flexWrap: style.flexWrap,
+            justifyContent: style.justifyContent,
+            alignItems: style.alignItems,
+            alignContent: style.alignContent,
+            placeContent: style.placeContent,
+            placeItems: style.placeItems,
+            gap: style.gap,
+            rowGap: style.rowGap,
+            columnGap: style.columnGap,
+            gridTemplateColumns: style.gridTemplateColumns,
+            gridTemplateRows: style.gridTemplateRows,
+            gridAutoFlow: style.gridAutoFlow,
+            gridAutoColumns: style.gridAutoColumns,
+            gridAutoRows: style.gridAutoRows,
+            overflow: style.overflow,
+            overflowX: style.overflowX,
+            overflowY: style.overflowY,
+            boxSizing: style.boxSizing,
+            width: style.width,
+            height: style.height,
+            minWidth: style.minWidth,
+            minHeight: style.minHeight,
+            maxWidth: style.maxWidth,
+            maxHeight: style.maxHeight,
+            marginTop: style.marginTop,
+            marginRight: style.marginRight,
+            marginBottom: style.marginBottom,
+            marginLeft: style.marginLeft,
+            paddingTop: style.paddingTop,
+            paddingRight: style.paddingRight,
+            paddingBottom: style.paddingBottom,
+            paddingLeft: style.paddingLeft,
             color: style.color,
             backgroundColor: style.backgroundColor,
+            backgroundImage: style.backgroundImage,
+            backgroundSize: style.backgroundSize,
+            backgroundPosition: style.backgroundPosition,
+            backgroundRepeat: style.backgroundRepeat,
+            backgroundClip: style.backgroundClip,
+            backgroundOrigin: style.backgroundOrigin,
+            objectFit: style.objectFit,
+            objectPosition: style.objectPosition,
+            borderStyle: style.borderStyle,
+            borderRadius: style.borderRadius,
+            borderColor: style.borderColor,
+            borderWidth: style.borderWidth,
+            boxShadow: style.boxShadow,
+            backdropFilter: style.backdropFilter,
+            filter: style.filter,
+            mixBlendMode: style.mixBlendMode,
+            opacity: style.opacity,
+            transform: style.transform,
+            transformOrigin: style.transformOrigin,
+            transitionProperty: style.transitionProperty,
+            transitionDuration: style.transitionDuration,
+            transitionTimingFunction: style.transitionTimingFunction,
             fontFamily: style.fontFamily,
             fontSize: style.fontSize,
             fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
             lineHeight: style.lineHeight,
             letterSpacing: style.letterSpacing,
             textAlign: style.textAlign,
             textTransform: style.textTransform,
-            borderRadius: style.borderRadius,
-            borderColor: style.borderColor,
-            borderWidth: style.borderWidth,
-            gap: style.gap,
+            whiteSpace: style.whiteSpace,
+            wordBreak: style.wordBreak,
+            textOverflow: style.textOverflow,
+            webkitLineClamp: style.webkitLineClamp,
+            willChange: style.willChange,
+            isolation: style.isolation,
+            contain: style.contain,
             zIndex: style.zIndex,
-            opacity: style.opacity,
+            cursor: style.cursor,
           },
         };
+        entry.accessibleName = entry.labelText || entry.text || null;
+        entry.layoutSignature = [
+          normalizeValue(entry.semanticRegion),
+          normalizeValue(entry.semanticPath),
+          normalizeValue(entry.labelText),
+          normalizeValue(entry.controlKind),
+          normalizeValue(entry.styles.display),
+          normalizeValue(entry.styles.position),
+          normalizeValue(entry.styles.flexDirection),
+          normalizeValue(entry.styles.flexWrap),
+          normalizeValue(entry.styles.justifyContent),
+          normalizeValue(entry.styles.alignItems),
+          normalizeValue(entry.styles.placeContent),
+          normalizeValue(entry.styles.placeItems),
+          bucketSpacing(entry.styles.gap),
+          bucketSpacing(entry.styles.rowGap),
+          bucketSpacing(entry.styles.columnGap),
+          normalizeValue(entry.styles.gridTemplateColumns),
+          normalizeValue(entry.styles.gridTemplateRows),
+          normalizeValue(entry.styles.gridAutoFlow),
+          normalizeValue(entry.styles.overflowX),
+          normalizeValue(entry.styles.overflowY),
+          bucketDimension(rect.width),
+          bucketDimension(rect.height),
+          normalizeValue(entry.styles.width),
+          normalizeValue(entry.styles.height),
+          normalizeValue(entry.styles.minWidth),
+          normalizeValue(entry.styles.minHeight),
+          normalizeValue(entry.styles.maxWidth),
+          normalizeValue(entry.styles.maxHeight),
+          bucketSpacing(entry.styles.paddingTop),
+          bucketSpacing(entry.styles.paddingRight),
+          bucketSpacing(entry.styles.paddingBottom),
+          bucketSpacing(entry.styles.paddingLeft),
+          bucketSpacing(entry.styles.marginTop),
+          bucketSpacing(entry.styles.marginRight),
+          bucketSpacing(entry.styles.marginBottom),
+          bucketSpacing(entry.styles.marginLeft),
+        ].join("|");
+        entry.paintSignature = [
+          normalizeValue(entry.styles.color),
+          normalizeColor(entry.styles.backgroundColor),
+          normalizeCssUrl(entry.styles.backgroundImage),
+          normalizePaintValue(entry.styles.backgroundSize),
+          normalizePaintValue(entry.styles.backgroundPosition),
+          normalizePaintValue(entry.styles.backgroundRepeat),
+          normalizePaintValue(entry.styles.backgroundClip),
+          normalizePaintValue(entry.styles.backgroundOrigin),
+          normalizeValue(entry.styles.objectFit),
+          normalizeValue(entry.styles.objectPosition),
+          normalizeValue(entry.styles.borderStyle),
+          normalizeValue(entry.styles.borderRadius),
+          normalizeColor(entry.styles.borderColor),
+          normalizeValue(entry.styles.borderWidth),
+          normalizePaintValue(entry.styles.boxShadow),
+          normalizePaintValue(entry.styles.backdropFilter),
+          normalizePaintValue(entry.styles.filter),
+          normalizeValue(entry.styles.mixBlendMode),
+          normalizeValue(entry.styles.opacity),
+          normalizeFontFamily(entry.styles.fontFamily),
+          normalizeValue(entry.styles.fontSize),
+          normalizeValue(entry.styles.fontWeight),
+          normalizeValue(entry.styles.fontStyle),
+          normalizeValue(entry.styles.lineHeight),
+          normalizeValue(entry.styles.letterSpacing),
+          normalizeValue(entry.styles.textAlign),
+          normalizeValue(entry.styles.textTransform),
+        ].join("|");
         entry.styleSignature = buildStyleSignature(entry);
+        entries.push(entry);
         return entry;
+      };
+
+      const pushUnique = (element, sampleBucket, sampleReason) => {
+        if (entries.length >= sampleLimit) {
+          return;
+        }
+        addEntry(element, sampleBucket, sampleReason);
+      };
+
+      const sortByVisualPriority = (nodes) =>
+        nodes
+          .filter(Boolean)
+          .filter(isVisible)
+          .sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            const leftArea = leftRect.width * leftRect.height;
+            const rightArea = rightRect.width * rightRect.height;
+            return rightArea - leftArea || leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+          });
+
+      const sampleFromSelectors = (sampleBucket, sampleReason, selectors, limit = 12) => {
+        const bucketNodes = [];
+        for (const selector of selectors) {
+          if (bucketNodes.length >= limit) {
+            break;
+          }
+          const matches = Array.from(document.querySelectorAll(selector)).slice(0, limit);
+          for (const node of matches) {
+            bucketNodes.push(node);
+          }
+        }
+        for (const node of sortByVisualPriority(bucketNodes).slice(0, limit)) {
+          pushUnique(node, sampleBucket, sampleReason);
+        }
+      };
+
+      const sampleControlShells = () => {
+        const controlNodes = sortByVisualPriority(Array.from(document.querySelectorAll(controlSelectors.join(","))).filter(isVisible));
+        for (const control of controlNodes.slice(0, 14)) {
+          const shell = getStructuralShell(control);
+          if (shell) {
+            pushUnique(shell, "control-shell", "Structural wrapper around interactive control");
+          }
+        }
+        for (const control of controlNodes.slice(0, 6)) {
+          pushUnique(control, "control-leaf", "Representative leaf control for interaction state fidelity");
+        }
+      };
+
+      const sampleScrollableContainers = () => {
+        const nodes = Array.from(document.querySelectorAll("body *")).filter((element) => {
+          const style = window.getComputedStyle(element);
+          const overflowX = String(style.overflowX || style.overflow || "").toLowerCase();
+          const overflowY = String(style.overflowY || style.overflow || "").toLowerCase();
+          const horizontal = /auto|scroll|overlay/.test(overflowX) && element.scrollWidth > element.clientWidth + 4;
+          const vertical = /auto|scroll|overlay/.test(overflowY) && element.scrollHeight > element.clientHeight + 4;
+          return isVisible(element) && (horizontal || vertical);
+        });
+        for (const node of sortByVisualPriority(nodes).slice(0, 10)) {
+          pushUnique(node, "scroll", "Scrollable container with overflow-based interaction potential");
+        }
+      };
+
+      const sampleLayoutShells = () => {
+        const nodes = Array.from(document.querySelectorAll("body *")).filter((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          const display = String(style.display || "").toLowerCase();
+          const text = normalizeText(element.textContent || "", 80);
+          const isInteractiveLeaf = isPlainControl(element) && element.children.length === 0 && rect.width < 260 && rect.height < 120;
+          const significantLayout =
+            /block|flex|grid|inline-block|table|list-item/.test(display) ||
+            element.children.length > 1 ||
+            rect.width > 240 ||
+            rect.height > 120;
+          const paintHeavy =
+            style.backgroundImage !== "none" ||
+            style.boxShadow !== "none" ||
+            style.backdropFilter !== "none" ||
+            style.borderRadius !== "0px" ||
+            style.borderWidth !== "0px" ||
+            style.position !== "static";
+          return isVisible(element) && !isInteractiveLeaf && (significantLayout || paintHeavy || text);
+        });
+        for (const node of sortByVisualPriority(nodes).slice(0, 24)) {
+          pushUnique(node, "layout", "Large layout shell or paint-heavy container");
+        }
+      };
+
+      sampleFromSelectors("landmark", "Semantic landmark or region root", regionSelectors.map((item) => item.selector), 18);
+      sampleFromSelectors("container", "First-level container within a semantic region", containerSelectors, 18);
+      sampleLayoutShells();
+      sampleControlShells();
+      sampleFromSelectors("media", "Media or embedded surface", mediaSelectors, 14);
+      sampleFromSelectors("text", "Text-bearing content block", textSelectors, 22);
+      sampleScrollableContainers();
+      sampleFromSelectors("controls", "Interactive control surface", controlSelectors, 6);
+
+      const fallbackNodes = Array.from(document.querySelectorAll("body *")).filter((element) => {
+        if (!isVisible(element)) {
+          return false;
+        }
+        const text = normalizeText(element.textContent || "", 80);
+        return Boolean(text || element.tagName === "IMG" || element.tagName === "VIDEO" || element.tagName === "CANVAS");
       });
+      for (const node of sortByVisualPriority(fallbackNodes)) {
+        if (entries.length >= sampleLimit) {
+          break;
+        }
+        pushUnique(node, "fallback", "Representative visible node not yet covered by semantic buckets");
+      }
+
+      return entries.slice(0, sampleLimit);
     });
     const assetInventory = await page.evaluate(() => {
       const normalize = (value) => {
@@ -1871,14 +2497,43 @@ function isSafeToggleCandidate(candidate) {
         const wrappingLabel = element.closest("label");
         return wrappingLabel ? normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 80) : null;
       };
+      const compactLabelText = (element, maxLength = 80) => {
+        if (!element || !element.tagName) return null;
+        const tag = element.tagName.toLowerCase();
+        const role = String(element.getAttribute("role") || "").toLowerCase();
+        const direct = Array.from(element.childNodes || [])
+          .filter((node) => node && node.nodeType === Node.TEXT_NODE)
+          .map((node) => String(node.textContent || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join(" ");
+        const directText = normalizeText(direct, maxLength);
+        if (directText) return directText;
+        const fullText = normalizeText(element.innerText || element.textContent || "", maxLength);
+        if (!fullText) return null;
+        const words = fullText.split(/\s+/).filter(Boolean);
+        if (fullText.length <= 40 || words.length <= 6) return fullText;
+        if (
+          ["a", "button", "summary", "label", "option"].includes(tag) ||
+          ["button", "link", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio"].includes(role)
+        ) {
+          return fullText;
+        }
+        return null;
+      };
       const getInteractionLabel = (element) => (
         normalizeText(element.getAttribute("aria-label"), 80) ||
         resolveLabelFromReferences(element) ||
         resolveAssociatedLabel(element) ||
         normalizeText(element.getAttribute("title"), 80) ||
         normalizeText(element.getAttribute("alt"), 80) ||
+        (
+          element.tagName.toLowerCase() === "input" &&
+          ["submit", "button", "reset"].includes(String(element.getAttribute("type") || "").toLowerCase())
+            ? normalizeText("value" in element ? element.value : "", 80)
+            : null
+        ) ||
         normalizeText(element.getAttribute("placeholder"), 80) ||
-        normalizeText(element.innerText || element.textContent || "", 80) ||
+        compactLabelText(element, 80) ||
         normalizeText("value" in element ? element.value : "", 80) ||
         normalizeText(element.tagName.toLowerCase(), 80)
       );
@@ -2029,9 +2684,13 @@ function isSafeToggleCandidate(candidate) {
         '[aria-roledescription*="slideshow" i]',
       ].join(',');
       const isVisibleCandidate = (element) => {
+        const ignoredRoot = element.closest('[data-web-embedding-ignore-interactions="true"], [inert], [aria-hidden="true"]');
+        if (ignoredRoot) {
+          return false;
+        }
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
       };
       const classifySurfaceKinds = (element, style) => {
         const role = String(element.getAttribute("role") || "").toLowerCase();

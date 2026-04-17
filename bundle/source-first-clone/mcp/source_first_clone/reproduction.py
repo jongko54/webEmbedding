@@ -491,6 +491,9 @@ def _build_repair_loop(
 
         stage_path = Path("repair-loop") / f"pass-{pass_index}"
         persisted_repair = persist_rebuild_scaffold(output_root / "reproduction" / stage_path, repair_pass)
+        preferred_renderer = _preferred_renderer_hint(persisted_repair)
+        if preferred_renderer:
+            persisted_repair["preferred_renderer"] = preferred_renderer
         repair_verify = run_rebuild_self_verify(
             reference_bundle=capture_bundle,
             rebuild_artifacts=persisted_repair,
@@ -639,6 +642,9 @@ def build_reproduction_bundle(
         result["persisted"] = persisted
         rebuild_artifacts = persisted.get("rebuild_scaffold")
         if isinstance(rebuild_artifacts, dict):
+            preferred_renderer = _preferred_renderer_hint(rebuild_artifacts)
+            if preferred_renderer:
+                rebuild_artifacts["preferred_renderer"] = preferred_renderer
             self_verify = run_rebuild_self_verify(
                 reference_bundle=capture_bundle,
                 rebuild_artifacts=rebuild_artifacts,
@@ -728,3 +734,38 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
         persisted["prompt"] = str(prompt_path)
 
     return persisted
+
+
+def _preferred_renderer_hint(rebuild_artifacts: dict[str, str]) -> dict[str, str] | None:
+    if not isinstance(rebuild_artifacts, dict):
+        return None
+
+    next_runtime_keys = (
+        "next-app/app/layout.tsx",
+        "next-app/app/page.tsx",
+        "next-app/app/globals.css",
+        "next-app/components/BoundedReferencePage.tsx",
+        "next-app/components/reference-data.ts",
+    )
+    if all(rebuild_artifacts.get(key) for key in next_runtime_keys):
+        return {
+            "name": "next-runtime-app",
+            "reason": "Latest generated next-app scaffold is present, so the booted Next runtime should be verified first.",
+            "entrypoint": rebuild_artifacts["next-app/app/page.tsx"],
+        }
+
+    if rebuild_artifacts.get("app-preview.html"):
+        return {
+            "name": "role-inferred-app",
+            "reason": "Role-inferred app preview is the freshest bounded renderer before the low-level starter scaffold.",
+            "entrypoint": rebuild_artifacts["app-preview.html"],
+        }
+
+    if rebuild_artifacts.get("starter.html"):
+        return {
+            "name": "starter",
+            "reason": "Starter scaffold is the only available renderer entrypoint.",
+            "entrypoint": rebuild_artifacts["starter.html"],
+        }
+
+    return None
