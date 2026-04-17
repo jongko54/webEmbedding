@@ -247,6 +247,10 @@ def _persist_report(path: Path, payload: dict[str, Any]) -> str:
 
 def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    preferred_renderer = rebuild_artifacts.get("preferred_renderer", {})
+    if not isinstance(preferred_renderer, dict):
+        preferred_renderer = {}
+    preferred_name = str(preferred_renderer.get("name") or "").strip()
     starter_html_path = rebuild_artifacts.get("starter.html")
     if starter_html_path:
         candidates.append(
@@ -254,6 +258,7 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
                 "name": "starter",
                 "entrypoint": starter_html_path,
                 "kind": "static",
+                "artifact_paths": [starter_html_path],
                 "note": "Low-level starter scaffold derived directly from captured block summaries.",
             }
         )
@@ -264,6 +269,7 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
                 "name": "role-inferred-app",
                 "entrypoint": app_preview_path,
                 "kind": "static",
+                "artifact_paths": [app_preview_path],
                 "note": "Role-inferred app-model preview that mirrors the bounded Next renderer more closely.",
             }
         )
@@ -282,9 +288,39 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
                 "name": "next-runtime-app",
                 "entrypoint": rebuild_artifacts["next-app/app/page.tsx"],
                 "kind": "next-runtime",
+                "artifact_paths": [
+                    rebuild_artifacts[key]
+                    for key in (
+                        "next-app/app/layout.tsx",
+                        "next-app/app/page.tsx",
+                        "next-app/app/globals.css",
+                        "next-app/components/BoundedReferencePage.tsx",
+                        "next-app/components/reference-data.ts",
+                    )
+                    if rebuild_artifacts.get(key)
+                ],
                 "note": "Booted Next runtime using the generated next-app scaffold for higher-fidelity verification.",
             }
         )
+    def candidate_freshness(candidate: dict[str, str]) -> float:
+        paths = [Path(path) for path in candidate.get("artifact_paths", []) if path]
+        mtimes = []
+        for path in paths:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+        return max(mtimes) if mtimes else 0.0
+
+    priority = {"next-runtime-app": 3, "role-inferred-app": 2, "starter": 1}
+    candidates.sort(
+        key=lambda candidate: (
+            1 if candidate.get("name") == preferred_name else 0,
+            candidate_freshness(candidate),
+            priority.get(candidate.get("name"), 0),
+        ),
+        reverse=True,
+    )
     return candidates
 
 
@@ -520,6 +556,10 @@ def run_rebuild_self_verify(
     persisted: dict[str, Any] = {"renderers": {}}
     renderer_results: list[dict[str, Any]] = []
     runtime_cache_root = output_dir / "reproduction" / "_next-runtime-cache"
+    preferred_renderer_name = ""
+    preferred_renderer = rebuild_artifacts.get("preferred_renderer", {}) if isinstance(rebuild_artifacts, dict) else {}
+    if isinstance(preferred_renderer, dict):
+        preferred_renderer_name = str(preferred_renderer.get("name") or "").strip()
 
     with _serve_directory(rebuild_root) as base_url:
         for renderer in renderer_candidates:
@@ -668,6 +708,9 @@ def run_rebuild_self_verify(
                     if report.get("available") and report.get("report_path")
                 },
             }
+            if renderer_result.get("ready_for_exact_clone"):
+                if not preferred_renderer_name or name == preferred_renderer_name or renderer is renderer_candidates[0]:
+                    break
 
     preferred_renderer = max(
         renderer_results,

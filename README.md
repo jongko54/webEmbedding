@@ -317,6 +317,40 @@ When exact reuse is unavailable, the reproduction bundle also writes a bounded r
 
 When a bounded rebuild scaffold is generated with `reproduce` or `clone`, the workflow now renders multiple bounded preview targets such as `starter.html` and `app-preview.html`, and if a generated `next-app/` scaffold is present it also attempts a booted `next-runtime-app` candidate using a local ephemeral Next runtime cache. It captures those rendered previews back into bundles, compares them, selects the stronger renderer, and writes a repair plan under `reproduction/self-verify/`. It then runs a guarded bounded auto-repair loop under `reproduction/repair-loop/pass-*/`, re-verifying each repaired scaffold and stopping when score gains flatten out or exact-clone readiness is reached.
 
+## Current Capability Envelope
+
+This project is now beyond a pure capture scaffold. In its current state it can:
+
+- exact-reuse embeddable sources when the upstream page or preview surface allows it
+- capture live HTML, DOM structure, computed styles, CSS inventory, assets, interaction states, and replay traces
+- rebuild frame-blocked pages into a bounded `next-app/` renderer
+- boot that renderer locally, recapture it, and score it against the original bundle
+- run a guarded repair loop that improves the renderer without claiming pixel-perfect equivalence
+
+Current verified benchmark:
+
+- as of `2026-04-17`, the bounded runtime benchmark for `https://www.google.com` reached `88/100`
+- that score came from `reference bundle -> regenerated next-runtime renderer -> bounded verify`
+- score breakdown on that benchmark:
+  - `screenshot`: `0.94`
+  - `DOM snapshot`: `0.85`
+  - `computed styles`: `0.69`
+  - `interaction states`: `0.99`
+  - `interaction trace`: `0.94`
+
+What that means in practice:
+
+- `85+` is the point where the system is usually close enough for strong bounded reconstruction work
+- `88` means the renderer is already strong on visual parity and interaction parity, but still not a claim of arbitrary-site pixel perfection
+- the remaining gap is mostly `computed styles` and some `DOM/head structure` drift, not core interaction behavior
+- the fully automated `clone -> self-verify -> repair-loop` path can still land below the best hand-promoted runtime candidate; this repository tracks both because the renderer often improves before the orchestration layer fully catches up
+
+What it is not yet:
+
+- not a universal one-shot pixel-perfect clone engine for every arbitrary production site
+- not a license bypass tool
+- not a proof that every generated `next-app` output will match the benchmark path without further repair
+
 The capture bundle now includes two interaction layers for visible interactive elements:
 
 - `interactions/states.json`

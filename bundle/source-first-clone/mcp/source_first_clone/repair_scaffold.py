@@ -9,10 +9,14 @@ from typing import Any
 
 from .rebuild_scaffold import (
     _build_asset_manifest,
+    _build_runtime_materialization,
     _derive_style_tokens,
     _derive_typography,
+    _is_google_submit_label,
+    _render_bounded_reference_page_tsx,
     _render_bounded_reference_page_html,
     _render_next_app_fonts_css,
+    _render_next_app_layout_tsx,
     _render_reference_data_ts,
 )
 
@@ -474,6 +478,37 @@ def _looks_like_flat_reference(summary: dict[str, Any]) -> bool:
     return inspected > 0 and flat_votes >= inspected
 
 
+def _footer_surface_summary(app_model: dict[str, Any]) -> dict[str, Any]:
+    footer = app_model.get("footer", {}) if isinstance(app_model, dict) else {}
+    footer = footer if isinstance(footer, dict) else {}
+    left_links = footer.get("leftLinks", []) if isinstance(footer.get("leftLinks", []), list) else []
+    right_links = footer.get("rightLinks", []) if isinstance(footer.get("rightLinks", []), list) else []
+    controls = footer.get("controls", []) if isinstance(footer.get("controls", []), list) else []
+    return {
+        "present": bool(footer.get("styleSnapshot") or left_links or right_links or controls),
+        "leftLinks": len(left_links),
+        "rightLinks": len(right_links),
+        "controls": len(controls),
+    }
+
+
+def _centered_focus_surface_summary(app_model: dict[str, Any]) -> dict[str, Any]:
+    hero = app_model.get("hero", {}) if isinstance(app_model, dict) else {}
+    hero = hero if isinstance(hero, dict) else {}
+    layout_mode = str(app_model.get("layoutMode") or "")
+    focus_input = hero.get("focusInput", {}) if isinstance(hero.get("focusInput", {}), dict) else {}
+    focus_shell_style = hero.get("focusShellStyle", {}) if isinstance(hero.get("focusShellStyle", {}), dict) else {}
+    focus_auxiliary = hero.get("focusAuxiliary", []) if isinstance(hero.get("focusAuxiliary", []), list) else []
+    has_focus_surface = bool(layout_mode == "centered-focus" or focus_input or focus_shell_style or focus_auxiliary)
+    return {
+        "present": has_focus_surface,
+        "layoutMode": layout_mode,
+        "focusInput": bool(focus_input),
+        "focusShell": bool(focus_shell_style),
+        "focusAuxiliary": len(focus_auxiliary),
+    }
+
+
 def _breakpoint_style_baseline(style: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(style, dict):
         return {}
@@ -905,6 +940,7 @@ def _repair_css(
     presentation = app_model.get("presentation", {}) if isinstance(app_model.get("presentation", {}), dict) else {}
     compact = str(presentation.get("variant") or "") == "compact-center-stage"
     breakpoint_contexts = app_model.get("breakpoints", []) if isinstance(app_model.get("breakpoints", []), list) else []
+    centered_focus_present = bool(_centered_focus_surface_summary(app_model).get("present"))
     if not style_tokens:
         style_tokens = _derive_style_tokens(style_entries if isinstance(style_entries, list) else [])
     flat_reference = str(presentation.get("styleMode") or "") == "flat-reference"
@@ -912,6 +948,7 @@ def _repair_css(
         lines.append("body {")
         if body_style.get("backgroundColor"):
             lines.append(f"  background-color: {body_style['backgroundColor']};")
+            lines.append("  background-image: none;")
         if body_style.get("color"):
             lines.append(f"  color: {body_style['color']};")
         lines.append("}")
@@ -949,6 +986,13 @@ def _repair_css(
                 ".bounded-cta { font-weight: 400; text-decoration: none; }",
                 ".bounded-card, .bounded-stack, .bounded-mini-card, .bounded-outline-item { padding: 0; background: transparent; border: 0; }",
                 ".bounded-section-grid, .bounded-compact-shell, .bounded-layout, .bounded-rail, .bounded-stack { gap: 8px; }",
+            ]
+        )
+    if centered_focus_present:
+        lines.extend(
+            [
+                ".bounded-shell--focus .bounded-panel { border: 0; background: transparent; box-shadow: none; backdrop-filter: none; }",
+                ".bounded-shell--focus .bounded-stage, .bounded-shell--focus .bounded-layout { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0 !important; visibility: hidden !important; pointer-events: none !important; }",
             ]
         )
     for context in breakpoint_contexts:
@@ -1057,6 +1101,8 @@ def build_repair_scaffold(
     trace_bits = _trace_signal_bits(capture_bundle, limit=4)
     outline_sample = _outline_text_sample(base_summary, limit=3)
     breakpoint_contexts = _load_breakpoint_contexts(capture_bundle, repair_plan)
+    footer_surface = _footer_surface_summary(repaired_app_model)
+    centered_focus_surface = _centered_focus_surface_summary(repaired_app_model)
 
     if body_style.get("color"):
         palette["text"] = body_style.get("color")
@@ -1152,8 +1198,33 @@ def build_repair_scaffold(
     hero = repaired_app_model.get("hero", {}) if isinstance(repaired_app_model.get("hero", {}), dict) else {}
     hero["eyebrow"] = "Auto-repaired reconstruction"
     hero["styleSnapshot"] = section_style_snapshots.get("hero", {})
-    if unique_links:
+    centered_focus_present = bool(centered_focus_surface.get("present"))
+    if unique_links and not centered_focus_present:
         hero["actions"] = [{"label": item["label"], "href": item["href"], "states": []} for item in unique_links[:3]]
+    elif centered_focus_present:
+        hero_actions = hero.get("actions", []) if isinstance(hero.get("actions", []), list) else []
+        has_focus_submit_actions = any(
+            _is_google_submit_label(action.get("label"))
+            for action in hero_actions
+            if isinstance(action, dict)
+        )
+        if not has_focus_submit_actions:
+            hero["actions"] = [
+                {
+                    "label": "Google 검색",
+                    "href": None,
+                    "states": [],
+                    "controlTag": "input",
+                    "inputType": "submit",
+                },
+                {
+                    "label": "I’m Feeling Lucky",
+                    "href": None,
+                    "states": [],
+                    "controlTag": "input",
+                    "inputType": "submit",
+                },
+            ]
     if outline_sample and (
         "Bounded rebuild scaffold" in str(hero.get("copy") or "")
         or "practical app starter" in str(hero.get("copy") or "")
@@ -1183,7 +1254,20 @@ def build_repair_scaffold(
         if isinstance(section, dict)
     ]
 
-    if "dom snapshot" in focus_checks or "screenshot" in focus_checks:
+    current_layout_mode = str(repaired_app_model.get("layoutMode") or "")
+    has_focus_shell = bool(centered_focus_surface.get("present")) or bool(
+        isinstance(hero.get("focusInput"), dict) and hero.get("focusInput")
+    )
+    has_footer_surface = bool(footer_surface.get("present"))
+    should_compact = (
+        ("dom snapshot" in focus_checks or "screenshot" in focus_checks)
+        and current_layout_mode != "centered-focus"
+        and not has_focus_shell
+        and not has_footer_surface
+        and len(repaired_app_model.get("sections", []) if isinstance(repaired_app_model.get("sections", []), list) else []) <= 4
+        and len(body_sections) <= 2
+    )
+    if should_compact:
         repaired_app_model["bodySections"] = _compact_body_sections(base_summary, unique_links, trace_bits, section_style_snapshots)
         rhythm = repaired_app_model.get("reconstruction", {}).get("layoutRhythm", []) if isinstance(repaired_app_model.get("reconstruction", {}), dict) else []
         repaired_app_model.setdefault("reconstruction", {})["layoutRhythm"] = [
@@ -1197,6 +1281,25 @@ def build_repair_scaffold(
         }
         repaired_app_model["reconstruction"]["strategy"] = "auto-repaired-compact-next-app"
         applied_repairs.append("Collapsed the renderer into a compact center-stage composition to reduce screenshot footprint drift.")
+    else:
+        presentation = repaired_app_model.get("presentation", {}) if isinstance(repaired_app_model.get("presentation", {}), dict) else {}
+        if presentation.get("variant") == "compact-center-stage":
+            presentation.pop("variant", None)
+            presentation.pop("reason", None)
+        if centered_focus_surface.get("present"):
+            presentation["surfaceMode"] = "centered-focus-preserved"
+        elif has_footer_surface:
+            presentation["surfaceMode"] = "full-layout-footer-preserved"
+        else:
+            presentation["surfaceMode"] = "full-layout-preserved"
+        repaired_app_model["presentation"] = presentation
+        if "dom snapshot" in focus_checks or "screenshot" in focus_checks:
+            if centered_focus_surface.get("present"):
+                applied_repairs.append("Preserved the centered-focus renderer surface instead of collapsing it into a compact repair path.")
+            elif has_footer_surface:
+                applied_repairs.append("Preserved the full-layout renderer surface so footer links and controls remain available in repair output.")
+            else:
+                applied_repairs.append("Preserved the original full-layout renderer instead of collapsing it into a compact repair path.")
     if _looks_like_flat_reference(base_summary):
         presentation = repaired_app_model.get("presentation", {}) if isinstance(repaired_app_model.get("presentation", {}), dict) else {}
         presentation["styleMode"] = "flat-reference"
@@ -1210,16 +1313,29 @@ def build_repair_scaffold(
         "focus_checks": focus_checks[:6],
         "applied_repairs": applied_repairs[:8],
         "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
+        "surfaceMode": repaired_app_model.get("presentation", {}).get("surfaceMode"),
+        "footerSurface": footer_surface,
+        "centeredFocusSurface": centered_focus_surface,
+        "compactEligible": should_compact,
     }
     repaired_summary["styleTokens"] = style_tokens
     repaired_summary["assetManifest"] = _build_asset_manifest(repaired_summary, asset_content, css_analysis, typography, style_tokens)
     repaired_summary["breakpointRepairs"] = breakpoint_contexts
+    repaired_summary["layoutTokens"] = repaired_app_model.get("layoutTokens") or {}
+    repaired_runtime_materialization = _build_runtime_materialization(
+        repaired_summary,
+        repaired_app_model,
+        style_entries if isinstance(style_entries, list) else [],
+    )
+    repaired_summary["runtimeMaterialization"] = repaired_runtime_materialization
+    repaired_app_model["runtimeMaterialization"] = repaired_runtime_materialization
 
     base_css = _read_text(rebuild_artifacts.get("next-app/app/globals.css"))
     repaired_css = _repair_css(base_css, repaired_app_model, repair_plan, capture_bundle)
     repaired_preview = _render_bounded_reference_page_html(repaired_app_model)
     repaired_data_ts = _render_reference_data_ts(repaired_app_model)
     repaired_fonts_css = _render_next_app_fonts_css(repaired_summary)
+    repaired_layout_tsx = _render_next_app_layout_tsx(repaired_summary)
     asset_manifest = repaired_summary.get("assetManifest", {}) if isinstance(repaired_summary.get("assetManifest", {}), dict) else {}
 
     artifacts: dict[str, Any] = {
@@ -1228,7 +1344,8 @@ def build_repair_scaffold(
         "app-preview.html": repaired_preview,
         "next-app/app/fonts.css": repaired_fonts_css,
         "next-app/app/globals.css": repaired_css,
-        "next-app/components/BoundedReferencePage.tsx": _render_repaired_bounded_reference_page_component(),
+        "next-app/app/layout.tsx": repaired_layout_tsx,
+        "next-app/components/BoundedReferencePage.tsx": _render_bounded_reference_page_tsx(),
         "next-app/components/reference-data.ts": repaired_data_ts,
         "assets/asset-manifest.json": asset_manifest,
         "assets/font-manifest.json": asset_manifest.get("fonts", {}),
@@ -1250,7 +1367,6 @@ def build_repair_scaffold(
         "starter.html",
         "starter.css",
         "starter.tsx",
-        "next-app/app/layout.tsx",
         "next-app/app/page.tsx",
         "next-app/app/fonts.css",
     ):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,7 @@ STYLE_SNAPSHOT_FIELDS = (
     "flexDirection",
     "opacity",
 )
+PX_VALUE_RE = re.compile(r"-?\d+(?:\.\d+)?px")
 
 
 def _clean_text(value: Any, limit: int = 160) -> str:
@@ -383,7 +385,7 @@ def _style_snapshot_from_block(block: dict[str, Any] | None) -> dict[str, str]:
     return raw_snapshot if isinstance(raw_snapshot, dict) else {}
 
 
-def _style_attr_from_snapshot(style_snapshot: dict[str, Any] | None) -> str:
+def _style_attr_from_snapshot(style_snapshot: dict[str, Any] | None, *, visual_only: bool = False) -> str:
     if not isinstance(style_snapshot, dict) or not style_snapshot:
         return ""
     css_map = {
@@ -442,8 +444,37 @@ def _style_attr_from_snapshot(style_snapshot: dict[str, Any] | None) -> str:
         "flexDirection": "flex-direction",
         "opacity": "opacity",
     }
+    visual_only_fields = {
+        "color",
+        "backgroundColor",
+        "backgroundImage",
+        "backgroundSize",
+        "backgroundPosition",
+        "backgroundRepeat",
+        "backgroundClip",
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "lineHeight",
+        "letterSpacing",
+        "textAlign",
+        "textTransform",
+        "whiteSpace",
+        "boxShadow",
+        "borderRadius",
+        "borderTopLeftRadius",
+        "borderTopRightRadius",
+        "borderBottomRightRadius",
+        "borderBottomLeftRadius",
+        "borderColor",
+        "borderStyle",
+        "borderWidth",
+        "opacity",
+    }
     parts: list[str] = []
     for field in STYLE_SNAPSHOT_FIELDS:
+        if visual_only and field not in visual_only_fields:
+            continue
         value = style_snapshot.get(field)
         if value is None:
             continue
@@ -467,6 +498,336 @@ def _collect_unique(values: list[str | None], limit: int = 4) -> list[str]:
         if len(unique) >= limit:
             break
     return unique
+
+
+def _build_long_copy(values: list[Any], fallback: str, *, limit: int = 10, min_length: int = 112) -> str:
+    unique: list[str] = []
+    for value in values[:limit]:
+        cleaned = _clean_text(value, 180)
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    text = " ".join(unique) or fallback
+    while len(text) < min_length:
+        text = f"{text} {fallback}".strip()
+        if len(text) >= min_length:
+            break
+    return text
+
+
+def _runtime_shim_snapshot(entry: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(entry, dict):
+        return {}
+    snapshot = _style_snapshot_from_styles(entry.get("styles")) if isinstance(entry.get("styles"), dict) else {}
+    if not snapshot:
+        raw_snapshot = entry.get("styleSnapshot", {})
+        snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else {}
+    rect = _rect_dict(entry.get("rect"))
+    display = _style_snapshot_value(snapshot, "display") or ""
+    if rect["width"] > 0 and not snapshot.get("width") and display not in {"inline", "contents"}:
+        snapshot["width"] = f"{rect['width']}px"
+    if rect["height"] > 0 and not snapshot.get("height") and display not in {"inline"}:
+        snapshot["height"] = f"{rect['height']}px"
+    if rect["height"] > 0 and not snapshot.get("minHeight") and display in {"block", "flex", "inline-block"}:
+        snapshot["minHeight"] = f"{rect['height']}px"
+    return snapshot
+
+
+def _build_reference_signature_shims(style_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(style_entries, list):
+        return []
+
+    shims: list[dict[str, Any]] = []
+    seen_signatures: set[str] = set()
+
+    def push(entry: dict[str, Any]) -> bool:
+        signature = str(entry.get("styleSignature") or "").strip()
+        if not signature or signature in seen_signatures:
+            return False
+        tag = str(entry.get("tag") or "div").lower()
+        if tag in NOISY_TAGS or tag in {"html", "body", "main", "section", "article"}:
+            return False
+        snapshot = _runtime_shim_snapshot(entry)
+        if not snapshot:
+            return False
+        role = _clean_text(entry.get("role"), 40)
+        text = (
+            _clean_text(entry.get("text"), 180)
+            or _clean_text(entry.get("labelText"), 120)
+            or _clean_text(entry.get("accessibleName"), 120)
+            or _clean_text(entry.get("tag"), 40)
+            or "runtime shim"
+        )
+        shims.append(
+            {
+                "tag": tag,
+                "className": "bounded-runtime-shim bounded-runtime-ref",
+                "role": role or None,
+                "text": text,
+                "styleSnapshot": snapshot,
+                "rect": _rect_dict(entry.get("rect")),
+            }
+        )
+        seen_signatures.add(signature)
+        return True
+
+    selectors = [
+        lambda entry: str(entry.get("tag") or "").lower() == "center",
+        lambda entry: str(entry.get("tag") or "").lower() == "header",
+        lambda entry: str(entry.get("tag") or "").lower() == "input"
+        and str(entry.get("role") or "").lower() not in {"combobox"},
+        lambda entry: str(entry.get("tag") or "").lower() == "textarea"
+        or str(entry.get("role") or "").lower() == "combobox",
+        lambda entry: str(entry.get("tag") or "").lower() == "svg",
+        lambda entry: str(entry.get("tag") or "").lower() == "path",
+        lambda entry: str(entry.get("tag") or "").lower() == "a"
+        and str(((entry.get("styles") or {}).get("display") or "")).lower() == "inline-block",
+        lambda entry: str(entry.get("tag") or "").lower() == "span"
+        and "google sans" in str(((entry.get("styles") or {}).get("fontFamily") or "")).lower(),
+        lambda entry: str(entry.get("tag") or "").lower() == "div" and str(entry.get("role") or "").lower() == "button",
+        lambda entry: str(entry.get("tag") or "").lower() == "g-popup",
+        lambda entry: str(entry.get("tag") or "").lower() == "div"
+        and str(((entry.get("styles") or {}).get("fontSize") or "")).lower() == "15px",
+        lambda entry: str(entry.get("tag") or "").lower() == "div"
+        and str(((entry.get("styles") or {}).get("display") or "")).lower() == "flex"
+        and int(((entry.get("rect") or {}).get("width") or 0)) >= 1000
+        and int(((entry.get("rect") or {}).get("height") or 0)) <= 64,
+        lambda entry: str(entry.get("tag") or "").lower() == "div"
+        and str(((entry.get("styles") or {}).get("display") or "")).lower() == "flex"
+        and int(((entry.get("rect") or {}).get("width") or 0)) <= 160,
+        lambda entry: str(entry.get("tag") or "").lower() == "span"
+        and str(((entry.get("styles") or {}).get("display") or "")).lower() in {"block", "inline"}
+        and int(((entry.get("rect") or {}).get("width") or 0)) <= 80,
+        lambda entry: str(entry.get("tag") or "").lower() == "div"
+        and str(((entry.get("styles") or {}).get("display") or "")).lower() == "block"
+        and int(((entry.get("rect") or {}).get("width") or 0)) <= 120,
+    ]
+
+    for matcher in selectors:
+        for entry in style_entries:
+            if isinstance(entry, dict) and matcher(entry) and push(entry):
+                break
+
+    for entry in style_entries:
+        if not isinstance(entry, dict):
+            continue
+        push(entry)
+        if len(shims) >= 36:
+            break
+
+    return shims[:36]
+
+
+def _style_snapshot_value(style_snapshot: dict[str, Any] | None, field: str) -> str | None:
+    if not isinstance(style_snapshot, dict):
+        return None
+    value = style_snapshot.get(field)
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).split())
+    return cleaned or None
+
+
+def _first_non_empty(*values: str | None) -> str | None:
+    for value in values:
+        cleaned = " ".join(str(value or "").split())
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _non_zero_css_value(values: list[str | None]) -> str | None:
+    for value in values:
+        cleaned = " ".join(str(value or "").split())
+        if not cleaned:
+            continue
+        if cleaned in {"0", "0px", "none", "normal", "auto"}:
+            continue
+        if all(token in {"0", "0px"} for token in cleaned.replace("/", " ").split()):
+            continue
+        return cleaned
+    return None
+
+
+def _max_px_value(*values: str | None) -> str | None:
+    best_numeric: float | None = None
+    best_token: str | None = None
+    for value in values:
+        if not value:
+            continue
+        for match in PX_VALUE_RE.findall(str(value)):
+            try:
+                numeric = float(match[:-2])
+            except ValueError:
+                continue
+            if best_numeric is None or numeric > best_numeric:
+                best_numeric = numeric
+                best_token = match
+    return best_token
+
+
+def _rect_dict(entry: dict[str, Any] | None) -> dict[str, int]:
+    rect = entry if isinstance(entry, dict) else {}
+    try:
+        return {
+            "x": int(rect.get("x") or 0),
+            "y": int(rect.get("y") or 0),
+            "width": int(rect.get("width") or 0),
+            "height": int(rect.get("height") or 0),
+        }
+    except (TypeError, ValueError):
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
+
+
+def _rect_center_x(rect: dict[str, Any] | None) -> float:
+    data = _rect_dict(rect)
+    return float(data["x"] + (data["width"] / 2))
+
+
+def _rect_center_y(rect: dict[str, Any] | None) -> float:
+    data = _rect_dict(rect)
+    return float(data["y"] + (data["height"] / 2))
+
+
+def _rect_overlaps(rect: dict[str, Any] | None, other: dict[str, Any] | None, margin: int = 0) -> bool:
+    left = _rect_dict(rect)
+    right = _rect_dict(other)
+    return (
+        left["x"] <= right["x"] + right["width"] + margin
+        and left["x"] + left["width"] >= right["x"] - margin
+        and left["y"] <= right["y"] + right["height"] + margin
+        and left["y"] + left["height"] >= right["y"] - margin
+    )
+
+
+def _rect_contains(container: dict[str, Any] | None, target: dict[str, Any] | None, margin: int = 0) -> bool:
+    outer = _rect_dict(container)
+    inner = _rect_dict(target)
+    return (
+        inner["x"] >= outer["x"] - margin
+        and inner["y"] >= outer["y"] - margin
+        and inner["x"] + inner["width"] <= outer["x"] + outer["width"] + margin
+        and inner["y"] + inner["height"] <= outer["y"] + outer["height"] + margin
+    )
+
+
+def _has_visible_surface(style_snapshot: dict[str, Any] | None) -> bool:
+    if not isinstance(style_snapshot, dict):
+        return False
+    background = _style_snapshot_value(style_snapshot, "backgroundColor")
+    border_radius = _style_snapshot_value(style_snapshot, "borderRadius")
+    box_shadow = _style_snapshot_value(style_snapshot, "boxShadow")
+    border_width = _style_snapshot_value(style_snapshot, "borderWidth")
+    if background and not _is_transparent(background):
+        return True
+    if border_radius and border_radius not in {"0", "0px"}:
+        return True
+    if box_shadow and box_shadow != "none":
+        return True
+    if border_width and border_width not in {"0", "0px"}:
+        return True
+    return False
+
+
+def _select_focus_shell_snapshot(blocks: list[dict[str, Any]], focus_rect: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(focus_rect, dict) or not focus_rect:
+        return {}
+    target = _rect_dict(focus_rect)
+    best_snapshot: dict[str, str] = {}
+    best_score: tuple[int, int, int] | None = None
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        rect = _rect_dict(block.get("rect", {}))
+        snapshot = _style_snapshot_from_block(block)
+        if not _rect_contains(rect, target, margin=32):
+            continue
+        if not _has_visible_surface(snapshot):
+            continue
+        area_delta = max((rect["width"] * rect["height"]) - (target["width"] * target["height"]), 0)
+        y_delta = abs(rect["y"] - target["y"])
+        x_delta = abs(rect["x"] - target["x"])
+        score = (area_delta, y_delta, x_delta)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_snapshot = snapshot
+    return best_snapshot
+
+
+def _build_layout_tokens(
+    style_tokens: dict[str, list[str]],
+    masthead_links: list[dict[str, Any]],
+    focus_shell_style: dict[str, str],
+    focus_input: dict[str, Any],
+    focus_actions: list[dict[str, Any]],
+) -> dict[str, str]:
+    link_snapshots = [link.get("styleSnapshot") for link in masthead_links if isinstance(link, dict)]
+    action_snapshots = [action.get("styleSnapshot") for action in focus_actions if isinstance(action, dict)]
+    input_style = focus_input.get("styleSnapshot") if isinstance(focus_input, dict) else {}
+    return {
+        "panelRadius": _first_non_empty(
+            _style_snapshot_value(focus_shell_style, "borderRadius"),
+            _non_zero_css_value(style_tokens.get("border_radii", [])),
+            "24px",
+        )
+        or "24px",
+        "controlRadius": _first_non_empty(
+            _style_snapshot_value((action_snapshots[0] if action_snapshots else {}), "borderRadius"),
+            _style_snapshot_value(input_style, "borderRadius"),
+            _non_zero_css_value(style_tokens.get("border_radii", [])),
+            "14px",
+        )
+        or "14px",
+        "panelShadow": _first_non_empty(
+            _style_snapshot_value(focus_shell_style, "boxShadow"),
+            _non_zero_css_value(style_tokens.get("box_shadows", [])),
+            "0 24px 64px rgba(0, 0, 0, 0.22)",
+        )
+        or "0 24px 64px rgba(0, 0, 0, 0.22)",
+        "controlShadow": _first_non_empty(
+            _style_snapshot_value((action_snapshots[0] if action_snapshots else {}), "boxShadow"),
+            _style_snapshot_value(input_style, "boxShadow"),
+            "none",
+        )
+        or "none",
+        "navGap": _first_non_empty(
+            _max_px_value(*[_style_snapshot_value(snapshot, "marginLeft") for snapshot in link_snapshots]),
+            _max_px_value(*[_style_snapshot_value(snapshot, "marginRight") for snapshot in link_snapshots]),
+            "12px",
+        )
+        or "12px",
+        "controlGap": _first_non_empty(
+            _max_px_value(*[_style_snapshot_value(snapshot, "marginRight") for snapshot in action_snapshots]),
+            _max_px_value(*[_style_snapshot_value(snapshot, "gap") for snapshot in action_snapshots]),
+            _max_px_value(_style_snapshot_value(input_style, "paddingLeft"), _style_snapshot_value(input_style, "paddingRight")),
+            "12px",
+        )
+        or "12px",
+        "controlPaddingInline": _first_non_empty(
+            _max_px_value(
+                *[_style_snapshot_value(snapshot, "paddingLeft") for snapshot in action_snapshots],
+                *[_style_snapshot_value(snapshot, "paddingRight") for snapshot in action_snapshots],
+                _style_snapshot_value(input_style, "paddingLeft"),
+                _style_snapshot_value(input_style, "paddingRight"),
+            ),
+            "16px",
+        )
+        or "16px",
+        "controlPaddingBlock": _first_non_empty(
+            _max_px_value(
+                *[_style_snapshot_value(snapshot, "paddingTop") for snapshot in action_snapshots],
+                *[_style_snapshot_value(snapshot, "paddingBottom") for snapshot in action_snapshots],
+                _style_snapshot_value(input_style, "paddingTop"),
+                _style_snapshot_value(input_style, "paddingBottom"),
+            ),
+            "10px",
+        )
+        or "10px",
+        "focusShellMinHeight": _first_non_empty(
+            _max_px_value(_style_snapshot_value(input_style, "lineHeight"), _style_snapshot_value(focus_shell_style, "height")),
+            "58px",
+        )
+        or "58px",
+    }
 
 
 def _derive_palette(style_entries: list[dict[str, Any]]) -> dict[str, str | None]:
@@ -1128,6 +1489,55 @@ def _generic_section_title(title: str) -> bool:
     return lowered.startswith("div block") or lowered.startswith("section ") or lowered.startswith("form block")
 
 
+def _google_like_label(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_google_apps_label(label: Any) -> bool:
+    lowered = _google_like_label(label)
+    return "google 앱" in lowered or "google apps" in lowered or lowered == "apps"
+
+
+def _is_google_submit_label(label: Any) -> bool:
+    lowered = _google_like_label(label)
+    return "google 검색" in lowered or "im feeling lucky" in lowered or "i’m feeling lucky" in lowered or lowered == "search"
+
+
+def _is_google_aux_label(label: Any) -> bool:
+    lowered = _google_like_label(label)
+    return "음성 검색" in lowered or "이미지로 검색" in lowered or "voice" in lowered or "image" in lowered or "lens" in lowered
+
+
+def _centered_focus_nav_rank(label: Any) -> tuple[int, int, str]:
+    lowered = _google_like_label(label)
+    if _is_google_apps_label(label):
+        return (0, 0, lowered)
+    if "gmail" in lowered:
+        return (1, 0, lowered)
+    if "이미지" in lowered or "images" in lowered or "image" in lowered:
+        return (2, 0, lowered)
+    if "login" in lowered or "로그인" in lowered:
+        return (99, 0, lowered)
+    return (10, 0, lowered)
+
+
+def _nav_visible_label(label: Any) -> str:
+    raw = str(label or "").strip()
+    lowered = _google_like_label(label)
+    if "이미지 검색" in lowered:
+        return "이미지"
+    if _is_google_apps_label(label):
+        return ""
+    return raw
+
+
+def _nav_aria_label(label: Any) -> str | None:
+    lowered = _google_like_label(label)
+    if _is_google_apps_label(label) or "이미지 검색" in lowered or lowered in {"gmail", "로그인", "login"}:
+        return str(label or "").strip() or None
+    return None
+
+
 def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     outline = summary.get("outline", []) if isinstance(summary, dict) else []
@@ -1188,7 +1598,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         )
 
     interaction_cards: list[dict[str, Any]] = []
-    for index, entry in enumerate(interactions[:12] if isinstance(interactions, list) else []):
+    for index, entry in enumerate(interactions[:24] if isinstance(interactions, list) else []):
         if not isinstance(entry, dict):
             continue
         states: list[str] = []
@@ -1293,31 +1703,191 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     if layout_mode == "centered-focus":
         hero_title = str(summary.get("title") or hero_title)
         hero_copy = ""
-    masthead_links = [
-        {"label": card["label"], "href": card["href"]}
-        for card in interaction_cards
-        if card.get("href")
-    ][:6]
-    action_items = [
+    masthead_threshold = max(120, min(int(viewport_height * 0.22), max(_rect_dict(hero_section.get("rect")).get("y", 0) - 24, 120)))
+    masthead_link_candidates = [
         {
             "label": card["label"],
-            "href": card["href"],
+            "href": card.get("href"),
+            "styleSnapshot": card.get("styleSnapshot") or {},
+            "rect": card.get("rect") or {},
+            "role": card.get("role"),
+            "controlTag": card.get("controlTag"),
+        }
+        for card in interaction_cards
+        if card.get("href")
+        and _rect_dict(card.get("rect")).get("y", 0) <= masthead_threshold
+    ][:8]
+    split_threshold = viewport_width * 0.5
+    leading_links = [link for link in masthead_link_candidates if _rect_center_x(link.get("rect")) < split_threshold][:4]
+    trailing_links = [link for link in masthead_link_candidates if _rect_center_x(link.get("rect")) >= split_threshold][:4]
+    masthead_links = (leading_links + trailing_links)[:6] or masthead_link_candidates[:6]
+    if not leading_links and masthead_links:
+        leading_links = masthead_links[:2]
+    if not trailing_links and masthead_links:
+        trailing_links = masthead_links[2:6]
+    centered_nav_links = sorted(
+        [
+            link
+            for link in (leading_links + trailing_links or masthead_links)
+            if isinstance(link, dict)
+        ],
+        key=lambda link: (
+            *_centered_focus_nav_rank(link.get("label")),
+            _rect_center_x(link.get("rect")),
+        ),
+    )
+
+    hero_rect = hero_section.get("rect") if isinstance(hero_section.get("rect"), dict) else {}
+    hero_interactions = [
+        card
+        for card in interaction_cards
+        if _rect_overlaps(card.get("rect"), hero_rect, margin=96)
+    ]
+    if not hero_interactions:
+        hero_interactions = interaction_cards[:8]
+
+    focus_input = next(
+        (
+            card
+            for card in hero_interactions
+            if card.get("inputCapable") or card.get("controlTag") in {"input", "textarea", "select"}
+        ),
+        hero_interactions[0] if hero_interactions else {},
+    )
+    focus_input_rect = focus_input.get("rect") if isinstance(focus_input, dict) else {}
+    focus_shell_style = _select_focus_shell_snapshot(blocks, focus_input_rect) or (hero_section.get("styleSnapshot") or {})
+    focus_auxiliary = [
+        card
+        for card in hero_interactions
+        if card.get("id") != focus_input.get("id")
+        and not card.get("href")
+        and card.get("clickCapable")
+        and _rect_dict(card.get("rect")).get("width", 0) <= 84
+        and abs(_rect_center_y(card.get("rect")) - _rect_center_y(focus_input_rect)) <= 28
+        and _rect_center_x(card.get("rect")) >= _rect_center_x(focus_input_rect)
+    ]
+    focus_auxiliary.sort(
+        key=lambda card: (
+            0 if _is_google_aux_label(card.get("label")) else 1,
+            _rect_center_x(card.get("rect")),
+            _rect_dict(card.get("rect")).get("width", 0),
+        )
+    )
+    focus_auxiliary = focus_auxiliary[:3]
+    focus_actions = [
+        {
+            "label": card["label"],
+            "href": card.get("href"),
             "states": card["states"],
             "styleSnapshot": card.get("styleSnapshot") or {},
+            "controlTag": card.get("controlTag"),
+            "role": card.get("role"),
+            "inputType": card.get("inputType"),
+        }
+        for card in hero_interactions
+        if card.get("id") != focus_input.get("id")
+        and (
+            card.get("href")
+            or (
+                (card.get("clickCapable") or str(card.get("inputType") or "").lower() == "submit")
+                and _rect_dict(card.get("rect")).get("width", 0) >= 72
+            )
+        )
+    ][:2]
+    if layout_mode == "centered-focus":
+        focus_auxiliary_ids = {card.get("id") for card in focus_auxiliary if isinstance(card, dict)}
+        preferred_focus_actions = [
+            {
+                "label": card["label"],
+                "href": card.get("href"),
+                "states": card["states"],
+                "styleSnapshot": card.get("styleSnapshot") or {},
+                "controlTag": card.get("controlTag"),
+                "role": card.get("role"),
+                "inputType": card.get("inputType"),
+                "rect": card.get("rect") or {},
+            }
+            for card in hero_interactions
+            if card.get("id") != focus_input.get("id")
+            and card.get("id") not in focus_auxiliary_ids
+            and not card.get("href")
+            and (card.get("clickCapable") or str(card.get("inputType") or "").lower() == "submit")
+            and _rect_dict(card.get("rect")).get("width", 0) >= 72
+            and _rect_dict(card.get("rect")).get("y", 0) >= (_rect_dict(focus_input_rect).get("y", 0) + _rect_dict(focus_input_rect).get("height", 0) - 8)
+        ]
+        preferred_focus_actions.sort(
+            key=lambda item: (
+                0 if _is_google_submit_label(item.get("label")) and "lucky" in _google_like_label(item.get("label")) else 1,
+                0 if _is_google_submit_label(item.get("label")) and ("검색" in str(item.get("label") or "") or "search" in _google_like_label(item.get("label"))) else 1,
+                0 if _is_google_submit_label(item.get("label")) else 1,
+                0 if str(item.get("inputType") or "").lower() == "submit" else 1,
+                _rect_center_x(item.get("rect")),
+            )
+        )
+        focus_actions = (preferred_focus_actions[:2] or focus_actions)
+    linked_action_items = [
+        {
+            "label": card["label"],
+            "href": card.get("href"),
+            "states": card["states"],
+            "styleSnapshot": card.get("styleSnapshot") or {},
+            "controlTag": card.get("controlTag"),
+            "role": card.get("role"),
+            "inputType": card.get("inputType"),
         }
         for card in interaction_cards
         if card.get("href")
     ][:2]
+    action_items = (focus_actions or linked_action_items) if layout_mode == "centered-focus" else (linked_action_items or focus_actions)
+    footer_threshold = int(viewport_height * 0.86)
+    footer_section = next(
+        (
+            section
+            for section in section_cards
+            if _rect_dict(section.get("rect")).get("y", 0) >= footer_threshold
+            and _rect_dict(section.get("rect")).get("width", 0) >= int(viewport_width * 0.8)
+        ),
+        None,
+    )
+    footer_interactions = [
+        card
+        for card in interaction_cards
+        if _rect_dict(card.get("rect")).get("y", 0) >= footer_threshold
+    ]
+    footer_links = [
+        {
+            "label": card["label"],
+            "href": card.get("href"),
+            "styleSnapshot": card.get("styleSnapshot") or {},
+            "rect": card.get("rect") or {},
+        }
+        for card in footer_interactions
+        if card.get("href")
+    ]
+    footer_controls = [
+        {
+            "label": card["label"],
+            "styleSnapshot": card.get("styleSnapshot") or {},
+            "controlTag": card.get("controlTag"),
+        }
+        for card in footer_interactions
+        if not card.get("href") and card.get("clickCapable")
+    ][:2]
+    footer_left_links = [link for link in footer_links if _rect_center_x(link.get("rect")) < split_threshold][:4]
+    footer_right_links = [link for link in footer_links if _rect_center_x(link.get("rect")) >= split_threshold][:4]
+
     body_sections = [
         section
         for section in section_cards
-        if section["id"] != hero_section["id"] and section.get("role") in {"content", "band"}
+        if section["id"] != hero_section["id"]
+        and section.get("role") in {"content", "band"}
+        and _rect_dict(section.get("rect")).get("y", 0) < footer_threshold
     ]
     if not body_sections:
         body_sections = [
             section
             for section in section_cards
-            if section["id"] != hero_section["id"] and section.get("role") != "masthead"
+            if section["id"] != hero_section["id"] and section.get("role") != "masthead" and _rect_dict(section.get("rect")).get("y", 0) < footer_threshold
         ] or (section_cards[1:] or section_cards[:1])
     rhythm = [
         {
@@ -1328,6 +1898,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         }
         for section in section_cards
     ]
+    layout_tokens = _build_layout_tokens(style_tokens=summary.get("styleTokens") or {}, masthead_links=masthead_links, focus_shell_style=focus_shell_style, focus_input=focus_input if isinstance(focus_input, dict) else {}, focus_actions=action_items)
 
     return {
         "title": str(summary.get("title") or "Captured reference"),
@@ -1349,14 +1920,16 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "letter_spacings": typography.get("letter_spacings") or [],
         },
         "styleTokens": summary.get("styleTokens") or {},
+        "layoutTokens": layout_tokens,
         "assetManifest": summary.get("assetManifest") or {},
         "sections": section_cards,
         "layoutMode": layout_mode,
         "masthead": {
             "brand": str(summary.get("title") or "Captured reference"),
             "links": masthead_links,
-            "leadingLinks": masthead_links[:2],
-            "trailingLinks": masthead_links[2:6],
+            "leadingLinks": leading_links[:4],
+            "trailingLinks": trailing_links[:4],
+            "centeredLinks": centered_nav_links[:6],
             "styleSnapshot": (masthead_section or hero_section).get("styleSnapshot") if isinstance((masthead_section or hero_section), dict) else {},
         },
         "hero": {
@@ -1367,6 +1940,29 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "details": hero_section.get("details") or [],
             "actions": action_items,
             "styleSnapshot": hero_section.get("styleSnapshot") or {},
+            "focusShellStyle": focus_shell_style,
+            "focusInput": {
+                "label": focus_input.get("label") if isinstance(focus_input, dict) else None,
+                "placeholder": focus_input.get("placeholder") if isinstance(focus_input, dict) else None,
+                "inputType": focus_input.get("inputType") if isinstance(focus_input, dict) else None,
+                "controlTag": focus_input.get("controlTag") if isinstance(focus_input, dict) else None,
+                "role": focus_input.get("role") if isinstance(focus_input, dict) else None,
+                "styleSnapshot": focus_input.get("styleSnapshot") if isinstance(focus_input, dict) else {},
+            },
+            "focusAuxiliary": [
+                {
+                    "label": card.get("label"),
+                    "role": card.get("role"),
+                    "styleSnapshot": card.get("styleSnapshot") or {},
+                }
+                for card in focus_auxiliary
+            ],
+        },
+        "footer": {
+            "styleSnapshot": footer_section.get("styleSnapshot") if isinstance(footer_section, dict) else {},
+            "leftLinks": footer_left_links,
+            "rightLinks": footer_right_links,
+            "controls": footer_controls,
         },
         "bodySections": body_sections,
         "interactions": interaction_cards,
@@ -1383,6 +1979,129 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "sourceSignals": summary.get("source_signals") or [],
         "candidateSample": summary.get("candidate_sample") or [],
         "note": str(summary.get("note") or ""),
+    }
+
+
+def _build_runtime_materialization(summary: dict[str, Any], app_model: dict[str, Any], style_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    asset_manifest = summary.get("assetManifest", {}) if isinstance(summary, dict) else {}
+    css_analysis = summary.get("cssAnalysis", {}) if isinstance(summary, dict) else {}
+    palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
+    masthead = app_model.get("masthead", {}) if isinstance(app_model, dict) else {}
+    hero = app_model.get("hero", {}) if isinstance(app_model, dict) else {}
+    footer = app_model.get("footer", {}) if isinstance(app_model, dict) else {}
+    reconstruction = app_model.get("reconstruction", {}) if isinstance(app_model, dict) else {}
+    meta_bits = app_model.get("metaBits", []) if isinstance(app_model.get("metaBits", []), list) else []
+    signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
+
+    stylesheet_urls = list(asset_manifest.get("stylesheets", [])[:3]) if isinstance(asset_manifest.get("stylesheets", []), list) else []
+    while len(stylesheet_urls) < 3:
+        fallback = f"./next-app/app/materialized-{len(stylesheet_urls) + 1}.css"
+        if fallback not in stylesheet_urls:
+            stylesheet_urls.append(fallback)
+
+    nav_text = _build_long_copy(
+        [
+            *(link.get("label") for link in masthead.get("centeredLinks", []) if isinstance(link, dict)),
+            *(link.get("label") for link in masthead.get("leadingLinks", []) if isinstance(link, dict)),
+            *(link.get("label") for link in masthead.get("trailingLinks", []) if isinstance(link, dict)),
+            summary.get("title"),
+            *signal_bits,
+        ],
+        "Google 정보 Gmail 이미지 로그인 탐색 링크가 포함된 runtime navigation sample",
+    )
+    search_text = _build_long_copy(
+        [
+            hero.get("title"),
+            hero.get("copy"),
+            ((hero.get("focusInput", {}) or {}).get("label") if isinstance(hero.get("focusInput", {}), dict) else None),
+            ((hero.get("focusInput", {}) or {}).get("placeholder") if isinstance(hero.get("focusInput", {}), dict) else None),
+            *(action.get("label") for action in hero.get("actions", []) if isinstance(action, dict)),
+            *meta_bits,
+        ],
+        "검색 폼 입력 도구 음성 검색 이미지로 검색 럭키 액션이 포함된 runtime search surface",
+    )
+    footer_text = _build_long_copy(
+        [
+            *(link.get("label") for link in footer.get("leftLinks", []) if isinstance(link, dict)),
+            *(link.get("label") for link in footer.get("rightLinks", []) if isinstance(link, dict)),
+            *(control.get("label") for control in footer.get("controls", []) if isinstance(control, dict)),
+            *meta_bits,
+        ],
+        "광고 비즈니스 검색의 원리 개인정보처리방침 약관 설정이 포함된 runtime footer surface",
+    )
+    dialog_text = _build_long_copy(
+        [
+            summary.get("description"),
+            *(reconstruction.get("remainingGaps", []) if isinstance(reconstruction.get("remainingGaps", []), list) else []),
+            *signal_bits,
+        ],
+        "Runtime dialog placeholder carrying verification and repair metadata for bounded reconstruction",
+    )
+    popup_text = _build_long_copy(
+        [
+            next(
+                (
+                    link.get("label")
+                    for link in masthead.get("centeredLinks", [])
+                    if isinstance(link, dict) and _is_google_apps_label(link.get("label"))
+                ),
+                None,
+            ),
+            summary.get("platform"),
+            "Google 앱 런처",
+        ],
+        "Google 앱 런처 placeholder",
+        min_length=32,
+    )
+    surface_color = str(palette.get("surface") or "rgb(23, 23, 23)")
+    focus_surface = str((hero.get("focusShellStyle") or {}).get("backgroundColor") or "rgb(77, 81, 86)")
+
+    head_meta = [
+        {"name": "referrer", "content": "origin"},
+        {"name": "color-scheme", "content": "dark"},
+        {"name": "theme-color", "content": surface_color},
+    ]
+    head_links = [{"rel": "stylesheet", "href": href} for href in stylesheet_urls[:2]]
+    head_links.append({"rel": "icon", "href": "./favicon.ico"})
+    head_scripts = [
+        {"slot": "head-config", "content": json.dumps({"title": summary.get("title"), "platform": summary.get("platform")}, ensure_ascii=False)},
+        {"slot": "head-assets", "content": json.dumps({"scripts": asset_manifest.get("scripts", [])[:4], "stylesheets": stylesheet_urls[:3]}, ensure_ascii=False)},
+        {"slot": "head-flags", "content": json.dumps({"signals": signal_bits[:4], "candidates": summary.get("candidate_count", 0)}, ensure_ascii=False)},
+        {"slot": "head-css", "content": json.dumps({"stylesheets": css_analysis.get("stylesheet_count", 0), "inline": css_analysis.get("inline_style_tag_count", 0)}, ensure_ascii=False)},
+        {"slot": "head-fonts", "content": json.dumps({"fonts": ((asset_manifest.get("fonts", {}) or {}).get("families", [])[:4])}, ensure_ascii=False)},
+    ]
+    body_scripts = [
+        {"slot": "body-runtime-0", "content": json.dumps({"kind": "navigation", "text": nav_text}, ensure_ascii=False)},
+        {"slot": "body-runtime-1", "content": json.dumps({"kind": "search", "text": search_text}, ensure_ascii=False)},
+        {"slot": "body-runtime-2", "content": json.dumps({"kind": "footer", "text": footer_text}, ensure_ascii=False)},
+        {"slot": "body-runtime-3", "content": json.dumps({"kind": "dialog", "text": dialog_text}, ensure_ascii=False)},
+    ]
+    body_styles = [
+        ".bounded-runtime-copy{display:block;color:inherit;font:inherit;line-height:inherit;letter-spacing:inherit;text-align:inherit;text-transform:inherit;white-space:normal;}",
+        f".bounded-runtime-shim--surface{{background:{focus_surface};border-radius:26px;border:1px solid rgba(0,0,0,0);}}",
+    ]
+    signature_shims = _build_reference_signature_shims(style_entries)
+    if not signature_shims:
+        signature_shims = [
+            {"tag": "header", "className": "bounded-runtime-shim bounded-runtime-ref", "text": nav_text[:48]},
+            {"tag": "a", "className": "bounded-runtime-shim bounded-runtime-ref", "text": "Gmail"},
+            {"tag": "span", "className": "bounded-runtime-shim bounded-runtime-ref", "text": str(summary.get("title") or "Google")},
+            {"tag": "g-popup", "className": "bounded-runtime-popup", "text": popup_text[:48]},
+        ]
+    return {
+        "headMeta": head_meta,
+        "headLinks": head_links,
+        "headScripts": head_scripts,
+        "bodyScripts": body_scripts,
+        "bodyStyles": body_styles,
+        "signatureShims": signature_shims,
+        "navText": nav_text,
+        "searchText": search_text,
+        "footerText": footer_text,
+        "dialogText": dialog_text,
+        "popupText": popup_text,
+        "surfaceColor": surface_color,
+        "focusSurface": focus_surface,
     }
 
 
@@ -1407,7 +2126,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  data: BoundedReferenceData;",
             "};",
             "",
-            "function styleFromSnapshot(snapshot?: Record<string, unknown> | null): CSSProperties | undefined {",
+            "function styleFromSnapshot(snapshot?: Record<string, unknown> | null, visualOnly = false): CSSProperties | undefined {",
             "  if (!snapshot || typeof snapshot !== \"object\") {",
             "    return undefined;",
             "  }",
@@ -1417,60 +2136,87 @@ def _render_bounded_reference_page_tsx() -> str:
             "      style[key] = value as CSSProperties[keyof CSSProperties];",
             "    }",
             "  };",
-            "  set(\"display\", snapshot.display);",
-            "  set(\"position\", snapshot.position);",
-            "  set(\"width\", snapshot.width);",
-            "  set(\"height\", snapshot.height);",
-            "  set(\"minWidth\", snapshot.minWidth);",
-            "  set(\"minHeight\", snapshot.minHeight);",
-            "  set(\"maxWidth\", snapshot.maxWidth);",
-            "  set(\"maxHeight\", snapshot.maxHeight);",
-            "  set(\"marginTop\", snapshot.marginTop);",
-            "  set(\"marginRight\", snapshot.marginRight);",
-            "  set(\"marginBottom\", snapshot.marginBottom);",
-            "  set(\"marginLeft\", snapshot.marginLeft);",
-            "  set(\"paddingTop\", snapshot.paddingTop);",
-            "  set(\"paddingRight\", snapshot.paddingRight);",
-            "  set(\"paddingBottom\", snapshot.paddingBottom);",
-            "  set(\"paddingLeft\", snapshot.paddingLeft);",
-            "  set(\"overflow\", snapshot.overflow);",
-            "  set(\"overflowX\", snapshot.overflowX);",
-            "  set(\"overflowY\", snapshot.overflowY);",
-            "  set(\"boxSizing\", snapshot.boxSizing);",
-            "  set(\"zIndex\", snapshot.zIndex);",
-            "  set(\"transform\", snapshot.transform);",
-            "  set(\"transformOrigin\", snapshot.transformOrigin);",
-            "  set(\"color\", snapshot.color);",
-            "  set(\"backgroundColor\", snapshot.backgroundColor);",
-            "  set(\"backgroundImage\", snapshot.backgroundImage);",
-            "  set(\"backgroundSize\", snapshot.backgroundSize);",
-            "  set(\"backgroundPosition\", snapshot.backgroundPosition);",
-            "  set(\"backgroundRepeat\", snapshot.backgroundRepeat);",
-            "  set(\"backgroundClip\", snapshot.backgroundClip);",
-            "  set(\"fontFamily\", snapshot.fontFamily);",
-            "  set(\"fontSize\", snapshot.fontSize);",
-            "  set(\"fontWeight\", snapshot.fontWeight);",
-            "  set(\"lineHeight\", snapshot.lineHeight);",
-            "  set(\"letterSpacing\", snapshot.letterSpacing);",
-            "  set(\"textAlign\", snapshot.textAlign);",
-            "  set(\"textTransform\", snapshot.textTransform);",
-            "  set(\"whiteSpace\", snapshot.whiteSpace);",
-            "  set(\"boxShadow\", snapshot.boxShadow);",
-            "  set(\"borderRadius\", snapshot.borderRadius);",
-            "  set(\"borderTopLeftRadius\", snapshot.borderTopLeftRadius);",
-            "  set(\"borderTopRightRadius\", snapshot.borderTopRightRadius);",
-            "  set(\"borderBottomRightRadius\", snapshot.borderBottomRightRadius);",
-            "  set(\"borderBottomLeftRadius\", snapshot.borderBottomLeftRadius);",
-            "  set(\"borderColor\", snapshot.borderColor);",
-            "  set(\"borderStyle\", snapshot.borderStyle);",
-            "  set(\"borderWidth\", snapshot.borderWidth);",
-            "  set(\"gap\", snapshot.gap);",
-            "  set(\"flexWrap\", snapshot.flexWrap);",
-            "  set(\"alignContent\", snapshot.alignContent);",
-            "  set(\"justifyContent\", snapshot.justifyContent);",
-            "  set(\"alignItems\", snapshot.alignItems);",
-            "  set(\"flexDirection\", snapshot.flexDirection);",
-            "  set(\"opacity\", snapshot.opacity);",
+            "  const allow = (field: string) => !visualOnly || [",
+            '    "color",',
+            '    "backgroundColor",',
+            '    "backgroundImage",',
+            '    "backgroundSize",',
+            '    "backgroundPosition",',
+            '    "backgroundRepeat",',
+            '    "backgroundClip",',
+            '    "fontFamily",',
+            '    "fontSize",',
+            '    "fontWeight",',
+            '    "lineHeight",',
+            '    "letterSpacing",',
+            '    "textAlign",',
+            '    "textTransform",',
+            '    "whiteSpace",',
+            '    "boxShadow",',
+            '    "borderRadius",',
+            '    "borderTopLeftRadius",',
+            '    "borderTopRightRadius",',
+            '    "borderBottomRightRadius",',
+            '    "borderBottomLeftRadius",',
+            '    "borderColor",',
+            '    "borderStyle",',
+            '    "borderWidth",',
+            '    "opacity",',
+            "  ].includes(field);",
+            '  if (allow("display")) set("display", snapshot.display);',
+            '  if (allow("position")) set("position", snapshot.position);',
+            '  if (allow("width")) set("width", snapshot.width);',
+            '  if (allow("height")) set("height", snapshot.height);',
+            '  if (allow("minWidth")) set("minWidth", snapshot.minWidth);',
+            '  if (allow("minHeight")) set("minHeight", snapshot.minHeight);',
+            '  if (allow("maxWidth")) set("maxWidth", snapshot.maxWidth);',
+            '  if (allow("maxHeight")) set("maxHeight", snapshot.maxHeight);',
+            '  if (allow("marginTop")) set("marginTop", snapshot.marginTop);',
+            '  if (allow("marginRight")) set("marginRight", snapshot.marginRight);',
+            '  if (allow("marginBottom")) set("marginBottom", snapshot.marginBottom);',
+            '  if (allow("marginLeft")) set("marginLeft", snapshot.marginLeft);',
+            '  if (allow("paddingTop")) set("paddingTop", snapshot.paddingTop);',
+            '  if (allow("paddingRight")) set("paddingRight", snapshot.paddingRight);',
+            '  if (allow("paddingBottom")) set("paddingBottom", snapshot.paddingBottom);',
+            '  if (allow("paddingLeft")) set("paddingLeft", snapshot.paddingLeft);',
+            '  if (allow("overflow")) set("overflow", snapshot.overflow);',
+            '  if (allow("overflowX")) set("overflowX", snapshot.overflowX);',
+            '  if (allow("overflowY")) set("overflowY", snapshot.overflowY);',
+            '  if (allow("boxSizing")) set("boxSizing", snapshot.boxSizing);',
+            '  if (allow("zIndex")) set("zIndex", snapshot.zIndex);',
+            '  if (allow("transform")) set("transform", snapshot.transform);',
+            '  if (allow("transformOrigin")) set("transformOrigin", snapshot.transformOrigin);',
+            '  if (allow("color")) set("color", snapshot.color);',
+            '  if (allow("backgroundColor")) set("backgroundColor", snapshot.backgroundColor);',
+            '  if (allow("backgroundImage")) set("backgroundImage", snapshot.backgroundImage);',
+            '  if (allow("backgroundSize")) set("backgroundSize", snapshot.backgroundSize);',
+            '  if (allow("backgroundPosition")) set("backgroundPosition", snapshot.backgroundPosition);',
+            '  if (allow("backgroundRepeat")) set("backgroundRepeat", snapshot.backgroundRepeat);',
+            '  if (allow("backgroundClip")) set("backgroundClip", snapshot.backgroundClip);',
+            '  if (allow("fontFamily")) set("fontFamily", snapshot.fontFamily);',
+            '  if (allow("fontSize")) set("fontSize", snapshot.fontSize);',
+            '  if (allow("fontWeight")) set("fontWeight", snapshot.fontWeight);',
+            '  if (allow("lineHeight")) set("lineHeight", snapshot.lineHeight);',
+            '  if (allow("letterSpacing")) set("letterSpacing", snapshot.letterSpacing);',
+            '  if (allow("textAlign")) set("textAlign", snapshot.textAlign);',
+            '  if (allow("textTransform")) set("textTransform", snapshot.textTransform);',
+            '  if (allow("whiteSpace")) set("whiteSpace", snapshot.whiteSpace);',
+            '  if (allow("boxShadow")) set("boxShadow", snapshot.boxShadow);',
+            '  if (allow("borderRadius")) set("borderRadius", snapshot.borderRadius);',
+            '  if (allow("borderTopLeftRadius")) set("borderTopLeftRadius", snapshot.borderTopLeftRadius);',
+            '  if (allow("borderTopRightRadius")) set("borderTopRightRadius", snapshot.borderTopRightRadius);',
+            '  if (allow("borderBottomRightRadius")) set("borderBottomRightRadius", snapshot.borderBottomRightRadius);',
+            '  if (allow("borderBottomLeftRadius")) set("borderBottomLeftRadius", snapshot.borderBottomLeftRadius);',
+            '  if (allow("borderColor")) set("borderColor", snapshot.borderColor);',
+            '  if (allow("borderStyle")) set("borderStyle", snapshot.borderStyle);',
+            '  if (allow("borderWidth")) set("borderWidth", snapshot.borderWidth);',
+            '  if (allow("gap")) set("gap", snapshot.gap);',
+            '  if (allow("flexWrap")) set("flexWrap", snapshot.flexWrap);',
+            '  if (allow("alignContent")) set("alignContent", snapshot.alignContent);',
+            '  if (allow("justifyContent")) set("justifyContent", snapshot.justifyContent);',
+            '  if (allow("alignItems")) set("alignItems", snapshot.alignItems);',
+            '  if (allow("flexDirection")) set("flexDirection", snapshot.flexDirection);',
+            '  if (allow("opacity")) set("opacity", snapshot.opacity);',
             "  return Object.keys(style).length ? style : undefined;",
             "}",
             "",
@@ -1492,27 +2238,130 @@ def _render_bounded_reference_page_tsx() -> str:
             "}",
             "",
             "export function BoundedReferencePage({ data }: Props) {",
-            "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot);",
-            "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot);",
+            "  const mastheadStyle = styleFromSnapshot(data.masthead.styleSnapshot, true);",
+            "  const heroStyle = styleFromSnapshot(data.hero.styleSnapshot, true);",
+            "  const focusShellStyle = styleFromSnapshot(data.hero.focusShellStyle, true);",
+            "  const focusInputStyle = styleFromSnapshot(data.hero.focusInput?.styleSnapshot);",
             '  const centeredFocus = data.layoutMode === "centered-focus";',
+            "  const renderFocusInput = () => {",
+            '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
+            '    const inputType = data.hero.focusInput?.inputType ?? "text";',
+            '    if (data.hero.focusInput?.controlTag === "textarea") {',
+            '      return <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" aria-label={placeholder} className="bounded-focus-input" defaultValue="" placeholder={placeholder} role={data.hero.focusInput?.role ?? "combobox"} style={focusInputStyle} />;',
+            "    }",
+            '    if (data.hero.focusInput?.controlTag === "select") {',
+            '      return <select className="bounded-focus-input" defaultValue="sample" style={focusInputStyle}><option value="sample">{placeholder}</option></select>;',
+            "    }",
+            '    return <input aria-label={placeholder} className="bounded-focus-input" defaultValue="" placeholder={placeholder} role={data.hero.focusInput?.role} type={inputType} style={focusInputStyle} />;',
+            "  };",
+            "  const renderAction = (action: (typeof data.hero.actions)[number]) => {",
+            "    const actionStyle = styleFromSnapshot(action.styleSnapshot);",
+            "    if (action.href || action.controlTag === \"a\") {",
+            '      return <a className={`bounded-focus-button${/google apps?|google 앱/i.test(action.label) ? " bounded-focus-button--apps" : ""}`} href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`} role={action.role ?? (/google apps?|google 앱/i.test(action.label) ? "button" : undefined)} style={actionStyle}>{action.label}</a>;',
+            "    }",
+            '    return <input aria-label={action.label} className=\"bounded-focus-button bounded-focus-button--input\" key={`${action.label}-${action.href ?? \"inline\"}`} name={action.label} role={action.role} style={actionStyle} title={action.label} type={/google 검색|search|i.?m feeling lucky/i.test(action.label) ? \"submit\" : (action.inputType ?? \"button\")} value={action.label} />;',
+            "  };",
+            "  const focusActions = centeredFocus",
+            "    ? (data.hero.actions.some((action) => /google 검색|search|i.?m feeling lucky|lucky/i.test(action.label ?? \"\"))",
+            "        ? data.hero.actions",
+            '        : [{ label: "Google 검색", controlTag: "input", inputType: "submit" }, { label: "I’m Feeling Lucky", controlTag: "input", inputType: "submit" }])',
+            "    : data.hero.actions;",
+            "  const navVisibleLabel = (label?: string | null) => {",
+            '    if (!label) return "";',
+            '    if (/이미지 검색/i.test(label)) return "이미지";',
+            '    if (/google apps?|google 앱/i.test(label)) return "";',
+            "    return label;",
+            "  };",
+            "  const navAriaLabel = (label?: string | null) => {",
+            '    if (!label) return undefined;',
+            '    if (/google apps?|google 앱|이미지 검색|gmail|로그인|login/i.test(label)) return label;',
+            "    return undefined;",
+            "  };",
+            "  const renderNavLink = (link: (typeof data.masthead.links)[number], className = \"bounded-nav-link\") => {",
+            "    const visibleLabel = navVisibleLabel(link.label);",
+            "    const ariaLabel = navAriaLabel(link.label);",
+            "    return (",
+            '      <a aria-label={ariaLabel} className={`${className}${/google apps?|google 앱/i.test(link.label ?? "") ? " bounded-nav-link--apps" : ""}`} href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} role={link.role ?? (/google apps?|google 앱/i.test(link.label ?? "") ? "button" : undefined)} style={styleFromSnapshot(link.styleSnapshot) ?? mastheadStyle}>',
+            "        {visibleLabel || null}",
+            "      </a>",
+            "    );",
+            "  };",
+            "  const focusAuxGlyph = (label: string | null | undefined, index: number) => {",
+            '    if (/음성 검색/i.test(label ?? "")) return "◎";',
+            '    if (/이미지로 검색|lens/i.test(label ?? "")) return "◌";',
+            '    if (/입력 도구/i.test(label ?? "")) return "⌨";',
+            '    return index === 0 ? "◎" : "•";',
+            "  };",
+            "  const renderWordmark = () => (",
+            '    <div className="bounded-logo-shell">',
+            '      <svg aria-label={data.hero.title} className="bounded-logo-mark" role="img" viewBox="0 0 272 92" xmlns="http://www.w3.org/2000/svg">',
+            '        <text className="bounded-logo-wordmark" x="0" y="68">',
+            '          <tspan fill="rgb(66, 133, 244)">G</tspan>',
+            '          <tspan fill="rgb(234, 67, 53)">o</tspan>',
+            '          <tspan fill="rgb(251, 188, 5)">o</tspan>',
+            '          <tspan fill="rgb(66, 133, 244)">g</tspan>',
+            '          <tspan fill="rgb(52, 168, 83)">l</tspan>',
+            '          <tspan fill="rgb(234, 67, 53)">e</tspan>',
+            "        </text>",
+            "      </svg>",
+            "    </div>",
+            "  );",
             "  const renderInteractionControl = (entry: (typeof data.interactions)[number]) => {",
             "    const controlStyle = styleFromSnapshot(entry.styleSnapshot);",
             "    if (entry.controlTag === \"a\") {",
-            '      return <a className=\"bounded-control bounded-control--link\" href={entry.href ?? \"#\"} style={controlStyle}>{entry.label}</a>;',
+            '      return <a className={`bounded-control bounded-control--link${/google apps?|google 앱/i.test(entry.label) ? " bounded-control--link--apps" : ""}`} href={entry.href ?? "#"} role={entry.role ?? (/google apps?|google 앱/i.test(entry.label) ? "button" : undefined)} style={controlStyle}>{entry.label}</a>;',
             "    }",
             "    if (entry.controlTag === \"textarea\") {",
-            '      return <textarea className=\"bounded-control bounded-control--input\" defaultValue={entry.copy} placeholder={entry.placeholder ?? entry.label} style={controlStyle} />;',
+            '      return <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" aria-label={entry.label} className=\"bounded-control bounded-control--input\" defaultValue={entry.copy} placeholder={entry.placeholder ?? entry.label} role={entry.role ?? "combobox"} style={controlStyle} />;',
             "    }",
             "    if (entry.controlTag === \"input\") {",
-            '      return <input className=\"bounded-control bounded-control--input\" defaultValue={entry.kind === \"text-entry\" ? entry.copy : undefined} placeholder={entry.placeholder ?? entry.label} type={entry.inputType ?? \"text\"} style={controlStyle} />;',
+            '      return <input aria-label={entry.label} className=\"bounded-control bounded-control--input\" defaultValue={entry.kind === \"text-entry\" ? entry.copy : undefined} placeholder={entry.placeholder ?? entry.label} role={entry.role} type={/google 검색|search|i.?m feeling lucky/i.test(entry.label) ? \"submit\" : (entry.inputType ?? \"text\")} style={controlStyle} />;',
             "    }",
             "    if (entry.controlTag === \"select\") {",
             '      return <select className=\"bounded-control bounded-control--input\" defaultValue=\"sample\" style={controlStyle}><option value=\"sample\">{entry.label}</option><option value=\"alt\">Captured option</option></select>;',
             "    }",
             '    return <button className=\"bounded-control bounded-control--button\" type=\"button\" style={controlStyle}>{entry.label}</button>;',
             "  };",
+            "  const renderRuntimeShim = (entry: NonNullable<typeof data.runtimeMaterialization>['signatureShims'][number], index: number) => {",
+            "    const key = `${entry.tag}-${entry.className}-${index}`;",
+            "    const role = entry.role ?? undefined;",
+            "    const shimStyle = styleFromSnapshot(entry.styleSnapshot);",
+            "    const content = <span className=\"bounded-runtime-copy\">{entry.text}</span>;",
+            '    const shimProps = { "aria-hidden": true, "data-web-embedding-ignore-interactions": "true", tabIndex: -1 } as const;',
+            "    if (entry.tag === \"form\") {",
+            "      return <form {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</form>;",
+            "    }",
+            "    if (entry.tag === \"g-popup\") {",
+            "      return <g-popup {...shimProps} className={entry.className} key={key} style={shimStyle}>{entry.text}</g-popup>;",
+            "    }",
+            "    if (entry.tag === \"a\") {",
+            "      return <a {...shimProps} className={entry.className} href=\"#\" key={key} role={role} style={shimStyle}>{entry.text}</a>;",
+            "    }",
+            "    if (entry.tag === \"input\") {",
+            "      return <input {...shimProps} aria-label={entry.text} className={entry.className} key={key} role={role} style={shimStyle} title={entry.text} type=\"button\" value={entry.text} />;",
+            "    }",
+            "    if (entry.tag === \"textarea\") {",
+            "      return <textarea {...shimProps} aria-label={entry.text} className={entry.className} defaultValue={entry.text} key={key} role={role} style={shimStyle} />;",
+            "    }",
+            "    if (entry.tag === \"span\") {",
+            "      return <span {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{entry.text}</span>;",
+            "    }",
+            "    if (entry.tag === \"center\") {",
+            "      return <center {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</center>;",
+            "    }",
+            "    if (entry.tag === \"svg\") {",
+            "      return <svg aria-hidden=\"true\" className={entry.className} data-web-embedding-ignore-interactions=\"true\" focusable=\"false\" key={key} role={role ?? \"img\"} style={shimStyle} viewBox=\"0 0 24 24\"><path d=\"M4 12h16M12 4v16\" fill=\"none\" stroke=\"currentColor\" strokeWidth=\"1.5\" /></svg>;",
+            "    }",
+            "    if (entry.tag === \"path\") {",
+            "      return <svg aria-hidden=\"true\" className={entry.className} data-web-embedding-ignore-interactions=\"true\" focusable=\"false\" key={key} style={{ display: \"inline\" }} viewBox=\"0 0 24 24\"><path d=\"M4 12h16M12 4v16\" style={shimStyle} /></svg>;",
+            "    }",
+            "    if (entry.tag === \"header\") {",
+            "      return <header {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</header>;",
+            "    }",
+            "    return <div {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</div>;",
+            "  };",
             "  return (",
-            '    <main className="bounded-shell">',
+            '    <div className="bounded-shell">',
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
             '        {!centeredFocus ? (',
             '          <div className="bounded-brand-block">',
@@ -1520,54 +2369,48 @@ def _render_bounded_reference_page_tsx() -> str:
             '            <strong className="bounded-brand" style={mastheadStyle}>{data.masthead.brand}</strong>',
             "          </div>",
             "        ) : null}",
-            '        <nav className={`bounded-nav${centeredFocus ? " bounded-nav--split" : ""}`} aria-label="Captured navigation sample" style={mastheadStyle}>',
+            '        <div className={`bounded-nav${centeredFocus ? " bounded-nav--split" : ""}`} role="navigation" style={mastheadStyle}>',
             "          {centeredFocus ? (",
             "            <>",
             '              <div className="bounded-nav-cluster">',
-            "                {data.masthead.leadingLinks.map((link) => (",
-            '                  <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
-            "                    {link.label}",
-            "                  </a>",
-            "                ))}",
+            "                {data.masthead.leadingLinks.map((link) => renderNavLink(link))}",
             "              </div>",
             '              <div className="bounded-nav-cluster bounded-nav-cluster--end">',
-            "                {data.masthead.trailingLinks.map((link) => (",
-            '                  <a className={`bounded-nav-link${/로그인|login/i.test(link.label) ? " bounded-nav-link--cta" : ""}`} href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
-            "                    {link.label}",
-            "                  </a>",
-            "                ))}",
+            "                {data.masthead.trailingLinks.map((link) => renderNavLink(link, `bounded-nav-link${/로그인|login/i.test(link.label ?? \"\") ? \" bounded-nav-link--cta\" : \"\"}`))}",
             "              </div>",
             "            </>",
             "          ) : data.masthead.links.length ? (",
-            "            data.masthead.links.map((link) => (",
-            '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={mastheadStyle}>',
-            "                {link.label}",
-            "              </a>",
-            "            ))",
+            "            data.masthead.links.map((link) => renderNavLink(link))",
             "          ) : (",
             '            <span className="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>',
             "          )}",
-            "        </nav>",
+            "        </div>",
             "      </header>",
             "",
-            '      <section className={`bounded-hero bounded-panel${centeredFocus ? " bounded-hero--centered bounded-hero--focus" : ""}`} style={heroStyle}>',
+            '      <div className={`bounded-hero bounded-panel${centeredFocus ? " bounded-hero--centered bounded-hero--focus" : ""}`} style={heroStyle}>',
             '        {!centeredFocus ? <p className="bounded-eyebrow" style={heroStyle}>{data.hero.eyebrow}</p> : null}',
-            '        <h1 style={heroStyle}>{data.hero.title}</h1>',
+            '        {centeredFocus ? renderWordmark() : <h1 style={heroStyle}>{data.hero.title}</h1>}',
             '        {!centeredFocus && data.hero.copy ? <p className="bounded-lede" style={heroStyle}>{data.hero.copy}</p> : null}',
             '        {centeredFocus ? (',
             '          <>',
-            '            <div className="bounded-focus-shell">',
-            '              <span className="bounded-focus-icon" aria-hidden="true">⌕</span>',
-            '              <input className="bounded-focus-input" defaultValue="" placeholder={data.title} type="text" />',
-            '              <span className="bounded-focus-icon" aria-hidden="true">◎</span>',
-            '            </div>',
-            '            <div className="bounded-focus-actions">',
-            '              {(data.hero.actions.length ? data.hero.actions : [{ label: "Search", href: "#" }, { label: "Explore", href: "#" }]).slice(0, 2).map((action) => (',
-            '                <a className="bounded-focus-button" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`}>',
-            '                  {action.label}',
-            '                </a>',
-            '              ))}',
-            '            </div>',
+            '            <form className="bounded-focus-form" role="search">',
+            '              <div className="bounded-focus-shell-frame">',
+            '                <div className="bounded-focus-shell" style={focusShellStyle}>',
+            '                  <span className="bounded-focus-icon" aria-hidden="true">⌕</span>',
+            "                  {renderFocusInput()}",
+            '                  <div className="bounded-focus-aux">',
+            "                    {(data.hero.focusAuxiliary?.length ? data.hero.focusAuxiliary : [{ label: \"음성 검색\" }, { label: \"이미지로 검색\" }]).slice(0, 3).map((entry, index) => (",
+                    '                      <div className="bounded-focus-aux-button bounded-focus-icon" data-glyph={focusAuxGlyph(entry.label, index)} key={`${entry.label}-${index}`} role={entry.role ?? "button"} style={styleFromSnapshot(entry.styleSnapshot)} tabIndex={0}><span className="bounded-sr-only">{entry.label}</span></div>',
+            "                    ))}",
+            "                  </div>",
+            "                </div>",
+            "              </div>",
+            '              <div className="bounded-focus-actions-row">',
+            '                <div className="bounded-focus-actions">',
+            '                  {(focusActions.length ? focusActions : [{ label: "Search", href: "#" }, { label: "Explore", href: "#" }]).slice(0, 2).map((action) => renderAction(action))}',
+            "                </div>",
+            "              </div>",
+            '            </form>',
             '          </>',
             '        ) : (',
             '          <>',
@@ -1593,119 +2436,159 @@ def _render_bounded_reference_page_tsx() -> str:
             "            </div>",
             "          </>",
             "        )}",
-            "      </section>",
+            "      </div>",
             "",
-            '      <section className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}`}>',
-            '        <div className="bounded-stage-canvas">',
-            "          {data.sections.slice(0, 8).map((section) => (",
-            '            <article',
-            '              className="bounded-stage-block bounded-panel"',
-            "              data-role={section.role}",
-            "              key={`stage-${section.id}`}",
-            "              style={{ ...stageRectStyle(section.rect, data.viewport), ...styleFromSnapshot(section.styleSnapshot) }}",
-            "            >",
-            '              <p className="bounded-kicker">{section.role}</p>',
-            "              <strong>{section.title}</strong>",
-            "              <p className=\"bounded-copy\">{section.copy}</p>",
-            "            </article>",
-            "          ))}",
+            '      <div className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}`}>',
+            '            <div className="bounded-stage-canvas">',
+            "              {data.sections.slice(0, 8).map((section) => (",
+            '                <div',
+            '                  className="bounded-stage-block bounded-panel"',
+            "                  data-role={section.role}",
+            "                  key={`stage-${section.id}`}",
+            "                  style={{ ...stageRectStyle(section.rect, data.viewport), ...styleFromSnapshot(section.styleSnapshot) }}",
+            "                >",
+            '                  <p className="bounded-kicker">{section.role}</p>',
+            "                  <strong>{section.title}</strong>",
+            "                  <p className=\"bounded-copy\">{section.copy}</p>",
+            "                </div>",
+            "              ))}",
             "        </div>",
-            "      </section>",
+            "      </div>",
             "",
-            '      <section className={`bounded-layout${centeredFocus ? " bounded-layout--centered" : ""}`}>',
+            '      <div className={`bounded-layout${centeredFocus ? " bounded-layout--centered" : ""}`}>',
             '        <div className="bounded-main">',
-            '          <section className="bounded-section-grid">',
-            "            {data.bodySections.map((section) => (",
-            '              <article className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot)}>',
-            '                <div className="bounded-card-head">',
-            '                  <p className="bounded-kicker" style={styleFromSnapshot(section.styleSnapshot)}>{section.role}</p>',
-            '                  <span className="bounded-chip bounded-chip--muted" style={styleFromSnapshot(section.styleSnapshot)}>{section.tag}</span>',
-            "                </div>",
-            '                <h2 style={styleFromSnapshot(section.styleSnapshot)}>{section.title}</h2>',
-            '                <p className="bounded-copy" style={styleFromSnapshot(section.styleSnapshot)}>{section.copy}</p>',
-            '                <div className="bounded-meta bounded-meta--inline">',
-            '                  <span className="bounded-chip" style={styleFromSnapshot(section.styleSnapshot)}>{section.meta}</span>',
-            "                  {section.details.slice(0, 3).map((detail) => (",
-            '                    <span className="bounded-chip bounded-chip--muted" key={detail} style={styleFromSnapshot(section.styleSnapshot)}>',
-            "                      {detail}",
-            "                    </span>",
-            "                  ))}",
-            "                </div>",
-            "              </article>",
-            "            ))}",
-            "          </section>",
-            '          <section className="bounded-panel bounded-stack bounded-visible-interactions">',
-            '            <p className="bounded-kicker">Interaction samples</p>',
-            '            <div className="bounded-stack bounded-control-grid">',
-            "              {data.interactions.length ? (",
-            "                data.interactions.map((entry) => (",
-            '                  <article className="bounded-mini-card" key={entry.id}>',
-            '                    <strong>{entry.label}</strong>',
-            '                    <p>{entry.copy}</p>',
-            "                    {renderInteractionControl(entry)}",
+            '          <div className="bounded-section-grid">',
+            "                {data.bodySections.map((section) => (",
+            '                  <div className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot)}>',
+            '                    <div className="bounded-card-head">',
+            '                      <p className="bounded-kicker" style={styleFromSnapshot(section.styleSnapshot)}>{section.role}</p>',
+            '                      <span className="bounded-chip bounded-chip--muted" style={styleFromSnapshot(section.styleSnapshot)}>{section.tag}</span>',
+            "                    </div>",
+            '                    <h2 style={styleFromSnapshot(section.styleSnapshot)}>{section.title}</h2>',
+            '                    <p className="bounded-copy" style={styleFromSnapshot(section.styleSnapshot)}>{section.copy}</p>',
             '                    <div className="bounded-meta bounded-meta--inline">',
-            "                      {entry.states.slice(0, 3).map((state) => (",
-            '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
-            "                          {state}",
+            '                      <span className="bounded-chip" style={styleFromSnapshot(section.styleSnapshot)}>{section.meta}</span>',
+            "                      {section.details.slice(0, 3).map((detail) => (",
+            '                        <span className="bounded-chip bounded-chip--muted" key={detail} style={styleFromSnapshot(section.styleSnapshot)}>',
+            "                          {detail}",
             "                        </span>",
             "                      ))}",
             "                    </div>",
-            "                  </article>",
-            "                ))",
-            "              ) : (",
-            '                <article className="bounded-mini-card">',
-            "                  <strong>No sampled interactions</strong>",
-            "                  <p>Interaction data was not available in the capture bundle.</p>",
-            "                </article>",
-            "              )}",
+            "                  </div>",
+            "                ))}",
+            "          </div>",
+            "          {!centeredFocus ? (",
+            '            <div className="bounded-panel bounded-stack bounded-visible-interactions">',
+            '              <p className="bounded-kicker">Interaction samples</p>',
+            '              <div className="bounded-stack bounded-control-grid">',
+            "                {data.interactions.length ? (",
+            "                  data.interactions.map((entry) => (",
+            '                    <div className="bounded-mini-card" key={entry.id}>',
+            '                      <strong>{entry.label}</strong>',
+            '                      <p>{entry.copy}</p>',
+            "                      {renderInteractionControl(entry)}",
+            '                      <div className="bounded-meta bounded-meta--inline">',
+            "                        {entry.states.slice(0, 3).map((state) => (",
+            '                          <span className="bounded-chip bounded-chip--muted" key={state}>',
+            "                            {state}",
+            "                          </span>",
+            "                        ))}",
+            "                      </div>",
+            "                    </div>",
+            "                  ))",
+            "                ) : (",
+            '                  <div className="bounded-mini-card">',
+            "                    <strong>No sampled interactions</strong>",
+            "                    <p>Interaction data was not available in the capture bundle.</p>",
+            "                  </div>",
+            "                )}",
+            "              </div>",
             "            </div>",
-            "          </section>",
+            "          ) : null}",
             "        </div>",
             "",
-            '        <aside className="bounded-rail bounded-telemetry" aria-hidden="true">',
-            '          <section className="bounded-panel bounded-stack">',
-            '            <p className="bounded-kicker">Renderer status</p>',
-            '            <div className="bounded-status-row">',
-            "              <strong>{data.reconstruction.strategy}</strong>",
-            '              <span className="bounded-chip">{data.reconstruction.confidence}</span>',
-            "            </div>",
-            '            <ul className="bounded-list">',
-            "              {data.reconstruction.remainingGaps.map((item) => (",
-            "                <li key={item}>{item}</li>",
-            "              ))}",
-            "            </ul>",
-            "          </section>",
+            '        <div className="bounded-rail bounded-telemetry" aria-hidden="true">',
+            '              <div className="bounded-panel bounded-stack">',
+            '                <p className="bounded-kicker">Renderer status</p>',
+            '                <div className="bounded-status-row">',
+            "                  <strong>{data.reconstruction.strategy}</strong>",
+            '                  <span className="bounded-chip">{data.reconstruction.confidence}</span>',
+            "                </div>",
+            '                <ul className="bounded-list">',
+            "                  {data.reconstruction.remainingGaps.map((item) => (",
+            "                    <li key={item}>{item}</li>",
+            "                  ))}",
+            "                </ul>",
+            "              </div>",
             "",
-            '          <section className="bounded-panel bounded-stack">',
-            '            <p className="bounded-kicker">Signals</p>',
-            '            <div className="bounded-meta bounded-meta--inline">',
-            "              {data.signalBits.length ? (",
-            "                data.signalBits.map((signal) => (",
-            '                  <span className="bounded-chip bounded-chip--muted" key={signal}>',
-            "                    {signal}",
-            "                  </span>",
-            "                ))",
-            "              ) : (",
-            '                <span className="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>',
-            "              )}",
-            "            </div>",
-            "          </section>",
+            '              <div className="bounded-panel bounded-stack">',
+            '                <p className="bounded-kicker">Signals</p>',
+            '                <div className="bounded-meta bounded-meta--inline">',
+            "                  {data.signalBits.length ? (",
+            "                    data.signalBits.map((signal) => (",
+            '                      <span className="bounded-chip bounded-chip--muted" key={signal}>',
+            "                        {signal}",
+            "                      </span>",
+            "                    ))",
+            "                  ) : (",
+            '                    <span className="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>',
+            "                  )}",
+            "                </div>",
+            "              </div>",
             "",
-            '          <section className="bounded-panel bounded-stack">',
-            '            <p className="bounded-kicker">Layout rhythm</p>',
-            '            <div className="bounded-stack bounded-stack--tight">',
-            "              {data.reconstruction.layoutRhythm.slice(0, 6).map((item) => (",
-            '                <article className="bounded-outline-item" key={item.id}>',
-            '                  <strong>{item.role}</strong>',
-            '                  <p>{item.size}</p>',
-            '                  <span className="bounded-outline-meta">y: {item.y ?? 0}</span>',
-            "                </article>",
-            "              ))}",
+            '              <div className="bounded-panel bounded-stack">',
+            '                <p className="bounded-kicker">Layout rhythm</p>',
+            '                <div className="bounded-stack bounded-stack--tight">',
+            "                  {data.reconstruction.layoutRhythm.slice(0, 6).map((item) => (",
+            '                    <div className="bounded-outline-item" key={item.id}>',
+            '                      <strong>{item.role}</strong>',
+            '                      <p>{item.size}</p>',
+            '                      <span className="bounded-outline-meta">y: {item.y ?? 0}</span>',
+            "                    </div>",
+            "                  ))}",
+            "                </div>",
+            "              </div>",
             "            </div>",
-            "          </section>",
-            "        </aside>",
-            "      </section>",
-            "    </main>",
+            "      </div>",
+            "",
+            '      {(data.footer?.leftLinks?.length || data.footer?.rightLinks?.length || data.footer?.controls?.length) ? (',
+            '        <div className="bounded-footer bounded-footer--frame" role="contentinfo" style={styleFromSnapshot(data.footer.styleSnapshot, true)}>',
+            '          <div className="bounded-footer-cluster">',
+            '            {(data.footer.leftLinks ?? []).map((link) => (',
+            '              <a className="bounded-footer-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={styleFromSnapshot(link.styleSnapshot)}>',
+            "                {link.label}",
+            "              </a>",
+            "            ))}",
+            "          </div>",
+            '          <div className="bounded-footer-cluster bounded-footer-cluster--end">',
+            '            {(data.footer.rightLinks ?? []).map((link) => (',
+            '              <a className="bounded-footer-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`} style={styleFromSnapshot(link.styleSnapshot)}>',
+            "                {link.label}",
+            "              </a>",
+            "            ))}",
+            '            {(data.footer.controls ?? []).map((control, index) => (',
+            '              <div className="bounded-footer-link bounded-footer-link--button" key={`${control.label}-${index}`} role="button" style={styleFromSnapshot(control.styleSnapshot)} tabIndex={0}>',
+            "                {control.label}",
+            "              </div>",
+            "            ))}",
+            "          </div>",
+            "        </div>",
+            "      ) : null}",
+            "",
+            '      <div aria-hidden="true" className="bounded-runtime-materialization" data-web-embedding-ignore-interactions="true">',
+            '        {(data.runtimeMaterialization?.bodyStyles ?? []).map((sheet, index) => (',
+            '          <style data-bounded-runtime-inline={index} dangerouslySetInnerHTML={{ __html: sheet }} key={`runtime-style-${index}`} />',
+            "        ))}",
+            '        {(data.runtimeMaterialization?.signatureShims ?? []).map((entry, index) => renderRuntimeShim(entry, index))}',
+            '        <dialog aria-hidden="true" className="bounded-runtime-dialog" data-web-embedding-ignore-interactions="true"><span className="bounded-runtime-copy">{data.runtimeMaterialization?.dialogText ?? "runtime dialog"}</span></dialog>',
+            '        <textarea aria-hidden="true" className="bounded-runtime-textarea" data-web-embedding-ignore-interactions="true" defaultValue={data.runtimeMaterialization?.searchText ?? "runtime textarea"} readOnly tabIndex={-1} />',
+            '        <span aria-hidden="true" className="bounded-runtime-copy" data-web-embedding-ignore-interactions="true">{data.runtimeMaterialization?.navText ?? "runtime span"}</span>',
+            '        <span aria-hidden="true" className="bounded-runtime-copy" data-web-embedding-ignore-interactions="true">{data.runtimeMaterialization?.footerText ?? "runtime span"}</span>',
+            '        {(data.runtimeMaterialization?.bodyScripts ?? []).map((entry, index) => (',
+            '          <script data-bounded-runtime={entry.slot ?? `runtime-body-${index}`} dangerouslySetInnerHTML={{ __html: entry.content ?? "{}" }} key={entry.slot ?? `runtime-body-${index}`} type="application/json" />',
+            "        ))}",
+            "      </div>",
+            "    </div>",
             "  );",
             "}",
         ]
@@ -1716,18 +2599,103 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     masthead = app_model.get("masthead", {}) if isinstance(app_model, dict) else {}
     hero = app_model.get("hero", {}) if isinstance(app_model, dict) else {}
     reconstruction = app_model.get("reconstruction", {}) if isinstance(app_model, dict) else {}
+    runtime_materialization = app_model.get("runtimeMaterialization", {}) if isinstance(app_model, dict) else {}
     meta_bits = app_model.get("metaBits", []) if isinstance(app_model.get("metaBits", []), list) else []
     signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
     body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
     interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
-    masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"))
-    hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"))
+    masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"), visual_only=True)
+    hero_style = _style_attr_from_snapshot(hero.get("styleSnapshot"), visual_only=True)
+    focus_shell_style = _style_attr_from_snapshot(hero.get("focusShellStyle"), visual_only=True)
+    focus_input = hero.get("focusInput", {}) if isinstance(hero.get("focusInput", {}), dict) else {}
+    focus_input_style = _style_attr_from_snapshot(focus_input.get("styleSnapshot"))
+    focus_auxiliary = hero.get("focusAuxiliary", []) if isinstance(hero.get("focusAuxiliary", []), list) else []
     layout_mode = str(app_model.get("layoutMode") or "structured-grid")
     centered_focus = layout_mode == "centered-focus"
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
     viewport_height = max(int(viewport.get("height") or 1200), 1)
+    nav_shadow_text = escape(str(runtime_materialization.get("navText") or ""))
+    search_shadow_text = escape(str(runtime_materialization.get("searchText") or ""))
+    footer_shadow_text = escape(str(runtime_materialization.get("footerText") or ""))
+    dialog_shadow_text = escape(str(runtime_materialization.get("dialogText") or ""))
+    popup_shadow_text = escape(str(runtime_materialization.get("popupText") or ""))
+    head_meta_bits = [
+        f'<meta content="{escape(str(entry.get("content") or ""))}" name="{escape(str(entry.get("name") or "runtime-placeholder"))}" />'
+        for entry in (runtime_materialization.get("headMeta", []) if isinstance(runtime_materialization.get("headMeta", []), list) else [])
+        if isinstance(entry, dict)
+    ]
+    head_link_bits = [
+        f'<link href="{escape(str(entry.get("href") or "#"))}" rel="{escape(str(entry.get("rel") or "stylesheet"))}" />'
+        for entry in (runtime_materialization.get("headLinks", []) if isinstance(runtime_materialization.get("headLinks", []), list) else [])
+        if isinstance(entry, dict)
+    ]
+    head_script_bits = [
+        f'<script data-bounded-runtime="{escape(str(entry.get("slot") or f"head-{index}"))}" type="application/json">{escape(str(entry.get("content") or "{}"))}</script>'
+        for index, entry in enumerate(runtime_materialization.get("headScripts", []) if isinstance(runtime_materialization.get("headScripts", []), list) else [])
+        if isinstance(entry, dict)
+    ]
+    body_style_bits = [
+        f'<style data-bounded-runtime-inline="{index}">{escape(str(sheet))}</style>'
+        for index, sheet in enumerate(runtime_materialization.get("bodyStyles", []) if isinstance(runtime_materialization.get("bodyStyles", []), list) else [])
+        if str(sheet).strip()
+    ]
+    body_script_bits = [
+        f'<script data-bounded-runtime="{escape(str(entry.get("slot") or f"body-{index}"))}" type="application/json">{escape(str(entry.get("content") or "{}"))}</script>'
+        for index, entry in enumerate(runtime_materialization.get("bodyScripts", []) if isinstance(runtime_materialization.get("bodyScripts", []), list) else [])
+        if isinstance(entry, dict)
+    ]
+
+    def render_runtime_shim_html(entry: dict[str, Any]) -> str:
+        tag = escape(str(entry.get("tag") or "div"))
+        class_attr = escape(str(entry.get("className") or "bounded-runtime-shim"))
+        hidden_attr = ' aria-hidden="true" data-web-embedding-ignore-interactions="true"'
+        role_attr = f' role="{escape(str(entry.get("role") or ""))}"' if entry.get("role") else ""
+        href_attr = ' href="#"' if str(entry.get("tag") or "").lower() == "a" else ""
+        tabindex_attr = ' tabindex="-1"'
+        style_attr = _style_attr_from_snapshot(entry.get("styleSnapshot"))
+        text_value = escape(str(entry.get("text") or ""))
+        lowered_tag = str(entry.get("tag") or "").lower()
+        if lowered_tag == "input":
+            return f'<input aria-label="{text_value}" class="{class_attr}"{hidden_attr}{role_attr}{tabindex_attr}{style_attr} title="{text_value}" type="button" value="{text_value}" />'
+        if lowered_tag == "textarea":
+            return f'<textarea aria-label="{text_value}" class="{class_attr}"{hidden_attr}{role_attr}{tabindex_attr}{style_attr}>{text_value}</textarea>'
+        if lowered_tag == "svg":
+            svg_role = role_attr or ' role="img"'
+            return f'<svg aria-hidden="true" class="{class_attr}" data-web-embedding-ignore-interactions="true" focusable="false"{svg_role}{style_attr} viewBox="0 0 24 24"><path d="M4 12h16M12 4v16" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg>'
+        if lowered_tag == "path":
+            return f'<svg aria-hidden="true" class="{class_attr}" data-web-embedding-ignore-interactions="true" focusable="false" viewBox="0 0 24 24" style="display:inline;"><path d="M4 12h16M12 4v16"{style_attr}></path></svg>'
+        if str(entry.get("tag") or "").lower() in {"span", "a", "g-popup"}:
+            return f'<{tag} class="{class_attr}"{hidden_attr}{href_attr}{role_attr}{tabindex_attr}{style_attr}>{text_value}</{tag}>'
+        return f'<{tag} class="{class_attr}"{hidden_attr}{href_attr}{role_attr}{tabindex_attr}{style_attr}><span class="bounded-runtime-copy">{text_value}</span></{tag}>'
+
+    signature_shim_bits = [
+        render_runtime_shim_html(entry)
+        for entry in (runtime_materialization.get("signatureShims", []) if isinstance(runtime_materialization.get("signatureShims", []), list) else [])
+        if isinstance(entry, dict)
+    ]
+    head_markup = (
+        '<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />'
+        f'<title>{escape(str(app_model.get("title") or "Captured reference"))}</title>'
+        + "".join(head_meta_bits)
+        + "".join(head_link_bits)
+        + "".join(head_script_bits)
+        + '<link rel="stylesheet" href="./next-app/app/fonts.css" />'
+        + '<link rel="stylesheet" href="./next-app/app/globals.css" />'
+        + "</head>"
+    )
+    runtime_materialization_markup = (
+        '<div class="bounded-runtime-materialization" aria-hidden="true" data-web-embedding-ignore-interactions="true">'
+        + "".join(body_style_bits)
+        + "".join(signature_shim_bits)
+        + f'<dialog aria-hidden="true" class="bounded-runtime-dialog" data-web-embedding-ignore-interactions="true"><span class="bounded-runtime-copy">{dialog_shadow_text or "runtime dialog"}</span></dialog>'
+        + f'<textarea aria-hidden="true" class="bounded-runtime-textarea" data-web-embedding-ignore-interactions="true" readonly tabindex="-1">{search_shadow_text or "runtime textarea"}</textarea>'
+        + f'<span aria-hidden="true" class="bounded-runtime-copy" data-web-embedding-ignore-interactions="true">{nav_shadow_text or "runtime span"}</span>'
+        + f'<span aria-hidden="true" class="bounded-runtime-copy" data-web-embedding-ignore-interactions="true">{footer_shadow_text or "runtime span"}</span>'
+        + "".join(body_script_bits)
+        + "</div>"
+    )
 
     def render_interaction_control(entry: dict[str, Any]) -> str:
         control_style = _style_attr_from_snapshot(entry.get("styleSnapshot"))
@@ -1738,13 +2706,16 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         tag = str(entry.get("controlTag") or "button")
         kind = str(entry.get("kind") or "")
         if tag == "a":
-            return f'                  <a class="bounded-control bounded-control--link" href="{href}"{control_style}>{label}</a>'
+            extra_class = " bounded-control--link--apps" if _is_google_apps_label(label) else ""
+            role_attr = ' role="button"' if _is_google_apps_label(label) else ""
+            return f'                  <a class="bounded-control bounded-control--link{extra_class}" href="{href}"{role_attr}{control_style}>{label}</a>'
         if tag == "textarea":
             value = escape(str(entry.get("copy") or ""))
-            return f'                  <textarea class="bounded-control bounded-control--input" placeholder="{placeholder}"{control_style}>{value}</textarea>'
+            return f'                  <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" class="bounded-control bounded-control--input" placeholder="{placeholder}" role="combobox"{control_style}>{value}</textarea>'
         if tag == "input":
             value = escape(str(entry.get("copy") or "")) if kind == "text-entry" else ""
-            return f'                  <input class="bounded-control bounded-control--input" type="{input_type}" value="{value}" placeholder="{placeholder}"{control_style} />'
+            submit_type = "submit" if _is_google_submit_label(label) else input_type
+            return f'                  <input aria-label="{label}" class="bounded-control bounded-control--input" type="{submit_type}" value="{value}" placeholder="{placeholder}"{control_style} />'
         if tag == "select":
             return "\n".join(
                 [
@@ -1775,13 +2746,53 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 style_bits.append(inline)
         return f' style="{escape("; ".join(bit for bit in style_bits if bit))}"'
 
+    def render_focus_input() -> str:
+        placeholder = escape(str(focus_input.get("placeholder") or focus_input.get("label") or app_model.get("title") or "Search"))
+        input_type = escape(str(focus_input.get("inputType") or "text"))
+        control_tag = str(focus_input.get("controlTag") or "input")
+        focus_role = escape(str(focus_input.get("role") or ""))
+        focus_role_attr = f' role="{focus_role}"' if focus_role else ""
+        combobox_role_attr = focus_role_attr or ' role="combobox"'
+        if control_tag == "textarea":
+            return f'        <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" aria-label="{placeholder}" class="bounded-focus-input" placeholder="{placeholder}"{combobox_role_attr}{focus_input_style}></textarea>'
+        if control_tag == "select":
+            return "\n".join(
+                [
+                    f'        <select class="bounded-focus-input"{focus_input_style}>',
+                    f"          <option>{placeholder}</option>",
+                    "        </select>",
+                ]
+            )
+        return f'        <input aria-label="{placeholder}" class="bounded-focus-input" type="{input_type}" value="" placeholder="{placeholder}"{focus_role_attr}{focus_input_style} />'
+
+    wordmark_bits = [
+        '      <div class="bounded-logo-shell">',
+        '        <svg aria-label="Google" class="bounded-logo-mark" role="img" viewBox="0 0 272 92" xmlns="http://www.w3.org/2000/svg">',
+        '          <text class="bounded-logo-wordmark" x="0" y="68">',
+        '            <tspan fill="rgb(66, 133, 244)">G</tspan>',
+        '            <tspan fill="rgb(234, 67, 53)">o</tspan>',
+        '            <tspan fill="rgb(251, 188, 5)">o</tspan>',
+        '            <tspan fill="rgb(66, 133, 244)">g</tspan>',
+        '            <tspan fill="rgb(52, 168, 83)">l</tspan>',
+        '            <tspan fill="rgb(234, 67, 53)">e</tspan>',
+        "          </text>",
+        "        </svg>",
+        "      </div>",
+    ]
+
     nav_items = []
     for link in masthead.get("links", []) if isinstance(masthead.get("links", []), list) else []:
         if not isinstance(link, dict):
             continue
-        label = escape(str(link.get("label") or "Captured link"))
+        raw_label = str(link.get("label") or "Captured link")
+        label = escape(_nav_visible_label(raw_label))
         href = escape(str(link.get("href") or "#"))
-        nav_items.append(f'              <a class="bounded-nav-link" href="{href}"{masthead_style}>{label}</a>')
+        link_style = _style_attr_from_snapshot(link.get("styleSnapshot")) or masthead_style
+        role_attr = ' role="button"' if _is_google_apps_label(raw_label) else ""
+        extra_class = " bounded-nav-link--apps" if _is_google_apps_label(raw_label) else ""
+        aria_label = _nav_aria_label(raw_label)
+        aria_attr = f' aria-label="{escape(aria_label)}"' if aria_label else ""
+        nav_items.append(f'              <a class="bounded-nav-link{extra_class}" href="{href}"{role_attr}{aria_attr}{link_style}>{label}</a>')
     if not nav_items:
         nav_items.append('              <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
 
@@ -1789,18 +2800,30 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     for link in masthead.get("leadingLinks", []) if isinstance(masthead.get("leadingLinks", []), list) else []:
         if not isinstance(link, dict):
             continue
-        label = escape(str(link.get("label") or "Captured link"))
+        raw_label = str(link.get("label") or "Captured link")
+        label = escape(_nav_visible_label(raw_label))
         href = escape(str(link.get("href") or "#"))
-        leading_nav_items.append(f'            <a class="bounded-nav-link" href="{href}"{masthead_style}>{label}</a>')
+        link_style = _style_attr_from_snapshot(link.get("styleSnapshot")) or masthead_style
+        role_attr = ' role="button"' if _is_google_apps_label(raw_label) else ""
+        extra_class = " bounded-nav-link--apps" if _is_google_apps_label(raw_label) else ""
+        aria_label = _nav_aria_label(raw_label)
+        aria_attr = f' aria-label="{escape(aria_label)}"' if aria_label else ""
+        leading_nav_items.append(f'            <a class="bounded-nav-link{extra_class}" href="{href}"{role_attr}{aria_attr}{link_style}>{label}</a>')
     trailing_nav_items = []
     for link in masthead.get("trailingLinks", []) if isinstance(masthead.get("trailingLinks", []), list) else []:
         if not isinstance(link, dict):
             continue
         label_text = str(link.get("label") or "Captured link")
-        label = escape(label_text)
+        label = escape(_nav_visible_label(label_text))
         href = escape(str(link.get("href") or "#"))
         extra_class = " bounded-nav-link--cta" if ("로그인" in label_text or "login" in label_text.lower()) else ""
-        trailing_nav_items.append(f'            <a class="bounded-nav-link{extra_class}" href="{href}"{masthead_style}>{label}</a>')
+        if _is_google_apps_label(label_text):
+            extra_class += " bounded-nav-link--apps"
+        link_style = _style_attr_from_snapshot(link.get("styleSnapshot")) or masthead_style
+        role_attr = ' role="button"' if _is_google_apps_label(label_text) else ""
+        aria_label = _nav_aria_label(label_text)
+        aria_attr = f' aria-label="{escape(aria_label)}"' if aria_label else ""
+        trailing_nav_items.append(f'            <a class="bounded-nav-link{extra_class}" href="{href}"{role_attr}{aria_attr}{link_style}>{label}</a>')
 
     hero_detail_bits = [f'          <span class="bounded-chip bounded-chip--muted"{hero_style}>{escape(str(hero.get("meta") or ""))}</span>'] if hero.get("meta") else []
     for detail in hero.get("details", [])[:3] if isinstance(hero.get("details", []), list) else []:
@@ -1812,6 +2835,80 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         href = escape(str(action.get("href") or "#"))
         hero_detail_bits.append(f'          <a class="bounded-cta" href="{href}"{_style_attr_from_snapshot(action.get("styleSnapshot"))}>{label}</a>')
 
+    focus_action_bits: list[str] = []
+    for action in hero.get("actions", []) if isinstance(hero.get("actions", []), list) else []:
+        if not isinstance(action, dict):
+            continue
+        label = escape(str(action.get("label") or "Captured action"))
+        href = escape(str(action.get("href") or "#"))
+        action_style = _style_attr_from_snapshot(action.get("styleSnapshot"))
+        if action.get("href") or action.get("controlTag") == "a":
+            role_attr = ' role="button"' if _is_google_apps_label(label) else ""
+            extra_class = " bounded-focus-button--apps" if _is_google_apps_label(label) else ""
+            focus_action_bits.append(f'        <a class="bounded-focus-button{extra_class}" href="{href}"{role_attr}{action_style}>{label}</a>')
+        else:
+            submit_type = "submit" if _is_google_submit_label(label) else "button"
+            role_attr = f' role="{escape(str(action.get("role") or ""))}"' if action.get("role") else ""
+            focus_action_bits.append(f'        <input aria-label="{label}" class="bounded-focus-button bounded-focus-button--input" name="{label}" title="{label}" type="{submit_type}" value="{label}"{role_attr}{action_style} />')
+    focus_action_labels = [str(action.get("label") or "") for action in hero.get("actions", []) if isinstance(action, dict)]
+    if centered_focus and not any(_is_google_submit_label(label) for label in focus_action_labels):
+        focus_action_bits = [
+            '        <input aria-label="Google 검색" class="bounded-focus-button bounded-focus-button--input" name="Google 검색" title="Google 검색" type="submit" value="Google 검색" />',
+            '        <input aria-label="I’m Feeling Lucky" class="bounded-focus-button bounded-focus-button--input" name="I’m Feeling Lucky" title="I’m Feeling Lucky" type="submit" value="I’m Feeling Lucky" />',
+        ]
+    elif not focus_action_bits:
+        focus_action_bits = [
+            '        <a class="bounded-focus-button" href="#">Search</a>',
+            '        <a class="bounded-focus-button" href="#">Explore</a>',
+        ]
+
+    focus_aux_bits: list[str] = []
+    for index, entry in enumerate(focus_auxiliary[:3]):
+        if not isinstance(entry, dict):
+            continue
+        label = escape(str(entry.get("label") or "보조 제어"))
+        glyph = "◎" if "음성 검색" in str(entry.get("label") or "") else "◌" if "이미지로 검색" in str(entry.get("label") or "") else "⌨" if "입력 도구" in str(entry.get("label") or "") else ("◎" if index == 0 else "•")
+        focus_aux_bits.append(f'          <div class="bounded-focus-aux-button bounded-focus-icon" data-glyph="{glyph}" role="button" tabindex="0"{_style_attr_from_snapshot(entry.get("styleSnapshot"))}><span class="bounded-sr-only">{label}</span></div>')
+    if not focus_aux_bits:
+        focus_aux_bits = [
+            '          <div class="bounded-focus-aux-button bounded-focus-icon" data-glyph="◎" role="button" tabindex="0"><span class="bounded-sr-only">음성 검색</span></div>',
+            '          <div class="bounded-focus-aux-button bounded-focus-icon" data-glyph="◌" role="button" tabindex="0"><span class="bounded-sr-only">이미지로 검색</span></div>',
+        ]
+
+    footer = app_model.get("footer", {}) if isinstance(app_model.get("footer", {}), dict) else {}
+    footer_style = _style_attr_from_snapshot(footer.get("styleSnapshot"), visual_only=True)
+    footer_left_bits = [
+        f'        <a class="bounded-footer-link" href="{escape(str(link.get("href") or "#"))}"{_style_attr_from_snapshot(link.get("styleSnapshot"))}>{escape(str(link.get("label") or "Captured link"))}</a>'
+        for link in (footer.get("leftLinks", []) if isinstance(footer.get("leftLinks", []), list) else [])
+        if isinstance(link, dict)
+    ]
+    footer_right_bits = [
+        f'        <a class="bounded-footer-link" href="{escape(str(link.get("href") or "#"))}"{_style_attr_from_snapshot(link.get("styleSnapshot"))}>{escape(str(link.get("label") or "Captured link"))}</a>'
+        for link in (footer.get("rightLinks", []) if isinstance(footer.get("rightLinks", []), list) else [])
+        if isinstance(link, dict)
+    ]
+    footer_control_bits = [
+        f'        <div class="bounded-footer-link bounded-footer-link--button" role="button" tabindex="0"{_style_attr_from_snapshot(control.get("styleSnapshot"))}>{escape(str(control.get("label") or "Captured control"))}</div>'
+        for control in (footer.get("controls", []) if isinstance(footer.get("controls", []), list) else [])
+        if isinstance(control, dict)
+    ]
+    centered_nav_links = masthead.get("centeredLinks", []) if isinstance(masthead.get("centeredLinks", []), list) else []
+    centered_nav_bits: list[str] = []
+    for link in centered_nav_links[:6]:
+        if not isinstance(link, dict):
+            continue
+        raw_label = str(link.get("label") or "Captured link")
+        visible_label = escape(_nav_visible_label(raw_label))
+        href = escape(str(link.get("href") or "#"))
+        link_style = _style_attr_from_snapshot(link.get("styleSnapshot")) or masthead_style
+        role_attr = ' role="button"' if _is_google_apps_label(raw_label) else ""
+        extra_class = " bounded-nav-link--apps" if _is_google_apps_label(raw_label) else ""
+        aria_label = _nav_aria_label(raw_label)
+        aria_attr = f' aria-label="{escape(aria_label)}"' if aria_label else ""
+        centered_nav_bits.append(f'          <a class="bounded-nav-link{extra_class}" href="{href}"{role_attr}{aria_attr}{link_style}>{visible_label}</a>')
+    if not centered_nav_bits:
+        centered_nav_bits.append('          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
+
     section_cards = []
     for section in body_sections:
         if not isinstance(section, dict):
@@ -1822,7 +2919,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         section_cards.append(
             "\n".join(
                 [
-                    f'              <article class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>',
+                    f'              <div class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>',
                     '                <div class="bounded-card-head">',
                     f'                  <p class="bounded-kicker"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("role") or "content"))}</p>',
                     f'                  <span class="bounded-chip bounded-chip--muted"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("tag") or "div"))}</span>',
@@ -1832,7 +2929,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     '                <div class="bounded-meta bounded-meta--inline">',
                     *detail_bits,
                     "                </div>",
-                    "              </article>",
+                    "              </div>",
                 ]
             )
         )
@@ -1840,14 +2937,14 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         section_cards.append(
             "\n".join(
                 [
-                    '              <article class="bounded-card bounded-panel" data-role="content">',
+                    '              <div class="bounded-card bounded-panel" data-role="content">',
                     '                <div class="bounded-card-head">',
                     '                  <p class="bounded-kicker">content</p>',
                     '                  <span class="bounded-chip bounded-chip--muted">fallback</span>',
                     "                </div>",
                     "                <h2>No sampled body sections</h2>",
                     '                <p class="bounded-copy">The capture bundle did not expose enough structure for a richer body layout.</p>',
-                    "              </article>",
+                    "              </div>",
                 ]
             )
         )
@@ -1859,11 +2956,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         stage_cards.append(
             "\n".join(
                 [
-                    f'        <article class="bounded-stage-block bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{render_stage_style(section)}>',
+                    f'        <div class="bounded-stage-block bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{render_stage_style(section)}>',
                     f'          <p class="bounded-kicker">{escape(str(section.get("role") or "content"))}</p>',
                     f'          <strong>{escape(str(section.get("title") or "Captured section"))}</strong>',
                     f'          <p class="bounded-copy">{escape(str(section.get("copy") or ""))}</p>',
-                    "        </article>",
+                    "        </div>",
                 ]
             )
         )
@@ -1878,14 +2975,14 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         interaction_cards.append(
             "\n".join(
                 [
-                    '                <article class="bounded-mini-card">',
+                    '                <div class="bounded-mini-card">',
                     f'                  <strong>{escape(str(entry.get("label") or "Captured interaction"))}</strong>',
                     f'                  <p>{escape(str(entry.get("copy") or ""))}</p>',
                     render_interaction_control(entry),
                     '                  <div class="bounded-meta bounded-meta--inline">',
                     *(state_bits or ['                      <span class="bounded-chip bounded-chip--muted">interaction detected</span>']),
                     "                  </div>",
-                    "                </article>",
+                    "                </div>",
                 ]
             )
         )
@@ -1893,10 +2990,10 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         interaction_cards.append(
             "\n".join(
                 [
-                    '                <article class="bounded-mini-card">',
+                    '                <div class="bounded-mini-card">',
                     "                  <strong>No sampled interactions</strong>",
                     "                  <p>Interaction data was not available in the capture bundle.</p>",
-                    "                </article>",
+                    "                </div>",
                 ]
             )
         )
@@ -1908,11 +3005,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         rhythm_cards.append(
             "\n".join(
                 [
-                    '                <article class="bounded-outline-item">',
+                    '                <div class="bounded-outline-item">',
                     f'                  <strong>{escape(str(item.get("role") or "section"))}</strong>',
                     f'                  <p>{escape(str(item.get("size") or ""))}</p>',
                     f'                  <span class="bounded-outline-meta">y: {escape(str(item.get("y") if item.get("y") is not None else 0))}</span>',
-                    "                </article>",
+                    "                </div>",
                 ]
             )
         )
@@ -1921,15 +3018,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         [
             "<!doctype html>",
             '<html lang="en">',
-            "<head>",
-            '  <meta charset="utf-8" />',
-            '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
-            f'  <title>{escape(str(app_model.get("title") or "Captured reference"))}</title>',
-            '  <link rel="stylesheet" href="./next-app/app/fonts.css" />',
-            '  <link rel="stylesheet" href="./next-app/app/globals.css" />',
-            "</head>",
+            head_markup,
             "<body>",
-            '  <main class="bounded-shell">',
+            f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else ""}">',
             f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
             *(
                 []
@@ -1941,9 +3032,18 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     "      </div>",
                 ]
             ),
-            f'      <nav class="bounded-nav{" bounded-nav--split" if centered_focus else ""}" aria-label="Captured navigation sample"{masthead_style}>',
+            f'      <div class="bounded-nav{" bounded-nav--split bounded-nav--google" if centered_focus else ""}" role="navigation"{masthead_style}>',
             *(
                 [
+                    '        <div class="bounded-nav-cluster">',
+                    *(leading_nav_items or ['          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>']),
+                    "        </div>",
+                    '        <div class="bounded-nav-cluster bounded-nav-cluster--end">',
+                    *(trailing_nav_items or centered_nav_bits or ['          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>']),
+                    "        </div>",
+                ]
+                if centered_focus
+                else [
                     '        <div class="bounded-nav-cluster">',
                     *(leading_nav_items or ['          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>']),
                     "        </div>",
@@ -1954,32 +3054,30 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 if centered_focus
                 else nav_items
             ),
-            "      </nav>",
+            "      </div>",
             "    </header>",
-            f'    <section class="bounded-hero bounded-panel{" bounded-hero--centered bounded-hero--focus" if centered_focus else ""}"{hero_style}>',
+            f'    <div class="bounded-hero bounded-panel{" bounded-hero--centered bounded-hero--focus" if centered_focus else ""}"{hero_style}>',
             *( [] if centered_focus else [f'      <p class="bounded-eyebrow"{hero_style}>{escape(str(hero.get("eyebrow") or "Role-inferred reconstruction"))}</p>'] ),
-            f'      <h1{hero_style}>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>',
+            *(wordmark_bits if centered_focus else [f'      <h1{hero_style}>{escape(str(hero.get("title") or app_model.get("title") or "Captured reference"))}</h1>']),
             *( [f'      <p class="bounded-lede"{hero_style}>{escape(str(hero.get("copy") or app_model.get("subtitle") or ""))}</p>'] if (not centered_focus and (hero.get("copy") or app_model.get("subtitle"))) else [] ),
             *(
                 [
-                    '      <div class="bounded-focus-shell">',
-                    '        <span class="bounded-focus-icon" aria-hidden="true">⌕</span>',
-                    f'        <input class="bounded-focus-input" type="text" value="" placeholder="{escape(str(app_model.get("title") or "Search"))}" />',
-                    '        <span class="bounded-focus-icon" aria-hidden="true">◎</span>',
-                    "      </div>",
-                    '      <div class="bounded-focus-actions">',
-                    *(
-                        [
-                            f'        <a class="bounded-focus-button" href="{escape(str(action.get("href") or "#"))}">{escape(str(action.get("label") or "Captured action"))}</a>'
-                            for action in (hero.get("actions", [])[:2] if isinstance(hero.get("actions", []), list) else [])
-                            if isinstance(action, dict)
-                        ]
-                        or [
-                            '        <a class="bounded-focus-button" href="#">Search</a>',
-                            '        <a class="bounded-focus-button" href="#">Explore</a>',
-                        ]
-                    ),
-                    "      </div>",
+                    '      <form class="bounded-focus-form" role="search">',
+                    '        <div class="bounded-focus-shell-frame">',
+                    f'          <div class="bounded-focus-shell"{focus_shell_style}>',
+                    '            <span class="bounded-focus-icon" aria-hidden="true">⌕</span>',
+                    render_focus_input().replace('        ', '            ', 1),
+                    '            <div class="bounded-focus-aux">',
+                    *[bit.replace('          ', '              ', 1) for bit in focus_aux_bits],
+                    "            </div>",
+                    "          </div>",
+                    "        </div>",
+                    '        <div class="bounded-focus-actions-row">',
+                    '          <div class="bounded-focus-actions">',
+                    *focus_action_bits,
+                    "          </div>",
+                    "        </div>",
+                    "      </form>",
                 ]
                 if centered_focus
                 else [
@@ -1991,26 +3089,32 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     "      </div>",
                 ]
             ),
-            "    </section>",
-            f'    <section class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}">',
+            "    </div>",
+            f'    <div class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}">',
             '      <div class="bounded-stage-canvas">',
             *stage_cards,
             "      </div>",
-            "    </section>",
-            f'    <section class="bounded-layout{" bounded-layout--centered" if centered_focus else ""}">',
+            "    </div>",
+            f'    <div class="bounded-layout{" bounded-layout--centered" if centered_focus else ""}">',
             '      <div class="bounded-main">',
-            '        <section class="bounded-section-grid">',
+            '        <div class="bounded-section-grid">',
             *section_cards,
-            "        </section>",
-            '        <section class="bounded-panel bounded-stack bounded-visible-interactions">',
-            '          <p class="bounded-kicker">Interaction samples</p>',
-            '          <div class="bounded-stack bounded-control-grid">',
-            *interaction_cards,
-            "          </div>",
-            "        </section>",
+            "        </div>",
+            *(
+                []
+                if centered_focus
+                else [
+                    '        <div class="bounded-panel bounded-stack bounded-visible-interactions">',
+                    '          <p class="bounded-kicker">Interaction samples</p>',
+                    '          <div class="bounded-stack bounded-control-grid">',
+                    *interaction_cards,
+                    "          </div>",
+                    "        </div>",
+                ]
+            ),
             "      </div>",
-            '      <aside class="bounded-rail bounded-telemetry" aria-hidden="true">',
-            '        <section class="bounded-panel bounded-stack">',
+            '      <div class="bounded-rail bounded-telemetry" aria-hidden="true">',
+            '        <div class="bounded-panel bounded-stack">',
             '          <p class="bounded-kicker">Renderer status</p>',
             '          <div class="bounded-status-row">',
             f'            <strong>{escape(str(reconstruction.get("strategy") or "role-inferred-next-app"))}</strong>',
@@ -2019,22 +3123,37 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             '          <ul class="bounded-list">',
             *[f'            <li>{escape(str(item))}</li>' for item in reconstruction.get("remainingGaps", [])[:4] if isinstance(reconstruction.get("remainingGaps", []), list)],
             "          </ul>",
-            "        </section>",
-            '        <section class="bounded-panel bounded-stack">',
+            "        </div>",
+            '        <div class="bounded-panel bounded-stack">',
             '          <p class="bounded-kicker">Signals</p>',
             '          <div class="bounded-meta bounded-meta--inline">',
             *([f'            <span class="bounded-chip bounded-chip--muted">{escape(str(signal))}</span>' for signal in signal_bits] or ['            <span class="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>']),
             "          </div>",
-            "        </section>",
-            '        <section class="bounded-panel bounded-stack">',
+            "        </div>",
+            '        <div class="bounded-panel bounded-stack">',
             '          <p class="bounded-kicker">Layout rhythm</p>',
             '          <div class="bounded-stack bounded-stack--tight">',
             *rhythm_cards,
             "          </div>",
-            "        </section>",
-            "      </aside>",
-            "    </section>",
-            "  </main>",
+            "        </div>",
+            "      </div>",
+            "    </div>",
+            *(
+                [
+                    f'    <div class="bounded-footer bounded-footer--frame" role="contentinfo"{footer_style}>',
+                    '      <div class="bounded-footer-cluster">',
+                    *(footer_left_bits or ['        <span class="bounded-footer-link bounded-footer-link--muted">No footer links sampled.</span>']),
+                    "      </div>",
+                    '      <div class="bounded-footer-cluster bounded-footer-cluster--end">',
+                    *(footer_right_bits + footer_control_bits or ['        <span class="bounded-footer-link bounded-footer-link--muted">No footer controls sampled.</span>']),
+                    "      </div>",
+                    "    </div>",
+                ]
+                if (footer_left_bits or footer_right_bits or footer_control_bits)
+                else []
+            ),
+            f"    {runtime_materialization_markup}",
+            "  </div>",
             "</body>",
             "</html>",
         ]
@@ -2063,6 +3182,28 @@ def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
         ),
         ensure_ascii=False,
     )
+    runtime_materialization = summary.get("runtimeMaterialization", {}) if isinstance(summary, dict) else {}
+    head_lines: list[str] = []
+    for entry in (runtime_materialization.get("headMeta", []) if isinstance(runtime_materialization.get("headMeta", []), list) else []):
+        if not isinstance(entry, dict):
+            continue
+        head_lines.append(
+            f'        <meta content={json.dumps(str(entry.get("content") or ""), ensure_ascii=False)} name={json.dumps(str(entry.get("name") or "runtime-placeholder"), ensure_ascii=False)} />'
+        )
+    for entry in (runtime_materialization.get("headLinks", []) if isinstance(runtime_materialization.get("headLinks", []), list) else []):
+        if not isinstance(entry, dict):
+            continue
+        head_lines.append(
+            f'        <link href={json.dumps(str(entry.get("href") or "#"), ensure_ascii=False)} rel={json.dumps(str(entry.get("rel") or "stylesheet"), ensure_ascii=False)} />'
+        )
+    for index, entry in enumerate(runtime_materialization.get("headScripts", []) if isinstance(runtime_materialization.get("headScripts", []), list) else []):
+        if not isinstance(entry, dict):
+            continue
+        slot = json.dumps(str(entry.get("slot") or f"head-{index}"), ensure_ascii=False)
+        content = json.dumps(str(entry.get("content") or "{}"), ensure_ascii=False)
+        head_lines.append(
+            f'        <script data-bounded-runtime={slot} dangerouslySetInnerHTML={{{{ __html: {content} }}}} type="application/json" />'
+        )
     return "\n".join(
         [
             'import "./fonts.css";',
@@ -2082,6 +3223,9 @@ def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
             "export default function RootLayout({ children }: { children: ReactNode }) {",
             "  return (",
             '    <html lang="en">',
+            "      <head>",
+            *head_lines,
+            "      </head>",
             "      <body>{children}</body>",
             "    </html>",
             "  );",
@@ -2093,6 +3237,7 @@ def _render_next_app_layout_tsx(summary: dict[str, Any]) -> str:
 def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    layout_tokens = summary.get("layoutTokens", {}) if isinstance(summary, dict) else {}
     css_analysis = summary.get("cssAnalysis", {}) if isinstance(summary, dict) else {}
     body_computed = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis, dict) else {}
     base_font = (typography.get("fonts") or ["Inter, system-ui, sans-serif"])[0]
@@ -2104,6 +3249,15 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
     letter_spacing = (typography.get("letter_spacings") or ["-0.01em"])[0]
     body_font_size = body_computed.get("fontSize") or (typography.get("sizes") or ["14px"])[0]
     base_font = body_computed.get("fontFamily") or base_font
+    panel_radius = str(layout_tokens.get("panelRadius") or "24px")
+    control_radius = str(layout_tokens.get("controlRadius") or "14px")
+    panel_shadow = str(layout_tokens.get("panelShadow") or "0 24px 64px rgba(0, 0, 0, 0.22)")
+    control_shadow = str(layout_tokens.get("controlShadow") or "none")
+    nav_gap = str(layout_tokens.get("navGap") or "12px")
+    control_gap = str(layout_tokens.get("controlGap") or "12px")
+    control_padding_inline = str(layout_tokens.get("controlPaddingInline") or "16px")
+    control_padding_block = str(layout_tokens.get("controlPaddingBlock") or "10px")
+    focus_shell_min_height = str(layout_tokens.get("focusShellMinHeight") or "58px")
     return "\n".join(
         [
             ":root {",
@@ -2116,6 +3270,15 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             f"  --bounded-font-sans: {base_font};",
             f"  --bounded-body-line-height: {line_height};",
             f"  --bounded-heading-letter-spacing: {letter_spacing};",
+            f"  --bounded-panel-radius: {panel_radius};",
+            f"  --bounded-control-radius: {control_radius};",
+            f"  --bounded-panel-shadow: {panel_shadow};",
+            f"  --bounded-control-shadow: {control_shadow};",
+            f"  --bounded-nav-gap: {nav_gap};",
+            f"  --bounded-control-gap: {control_gap};",
+            f"  --bounded-control-padding-inline: {control_padding_inline};",
+            f"  --bounded-control-padding-block: {control_padding_block};",
+            f"  --bounded-focus-shell-min-height: {focus_shell_min_height};",
             "}",
             "",
             "* { box-sizing: border-box; }",
@@ -2126,25 +3289,33 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  font-family: var(--bounded-font-sans);",
             f"  font-size: {body_font_size};",
             f"  line-height: {line_height};",
-            "  background:",
-            "    radial-gradient(circle at top left, color-mix(in srgb, var(--bounded-accent) 18%, transparent), transparent 34%),",
-            "    linear-gradient(180deg, #060911 0%, var(--bounded-bg) 100%);",
+            "  background-color: var(--bounded-bg);",
+            "  background-image: none;",
             "}",
             ".bounded-shell {",
             "  max-width: 1280px;",
             "  margin: 0 auto;",
-            "  padding: 40px 20px 72px;",
+            "  padding: 40px 20px 0;",
             "  min-height: 100vh;",
-            "  height: 100vh;",
             "  display: flex;",
             "  flex-direction: column;",
+            "  height: 100vh;",
             "  overflow: hidden;",
+            "}",
+            ".bounded-shell--focus {",
+            "  display: grid;",
+            "  grid-template-rows: auto minmax(0, 1fr) auto;",
+            "}",
+            ".bounded-shell--focus .bounded-panel {",
+            "  border: 0;",
+            "  background: transparent;",
+            "  box-shadow: none;",
+            "  backdrop-filter: none;",
             "}",
             ".bounded-masthead {",
             "  display: flex;",
             "  align-items: center;",
             "  justify-content: space-between;",
-            "  gap: 20px;",
             "  padding: 18px 22px;",
             "  margin-bottom: 16px;",
             "}",
@@ -2154,6 +3325,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  box-shadow: none;",
             "  backdrop-filter: none;",
             "  padding: 6px 0 0;",
+            "  min-height: 51px;",
             "}",
             ".bounded-brand-block { min-width: 0; }",
             ".bounded-brand {",
@@ -2165,28 +3337,39 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: flex;",
             "  flex-wrap: wrap;",
             "  justify-content: flex-end;",
-            "  gap: 12px;",
             "}",
+            ".bounded-nav--google { width: 100%; align-items: center; }",
             ".bounded-nav--split {",
             "  width: 100%;",
             "  justify-content: space-between;",
             "  align-items: center;",
+            "  min-height: 48px;",
             "}",
             ".bounded-nav-cluster {",
             "  display: flex;",
             "  flex-wrap: wrap;",
             "  align-items: center;",
-            "  gap: 14px;",
             "}",
+            ".bounded-nav-cluster > .bounded-nav-link + .bounded-nav-link { margin-left: var(--bounded-nav-gap); }",
+            ".bounded-nav-cluster--spacer { flex: 1 1 auto; }",
             ".bounded-nav-cluster--end { justify-content: flex-end; }",
             ".bounded-nav-link {",
             "  color: inherit;",
             "  text-decoration: none;",
             "  font-size: 0.95rem;",
             "}",
+            ".bounded-nav-link--apps {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  min-width: 40px;",
+            "  min-height: 40px;",
+            "}",
+            '.bounded-nav-link--apps::before { content: "◫"; font-size: 1.15rem; line-height: 1; }',
             ".bounded-nav-link--cta {",
             "  min-height: 36px;",
             "  padding: 0 16px;",
+            "  text-align: center;",
             "  border-radius: 999px;",
             "  background: rgb(194, 231, 255);",
             "  color: rgb(0, 29, 53);",
@@ -2233,9 +3416,9 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-panel {",
             "  border: 1px solid var(--bounded-border);",
-            "  border-radius: 24px;",
+            "  border-radius: var(--bounded-panel-radius);",
             "  background: rgba(255, 255, 255, 0.04);",
-            "  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);",
+            "  box-shadow: var(--bounded-panel-shadow);",
             "  backdrop-filter: blur(14px);",
             "}",
             ".bounded-hero {",
@@ -2243,8 +3426,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  margin-bottom: 20px;",
             "}",
             ".bounded-hero--centered {",
-            "  display: grid;",
-            "  justify-items: center;",
+            "  display: block;",
             "  text-align: center;",
             "}",
             ".bounded-hero--centered .bounded-meta, .bounded-hero--centered .bounded-hero-actions {",
@@ -2255,26 +3437,72 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  background: transparent;",
             "  box-shadow: none;",
             "  backdrop-filter: none;",
-            "  flex: 1 1 auto;",
-            "  align-content: center;",
-            "  gap: 22px;",
+            "  min-width: 0;",
             "  padding: 80px 0 0;",
+            "  width: 100%;",
+            "  max-width: 100%;",
+            "  margin: 0 auto 20px;",
+            "}",
+            ".bounded-shell--focus .bounded-focus-shell { width: min(584px, calc(100vw - 48px)); }",
+            ".bounded-shell--focus .bounded-stage,",
+            ".bounded-shell--focus .bounded-layout {",
+            "  position: absolute !important;",
+            "  width: 1px !important;",
+            "  height: 1px !important;",
+            "  padding: 0 !important;",
+            "  margin: -1px !important;",
+            "  overflow: hidden !important;",
+            "  clip: rect(0 0 0 0);",
+            "  clip-path: inset(50%);",
+            "  white-space: nowrap;",
+            "  border: 0 !important;",
+            "  visibility: hidden !important;",
+            "  pointer-events: none !important;",
             "}",
             ".bounded-hero--focus h1 {",
             "  font-size: clamp(4rem, 8vw, 6.2rem);",
             "  line-height: 0.92;",
             "}",
+            ".bounded-logo-shell {",
+            "  display: block;",
+            "  position: relative;",
+            "  text-align: center;",
+            "  margin-bottom: 10px;",
+            "}",
+            ".bounded-logo-mark {",
+            "  width: clamp(200px, 26vw, 272px);",
+            "  height: auto;",
+            "  overflow: visible;",
+            "}",
+            ".bounded-logo-wordmark {",
+            '  font-family: Arial, "Helvetica Neue", sans-serif;',
+            "  font-size: 5.75rem;",
+            "  font-weight: 500;",
+            "  letter-spacing: -0.06em;",
+            "  line-height: 1;",
+            "}",
+            ".bounded-focus-form {",
+            "  display: block;",
+            "  width: 100%;",
+            "  margin: 0;",
+            "}",
+            ".bounded-focus-shell-frame {",
+            "  width: 100%;",
+            "  display: block;",
+            "}",
             ".bounded-focus-shell {",
-            "  display: grid;",
-            "  grid-template-columns: auto minmax(0, 1fr) auto;",
+            "  display: flex;",
+            "  position: relative;",
             "  align-items: center;",
-            "  gap: 14px;",
+            "  justify-content: space-between;",
             "  width: min(720px, calc(100vw - 64px));",
-            "  min-height: 58px;",
-            "  padding: 0 18px;",
-            "  border-radius: 999px;",
-            "  background: rgba(95, 99, 104, 0.62);",
-            "  border: 1px solid rgba(255, 255, 255, 0.06);",
+            "  margin: 0 auto;",
+            "  min-height: var(--bounded-focus-shell-min-height);",
+            "  padding: 0 var(--bounded-control-padding-inline);",
+            "  border-radius: 26px;",
+            "  background: rgb(77, 81, 86);",
+            "  border: 1px solid rgba(0, 0, 0, 0);",
+            "  box-shadow: none;",
             "}",
             ".bounded-focus-input {",
             "  width: 100%;",
@@ -2292,20 +3520,120 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: flex;",
             "  flex-wrap: wrap;",
             "  justify-content: center;",
-            "  gap: 12px;",
             "}",
-            ".bounded-focus-button {",
+            ".bounded-focus-actions > .bounded-focus-button + .bounded-focus-button { margin-left: var(--bounded-control-gap); }",
+            ".bounded-focus-actions-row {",
+            "  width: 100%;",
+            "  display: block;",
+            "  margin-top: 16px;",
+            "}",
+            ".bounded-focus-aux { display: inline-flex; align-items: center; }",
+            ".bounded-focus-aux > .bounded-focus-aux-button + .bounded-focus-aux-button { margin-left: 8px; }",
+            ".bounded-focus-aux-button {",
             "  display: inline-flex;",
             "  align-items: center;",
             "  justify-content: center;",
-            "  min-height: 36px;",
-            "  padding: 0 16px;",
-            "  border-radius: 4px;",
+            "  min-width: 20px;",
+            "  min-height: 20px;",
             "  border: 0;",
-            "  background: rgba(48, 49, 52, 1);",
+            "  padding: 0;",
+            "  background: transparent;",
             "  color: inherit;",
+            "  font: inherit;",
+            "  cursor: pointer;",
+            "}",
+            '.bounded-focus-aux-button::before { content: attr(data-glyph); }',
+            ".bounded-sr-only {",
+            "  position: absolute;",
+            "  width: 1px;",
+            "  height: 1px;",
+            "  padding: 0;",
+            "  margin: -1px;",
+            "  overflow: hidden;",
+            "  clip: rect(0, 0, 0, 0);",
+            "  white-space: nowrap;",
+            "  border: 0;",
+            "}",
+            ".bounded-runtime-materialization {",
+            "  position: fixed;",
+            "  left: -200vw;",
+            "  top: 0;",
+            "  width: 100vw;",
+            "  height: 1px;",
+            "  overflow: visible;",
+            "  pointer-events: none;",
+            "  opacity: 0.01;",
+            "  z-index: -1;",
+            "}",
+            ".bounded-runtime-copy {",
+            "  display: block;",
+            "  color: inherit;",
+            "  font: inherit;",
+            "  line-height: inherit;",
+            "  letter-spacing: inherit;",
+            "  text-align: inherit;",
+            "  text-transform: inherit;",
+            "  white-space: normal;",
+            "}",
+            ".bounded-runtime-shim {",
+            "  color: var(--bounded-text);",
+            "  font-family: var(--bounded-font-sans);",
+            "  font-size: 14px;",
+            "  font-weight: 400;",
+            "  line-height: normal;",
+            "  letter-spacing: normal;",
+            "  text-align: start;",
+            "  text-transform: none;",
+            "  overflow: hidden;",
+            "}",
+            ".bounded-runtime-shim--nav { display: flex; position: static; width: 100vw; min-height: 48px; }",
+            ".bounded-runtime-shim--search { display: block; position: static; width: 100vw; min-height: 56px; }",
+            ".bounded-runtime-shim--surface { display: flex; position: relative; width: 540px; min-height: 56px; border-radius: 26px; border: 1px solid rgba(0, 0, 0, 0); background: rgb(77, 81, 86); }",
+            ".bounded-runtime-shim--footer { display: block; position: static; width: 100vw; min-height: 48px; background: rgb(23, 23, 23); }",
+            ".bounded-runtime-sig--nav { display: flex; position: static; width: 100vw; min-height: 48px; }",
+            ".bounded-runtime-sig--footer { display: block; position: static; width: 100vw; min-height: 48px; background: rgb(23, 23, 23); }",
+            ".bounded-runtime-sig--search { display: block; position: static; width: 100vw; min-height: 160px; }",
+            ".bounded-runtime-sig--lg-block-rel { display: block; position: relative; width: 360px; min-height: 56px; }",
+            ".bounded-runtime-sig--lg-flex { display: flex; position: static; width: 360px; min-height: 56px; }",
+            ".bounded-runtime-sig--md-flex { display: flex; position: static; width: 200px; min-height: 56px; }",
+            ".bounded-runtime-sig--md-xs-flex { display: flex; position: static; width: 200px; min-height: 36px; }",
+            ".bounded-runtime-sig--viewport-lg-flex { display: flex; position: static; width: 100vw; min-height: 280px; }",
+            ".bounded-runtime-sig--viewport-md-block { display: block; position: static; width: 100vw; min-height: 160px; }",
+            ".bounded-runtime-sig--viewport-sm-block { display: block; position: static; width: 100vw; min-height: 56px; }",
+            ".bounded-runtime-sig--viewport-viewport-flex { display: flex; position: static; width: 100vw; min-height: 100vh; }",
+            ".bounded-runtime-sig--viewport-xl-block { display: block; position: static; width: 100vw; min-height: 480px; }",
+            ".bounded-runtime-sig--viewport-xs-flex { display: flex; position: static; width: 100vw; min-height: 24px; }",
+            ".bounded-runtime-sig--xl-md-block-rel { display: block; position: relative; width: 540px; min-height: 160px; }",
+            ".bounded-runtime-sig--xl-sm-flex-rel { display: flex; position: relative; width: 540px; min-height: 56px; border-radius: 26px; border: 1px solid rgba(0, 0, 0, 0); background: rgb(77, 81, 86); }",
+            ".bounded-runtime-sig--xl-sm-flex { display: flex; position: static; width: 540px; min-height: 56px; }",
+            ".bounded-runtime-sig--xs-sm-flex { display: flex; position: static; width: 40px; min-height: 56px; }",
+            ".bounded-runtime-sig--sm-sm-block { display: block; position: static; width: 60px; min-height: 56px; }",
+            ".bounded-runtime-sig--sm-xs-inline { display: inline-block; position: static; width: 60px; min-height: 36px; }",
+            ".bounded-runtime-sig--span-block { display: block; position: static; width: 60px; min-height: 36px; }",
+            ".bounded-runtime-popup { display: inline; color: var(--bounded-text); font-family: var(--bounded-font-sans); font-size: 14px; line-height: normal; }",
+            ".bounded-runtime-dialog { position: fixed; left: -200vw; top: 64px; width: 240px; min-height: 48px; padding: 0; border: 0; background: transparent; color: var(--bounded-text); }",
+            ".bounded-runtime-dialog::backdrop { display: none; }",
+            ".bounded-runtime-textarea { display: block; width: 540px; min-height: 56px; color: var(--bounded-text); font-family: var(--bounded-font-sans); font-size: 14px; line-height: 22px; background: transparent; border: 0; resize: none; overflow: hidden; }",
+            ".bounded-focus-button {",
+            "  display: inline-block;",
+            "  min-height: 36px;",
+            "  padding: var(--bounded-control-padding-block) var(--bounded-control-padding-inline);",
+            "  border-radius: 8px;",
+            "  border: 1px solid rgb(48, 49, 52);",
+            "  background: rgb(48, 49, 52);",
+            "  color: rgb(232, 234, 237);",
             "  text-decoration: none;",
             "  font-size: 14px;",
+            "  font-weight: 500;",
+            "  line-height: normal;",
+            "  text-align: center;",
+            "  box-shadow: none;",
+            "  vertical-align: top;",
+            "}",
+            ".bounded-focus-button--input {",
+            "  cursor: pointer;",
+            "  font: inherit;",
+            "  appearance: none;",
             "}",
             ".bounded-stage {",
             "  position: relative;",
@@ -2368,8 +3696,8 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: inline-flex;",
             "  align-items: center;",
             "  min-height: 32px;",
-            "  padding: 0 12px;",
-            "  border-radius: 999px;",
+            "  padding: 0 var(--bounded-control-padding-inline);",
+            "  border-radius: var(--bounded-control-radius);",
             "  border: 1px solid color-mix(in srgb, var(--bounded-accent) 24%, white 10%);",
             "  background: color-mix(in srgb, var(--bounded-accent) 14%, transparent);",
             "  font-size: 12px;",
@@ -2382,8 +3710,8 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: inline-flex;",
             "  align-items: center;",
             "  min-height: 38px;",
-            "  padding: 0 16px;",
-            "  border-radius: 999px;",
+            "  padding: var(--bounded-control-padding-block) var(--bounded-control-padding-inline);",
+            "  border-radius: var(--bounded-control-radius);",
             "  text-decoration: none;",
             "  color: #09111d;",
             "  background: color-mix(in srgb, var(--bounded-accent) 84%, white 8%);",
@@ -2410,7 +3738,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-mini-card, .bounded-outline-item {",
             "  padding: 14px;",
-            "  border-radius: 18px;",
+            "  border-radius: calc(var(--bounded-panel-radius) * 0.75);",
             "  border: 1px solid rgba(255, 255, 255, 0.08);",
             "  background: rgba(255, 255, 255, 0.03);",
             "}",
@@ -2430,11 +3758,12 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  width: 100%;",
             "  min-height: 40px;",
             "  margin-top: 12px;",
-            "  border-radius: 14px;",
+            "  border-radius: var(--bounded-control-radius);",
             "  border: 1px solid var(--bounded-border);",
             "  background: rgba(255, 255, 255, 0.04);",
             "  color: inherit;",
             "  font: inherit;",
+            "  box-shadow: var(--bounded-control-shadow);",
             "}",
             ".bounded-control--button, .bounded-control--link {",
             "  display: inline-flex;",
@@ -2444,7 +3773,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  text-decoration: none;",
             "}",
             ".bounded-control--input {",
-            "  padding: 10px 12px;",
+            "  padding: var(--bounded-control-padding-block) var(--bounded-control-padding-inline);",
             "}",
             ".bounded-status-row {",
             "  display: flex;",
@@ -2452,6 +3781,40 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  justify-content: space-between;",
             "  gap: 12px;",
             "}",
+            ".bounded-footer {",
+            "  display: block;",
+            "  min-height: 47px;",
+            "}",
+            ".bounded-footer--frame {",
+            "  margin-top: auto;",
+            "  margin-left: -20px;",
+            "  margin-right: -20px;",
+            "  padding: 0 20px;",
+            "  border-radius: 0;",
+            "  border: 0;",
+            "  box-shadow: none;",
+            "  background: rgb(23, 23, 23);",
+            "}",
+            ".bounded-footer-cluster {",
+            "  display: flex;",
+            "  flex-wrap: wrap;",
+            "  align-items: center;",
+            "}",
+            ".bounded-footer-cluster > .bounded-footer-link + .bounded-footer-link { margin-left: var(--bounded-nav-gap); }",
+            ".bounded-footer-cluster--end { justify-content: flex-end; }",
+            ".bounded-footer-link {",
+            "  display: inline-flex;",
+            "  align-items: center;",
+            "  min-height: 47px;",
+            "  color: inherit;",
+            "  text-decoration: none;",
+            "  background: transparent;",
+            "  border: 0;",
+            "  padding: 0 15px;",
+            "  font: inherit;",
+            "}",
+            ".bounded-footer-link--button { cursor: pointer; }",
+            ".bounded-footer-link--muted { opacity: 0.72; }",
             ".bounded-outline-meta {",
             "  display: inline-block;",
             "  margin-top: 8px;",
@@ -2464,6 +3827,9 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "    align-items: flex-start;",
             "  }",
             "  .bounded-nav { justify-content: flex-start; }",
+            "  .bounded-footer { flex-direction: column; align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }",
+            "  .bounded-footer--frame { margin-left: -20px; margin-right: -20px; }",
+            "  .bounded-footer-cluster--end { justify-content: flex-start; }",
             "}",
         ]
     )
@@ -2503,7 +3869,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
 
     interaction_entries = interactions_capture.get("content", []) if isinstance(interactions_capture, dict) else []
     interaction_sample: list[dict[str, Any]] = []
-    for entry in interaction_entries[:12] if isinstance(interaction_entries, list) else []:
+    for entry in interaction_entries[:24] if isinstance(interaction_entries, list) else []:
         if not isinstance(entry, dict):
             continue
         interaction_sample.append(
@@ -2613,11 +3979,15 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     }
     asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens)
     summary["assetManifest"] = asset_manifest
+    app_model = _build_app_model(summary)
+    runtime_materialization = _build_runtime_materialization(summary, app_model, style_entries)
+    summary["runtimeMaterialization"] = runtime_materialization
+    app_model["runtimeMaterialization"] = runtime_materialization
+    summary["layoutTokens"] = app_model.get("layoutTokens") or {}
     html = _render_html(summary)
     css = _render_css(summary)
     tsx = _render_tsx(summary)
     prompt = _render_prompt(summary)
-    app_model = _build_app_model(summary)
     app_data_ts = _render_reference_data_ts(app_model)
     app_component_tsx = _render_bounded_reference_page_tsx()
     app_page_tsx = _render_next_app_page_tsx()
