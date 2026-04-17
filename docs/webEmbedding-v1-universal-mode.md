@@ -29,6 +29,7 @@ The repo already does these well:
 - HAR-lite network summaries for redirects, timing buckets, header presence, and body-availability hints
 - persisted standard `har.json` export baseline alongside `har-like.json`
 - app-shell / dashboard-like surfaces now route to a dedicated shell-oriented bounded rebuild mode instead of the same compact landing-page compression
+- canvas/WebGL-like surfaces now route to an explicit bounded visual-fallback family with stage-first constraints
 - verification still treats frame/shadow interaction parity as a bounded signal, not full replay parity
 - benchmark corpus runs can now be repeated against a small generic corpus file for route/depth regression checks
 - benchmark reports also surface `route_quality_counts`, `renderer_family_counts`, and `depth_presence_counts` for generic regression checks
@@ -91,7 +92,7 @@ The classifier emits route hints such as:
 Current blockers:
 
 - frame documents are detected and counted, but frame-local interaction/state parity is still shallow
-- open shadow roots are detected and traversed, but shadow-aware replay and diffing are still partial
+- open shadow roots are detected and traversed, and root-aware parity now includes frame/surface identity signals, but full shadow-aware replay and diffing are still partial
 - HAR export baseline exists, but richer initiator/body/timing parity is still missing
 - sampled computed styles, not a full-tree style graph
 - no app-state serialization beyond bounded interaction replay
@@ -103,7 +104,7 @@ Current blockers:
 
 - bounded rebuild is still optimized for compact marketing/document surfaces
 - app-shell renderer routing exists, but the generic shell renderer still needs richer panel/state reconstruction
-- no renderer family for canvas-heavy or scene-heavy sites
+- a bounded visual-fallback family now exists for canvas-heavy or scene-heavy sites, but it is still screenshot-led rather than scene-aware
 
 ### 3. Verification depth
 

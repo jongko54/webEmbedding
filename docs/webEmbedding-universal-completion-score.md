@@ -54,13 +54,13 @@ That does **not** mean the universal engine is complete.
 
 ## Current estimate
 
-Current estimate: **84 / 100**
+Current estimate: **86 / 100**
 
 ### Breakdown
 
 - Routing and inspection: `24 / 25`
-- Deep capture: `22 / 25`
-- Reconstruction and repair: `21 / 25`
+- Deep capture: `23 / 25`
+- Reconstruction and repair: `22 / 25`
 - CLI and benchmark visibility: `12 / 15`
 - Corpus coverage and regression evidence: `5 / 10`
 
@@ -83,22 +83,25 @@ Current estimate: **84 / 100**
 - `renderer_family` is now promoted into `site_profile.route_hints`, CLI output, and benchmark summaries
 - generic deep-capture baseline exists across HTML, DOM, CSS, assets, interactions, replay traces, and breakpoints
 - persisted `network/har.json` export now exists alongside `manifest.json` and `har-like.json`
+- HAR exports now carry richer request/response/query/cookie/timing context for replay-oriented inspection
 - frame + shadow structure capture exists
+- frame/shadow verification now scores `frame_url_overlap` and `surface_index_overlap`
 - bounded app-shell / dashboard routing now exists, but richer panel/state reconstruction is still incomplete
+- bounded canvas/WebGL visual-fallback routing now exists with an explicit stage-first rendering model
 
 ## Why it is not higher yet
 
 The remaining gaps are still generic, not cosmetic:
 
 - full frame/shadow interaction parity on arbitrary real sites
-- HAR export exists, but richer initiator/body/timing parity still needs work
+- HAR export exists, but replay-grade network parity still needs work
 - app-shell / dashboard renderer family is present in bounded form, but it still needs richer panel/state reconstruction
-- canvas / WebGL visual fallback family
+- canvas / WebGL visual fallback family is present in bounded form, but it still needs richer visual reconstruction
 - broader corpus benchmark CI and regression gates
 
 ## Practical reading
 
 - **Per-site fidelity** can already reach the high `80s`.
-- **Universal engine completeness** is in the low `80s`.
+- **Universal engine completeness** is now in the mid `80s`.
 
 That means the engine is already meaningful as a `source-first exact-reuse + bounded rebuild + verification` system, but it is not yet a universal no-review clone engine.

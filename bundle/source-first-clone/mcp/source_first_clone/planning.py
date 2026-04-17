@@ -37,7 +37,7 @@ def plan_reproduction_path(
         renderer_family = "visual-fallback-next-app"
     elif surface_class == "multi-frame-document-surface":
         renderer_family = "frame-aware-document-next-app"
-    app_shell_like = surface_class in {"js-app-shell-surface", "authenticated-app-surface"}
+    app_shell_like = surface_class in {"js-app-shell-surface", "authenticated-app-surface", "frame-blocked-app-surface"}
     plan: list[dict[str, str]] = [
         {"stage": "policy", "action": f"confirm {mode} path"},
         {"stage": "routing", "action": f"classify `{surface_class}` and follow `{acquisition_profile}` -> `{renderer_route}` via `{renderer_family}`"},
@@ -121,7 +121,14 @@ def plan_reproduction_path(
             "available": True,
             "renderer_route": "visual-fallback-rebuild",
             "renderer_family": "visual-fallback-next-app",
+            "rendering_model": "full-viewport-stage-with-overlay-chrome",
             "strategy": "Capture the live visual composition, then rebuild a bounded HTML/CSS/Next scaffold that preserves stage geometry, dominant colors, text hierarchy, and stable interaction affordances.",
+            "rendering_constraints": [
+                "Treat the canvas/WebGL area as the primary stage, not as an inspectable DOM subtree.",
+                "Rebuild overlay chrome, captions, and controls as bounded HTML/CSS around the stage.",
+                "Use screenshots and runtime HTML to preserve composition before attempting DOM-level fidelity.",
+                "Keep responsive variants aligned to the captured viewport geometry.",
+            ],
             "capture_hints": [
                 "viewport screenshot set",
                 "runtime HTML and DOM outline",

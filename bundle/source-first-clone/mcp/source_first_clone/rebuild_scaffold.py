@@ -1329,6 +1329,7 @@ def _render_tsx(summary: dict[str, Any]) -> str:
 
 
 def _render_prompt(summary: dict[str, Any]) -> str:
+    visual_fallback = summary.get("visual_fallback", {}) if isinstance(summary, dict) else {}
     lines = [
         "Use the scaffold as a bounded rebuild starter, not as an exact reproduction claim.",
         f"Source URL: {summary.get('source_url')}",
@@ -1337,6 +1338,19 @@ def _render_prompt(summary: dict[str, Any]) -> str:
         "Preserve hierarchy, spacing, and visual rhythm from the captured blocks.",
         "Do not expand beyond the captured structure unless the implementation needs a minimal wrapper.",
     ]
+    if isinstance(visual_fallback, dict) and visual_fallback.get("available"):
+        lines.extend(
+            [
+                "Visual fallback guidance:",
+                f"- renderer route: {visual_fallback.get('renderer_route')}",
+                "- prioritize screenshot-led composition, stage geometry, and palette before DOM-perfect fidelity",
+                "- keep overlay controls, captions, and viewport-specific composition explicit",
+            ]
+        )
+        capture_hints = visual_fallback.get("capture_hints", [])
+        if isinstance(capture_hints, list) and capture_hints:
+            lines.append("Capture hints:")
+            lines.extend(f"- {hint}" for hint in capture_hints[:6])
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     if blocks:
         lines.append("Primary captured blocks:")
@@ -1685,7 +1699,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
     )
     surface_class = str(summary.get("surface_class") or "").lower()
-    app_shell_mode = surface_class in {"js-app-shell-surface", "authenticated-app-surface"}
+    app_shell_mode = surface_class in {"js-app-shell-surface", "authenticated-app-surface", "frame-blocked-app-surface"}
     hero_section = next(
         (
             section
@@ -4062,12 +4076,41 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     palette = _normalize_palette(_derive_palette(style_entries), css_analysis)
     renderer_kind = "role-inferred-next-app"
     renderer_strategy = "capture-bundle-to-sectioned-app"
+    visual_fallback: dict[str, Any] | None = None
     if surface_class in {"js-app-shell-surface", "frame-blocked-app-surface", "authenticated-app-surface"}:
         renderer_kind = "app-shell-dashboard-next-app"
         renderer_strategy = "capture-bundle-to-app-shell"
     elif surface_class == "canvas-or-webgl-surface":
         renderer_kind = "visual-fallback-next-app"
         renderer_strategy = "capture-bundle-to-visual-stage"
+        visual_fallback = {
+            "available": True,
+            "renderer_route": route_hints.get("renderer_route") or "visual-fallback-rebuild",
+            "renderer_family": renderer_kind,
+            "rendering_model": "full-viewport-stage-with-overlay-chrome",
+            "strategy": "capture-bundle-to-visual-stage",
+            "rendering_constraints": [
+                "Treat the canvas/WebGL area as the primary stage, not as an inspectable DOM subtree.",
+                "Rebuild overlay chrome, captions, and controls as bounded HTML/CSS around the stage.",
+                "Use screenshots and runtime HTML to preserve composition before attempting DOM-level fidelity.",
+                "Keep responsive variants aligned to the captured viewport geometry.",
+            ],
+            "focus": [
+                "stage geometry",
+                "dominant palette",
+                "overlay controls",
+                "caption hierarchy",
+                "viewport-specific composition",
+            ],
+            "capture_hints": [
+                "viewport screenshot set",
+                "canvas/WebGL bounding boxes when visible",
+                "runtime HTML and DOM outline",
+                "computed styles for overlays and controls",
+                "asset inventory for images, scripts, and iframes",
+                "interaction trace for hover, focus, click, and scroll-state changes",
+            ],
+        }
     elif surface_class == "multi-frame-document-surface":
         renderer_kind = "frame-aware-next-app"
         renderer_strategy = "capture-bundle-to-frame-aware-app"
@@ -4148,6 +4191,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "next-app/components/reference-data.ts",
             ],
         },
+        "visual_fallback": visual_fallback,
         "note": "This scaffold is intentionally bounded. It is a starter for reconstruction when an exact reuse path is unavailable.",
     }
     asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens)
@@ -4156,7 +4200,18 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     runtime_materialization = _build_runtime_materialization(summary, app_model, style_entries)
     summary["runtimeMaterialization"] = runtime_materialization
     app_model["runtimeMaterialization"] = runtime_materialization
+    summary["shell"] = {
+        "panel_count": len(app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []),
+        "panel_roles": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
+    }
+    summary["layoutMode"] = app_model.get("layoutMode")
     summary["layoutTokens"] = app_model.get("layoutTokens") or {}
+    if (summary.get("visual_fallback") or {}).get("available"):
+        summary["rebuild_notes"] = [
+            "Visual fallback mode: prioritize captured stage geometry and composition before exact component-level reconstruction.",
+            "Use screenshot evidence to keep canvas/WebGL-heavy surfaces faithful even when DOM structure is sparse.",
+            "Treat overlay chrome as bounded HTML/CSS and keep responsive variants aligned to captured viewport geometry.",
+        ]
     html = _render_html(summary)
     css = _render_css(summary)
     tsx = _render_tsx(summary)

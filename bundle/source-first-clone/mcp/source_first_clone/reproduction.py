@@ -285,7 +285,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
             if critical_depths:
                 prompt_lines.append("Critical capture depths:")
                 prompt_lines.extend(f"- {depth}" for depth in critical_depths[:8])
-            if str(site_profile.get("primary_surface") or "").lower() in {"js-app-shell-surface", "authenticated-app-surface"}:
+            if str(site_profile.get("primary_surface") or "").lower() in {"js-app-shell-surface", "authenticated-app-surface", "frame-blocked-app-surface"}:
                 prompt_lines.append("App-shell guidance:")
                 prompt_lines.extend(
                     [
@@ -301,6 +301,15 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- Treat this as a visual-first rebuild, not a DOM-perfect source clone.",
                         "- Preserve stage geometry, dominant palette, hierarchy, and stable controls before trying to mirror implementation details.",
                         "- Prefer screenshot-led composition checks, then layer DOM and CSS fidelity on top.",
+                    ]
+                )
+                prompt_lines.append("Visual fallback rendering constraints:")
+                prompt_lines.extend(
+                    [
+                        "- Treat the canvas/WebGL region as the primary stage, not as an inspectable DOM subtree.",
+                        "- Recreate overlay chrome, captions, and controls as bounded HTML/CSS around the stage.",
+                        "- Use viewport screenshots and runtime HTML as the anchor for composition fidelity.",
+                        "- Keep responsive behavior aligned to the captured viewport geometry.",
                     ]
                 )
                 prompt_lines.append("Visual fallback capture hints:")

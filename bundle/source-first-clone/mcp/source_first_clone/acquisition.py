@@ -1323,11 +1323,13 @@ function captureSemanticState(element, style) {
   return semanticState;
 }
 
-function collectInteractionRoots(rootDocument = document, maxFrameDocuments = 12) {
-  const roots = [{ root: rootDocument, kind: "document", frameSrc: null, shadowHostTag: null }];
-  const seenDocuments = new Set([rootDocument]);
+function collectInteractionRoots(rootDocument = null, maxFrameDocuments = 12) {
+  const documentRoot = rootDocument || (typeof document !== "undefined" ? document : null);
+  if (!documentRoot) return [];
+  const roots = [{ root: documentRoot, kind: "document", frameSrc: null, shadowHostTag: null }];
+  const seenDocuments = new Set([documentRoot]);
   const seenShadows = new Set();
-  const queue = [{ root: rootDocument, kind: "document", frameSrc: null, shadowHostTag: null }];
+  const queue = [{ root: documentRoot, kind: "document", frameSrc: null, shadowHostTag: null }];
   while (queue.length && roots.length < maxFrameDocuments + 64) {
     const current = queue.shift();
     const scope = current.root;
@@ -1369,7 +1371,9 @@ function collectInteractionRoots(rootDocument = document, maxFrameDocuments = 12
 }
 
 function findInteractionElement(selector) {
-  for (const entry of collectInteractionRoots(document, 12)) {
+  const documentRoot = typeof document !== "undefined" ? document : null;
+  if (!documentRoot) return null;
+  for (const entry of collectInteractionRoots(documentRoot, 12)) {
     const root = entry.root;
     if (!root || typeof root.querySelector !== "function") continue;
     const match = root.querySelector(selector);
@@ -1382,7 +1386,8 @@ function findInteractionElement(selector) {
 
 function findControlledTarget(element, id) {
   if (!id) return null;
-  const ownerDocument = element && element.ownerDocument ? element.ownerDocument : document;
+  const ownerDocument = element && element.ownerDocument ? element.ownerDocument : (typeof document !== "undefined" ? document : null);
+  if (!ownerDocument) return null;
   for (const entry of collectInteractionRoots(ownerDocument, 12)) {
     const root = entry.root;
     if (root && typeof root.getElementById === "function") {
@@ -1627,7 +1632,9 @@ function clickInteractionElement(selector) {
 }
 
 function cleanupInteractionMarkers() {
-  document
+  const documentRoot = typeof document !== "undefined" ? document : null;
+  if (!documentRoot) return true;
+  documentRoot
     .querySelectorAll('[data-web-embedding-interaction-id]')
     .forEach((element) => element.removeAttribute('data-web-embedding-interaction-id'));
   return true;
@@ -1908,7 +1915,9 @@ function evaluateInteractionRuntime(payload) {
             root: element.shadowRoot,
             kind: "shadow-root",
             frameSrc: current.frameSrc || null,
+            frameUrl: current.frameUrl || null,
             shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+            surfaceIndex: roots.length,
           };
           roots.push(shadowEntry);
           queue.push(shadowEntry);
@@ -1926,7 +1935,9 @@ function evaluateInteractionRuntime(payload) {
               root: frameDoc,
               kind: "frame-document",
               frameSrc: element.getAttribute("src") || element.src || null,
+              frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
               shadowHostTag: null,
+              surfaceIndex: roots.length,
             };
             roots.push(frameEntry);
             queue.push(frameEntry);
@@ -2569,6 +2580,15 @@ function isSafeToggleCandidate(candidate) {
         if (value === undefined || value === null || String(value).trim() === "") {
           continue;
         }
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item === undefined || item === null || String(item).trim() === "") {
+              continue;
+            }
+            entries.push({ name: String(key), value: String(item) });
+          }
+          continue;
+        }
         entries.push({ name: String(key), value: String(value) });
       }
       return entries;
@@ -2602,7 +2622,17 @@ function isSafeToggleCandidate(candidate) {
             value: pair.slice(separatorIndex + 1).trim(),
           };
         })
-        .filter((item) => item.name);
+        .filter((item) => item.name)
+        .map((item) => ({
+          name: item.name,
+          value: item.value,
+          path: null,
+          domain: null,
+          expires: null,
+          httpOnly: null,
+          secure: null,
+          sameSite: null,
+        }));
     };
     const cookiePairsFromHeaders = (headers, key) => {
       const normalized = headers || {};
@@ -2665,20 +2695,24 @@ function isSafeToggleCandidate(candidate) {
           previous = typeof previous.redirectedFrom === "function" ? previous.redirectedFrom() : null;
         }
       } catch (error) {}
+      const requestHeaders = typeof request.headers === "function" ? request.headers() : {};
+      const requestUrl = request.url();
+      const postData = typeof request.postData === "function" ? request.postData() : null;
       requestEntries.push({
         requestId,
-        url: request.url(),
+        url: requestUrl,
         method: request.method(),
         resourceType: request.resourceType(),
         isNavigationRequest: request.isNavigationRequest(),
         frameUrl,
-        hasPostData: Boolean(request.postData()),
-        postDataSize: request.postData() ? request.postData().length : 0,
-        requestHeaders: filterHeaders(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
-        requestHeadersArray: headersToArray(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
-        requestCookies: cookiePairsFromHeaders(typeof request.headers === "function" ? request.headers() : {}, "cookie"),
-        queryString: queryStringFromUrl(request.url()),
-        headerPresence: summarizeHeaderPresence(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
+        hasPostData: Boolean(postData),
+        postDataSize: postData ? postData.length : 0,
+        postDataText: postData ? String(postData).slice(0, 4096) : null,
+        requestHeaders: filterHeaders(requestHeaders, commonRequestHeaderKeys),
+        requestHeadersArray: headersToArray(requestHeaders),
+        requestCookies: cookiePairsFromHeaders(requestHeaders, "cookie"),
+        queryString: queryStringFromUrl(requestUrl),
+        headerPresence: summarizeHeaderPresence(requestHeaders, commonRequestHeaderKeys),
         redirectDepth,
         redirectedFromUrl,
         timingBucket: timingBucket(typeof request.timing === "function" ? request.timing() : null),
@@ -2706,6 +2740,7 @@ function isSafeToggleCandidate(candidate) {
       try {
         frameUrl = request.frame() ? request.frame().url() : null;
       } catch (error) {}
+      const responseHeaders = typeof response.headers === "function" ? response.headers() : {};
       responseEntries.push({
         requestId,
         url: target,
@@ -2713,12 +2748,12 @@ function isSafeToggleCandidate(candidate) {
         statusText: typeof response.statusText === "function" ? response.statusText() : null,
         resourceType: request.resourceType(),
         method: request.method(),
-        contentType: response.headers()["content-type"] || null,
-        contentLength: response.headers()["content-length"] || null,
-        responseHeaders: filterHeaders(response.headers(), commonResponseHeaderKeys),
-        responseHeadersArray: headersToArray(response.headers(), commonResponseHeaderKeys),
-        responseCookies: cookiePairsFromHeaders(response.headers(), "set-cookie"),
-        headerPresence: summarizeHeaderPresence(response.headers(), commonResponseHeaderKeys),
+        contentType: responseHeaders["content-type"] || null,
+        contentLength: responseHeaders["content-length"] || null,
+        responseHeaders: filterHeaders(responseHeaders, commonResponseHeaderKeys),
+        responseHeadersArray: headersToArray(responseHeaders),
+        responseCookies: cookiePairsFromHeaders(responseHeaders, "set-cookie"),
+        headerPresence: summarizeHeaderPresence(responseHeaders, commonResponseHeaderKeys),
         frameUrl,
         fromServiceWorker: typeof response.fromServiceWorker === "function" ? response.fromServiceWorker() : false,
         timingBucket: timingBucket(typeof response.timing === "function" ? response.timing() : (typeof request.timing === "function" ? request.timing() : null)),
@@ -4352,7 +4387,13 @@ function isSafeToggleCandidate(candidate) {
         scrollY,
         label: scrollY === 0 ? "scroll top" : `scroll ${scrollY}px`,
         interactionKind: "scroll",
-        rootContext: { kind: "document", frameSrc: null, shadowHostTag: null },
+        rootContext: {
+          kind: "document",
+          frameSrc: null,
+          frameUrl: page.url(),
+          shadowHostTag: null,
+          surfaceIndex: 0,
+        },
       });
       try {
         await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), scrollY);
@@ -4578,7 +4619,7 @@ function isSafeToggleCandidate(candidate) {
               try {
                 await page.evaluate(evaluateInteractionRuntime, { action: "click", selector: candidate.selector, rootContext: candidate.rootContext });
                 await page.waitForTimeout(60);
-                restoredState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-toggle", selector: candidate.selector });
+                restoredState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-toggle", selector: candidate.selector, rootContext: candidate.rootContext });
               } catch (error) {
                 restoreError = error.message;
               }
@@ -4739,6 +4780,16 @@ function isSafeToggleCandidate(candidate) {
       const response = request.requestId !== undefined && request.requestId !== null ? responseById.get(request.requestId) : null;
       const failure = request.requestId !== undefined && request.requestId !== null ? failureById.get(request.requestId) : null;
       const responseTiming = response && response.responseTiming ? response.responseTiming : null;
+      const responseHeadersArray = response ? (response.responseHeadersArray || []) : [];
+      const responseHeaderPresence = response ? (response.headerPresence || {}) : {};
+      const requestHeadersArray = request.requestHeadersArray || [];
+      const requestHeaderPresence = request.headerPresence || {};
+      const redirectInfo = request.redirectDepth > 0 || request.redirectedFromUrl
+        ? {
+            redirectedFromUrl: request.redirectedFromUrl || null,
+            redirectDepth: request.redirectDepth || 0,
+          }
+        : null;
       harEntries.push({
         startedDateTime: new Date(request.observedAt || Date.now()).toISOString(),
         timeBucket: request.timingBucket || "unknown",
@@ -4748,37 +4799,45 @@ function isSafeToggleCandidate(candidate) {
             ? Math.max(0, Number(responseTiming.responseStart))
             : null,
         pageref: "page_1",
+        initiator: {
+          type: request.isNavigationRequest ? "navigation" : (request.resourceType || "other"),
+          frameUrl: request.frameUrl || null,
+          redirectDepth: request.redirectDepth || 0,
+          redirectedFromUrl: request.redirectedFromUrl || null,
+          isNavigationRequest: Boolean(request.isNavigationRequest),
+        },
         request: {
           method: request.method,
           url: request.url,
           httpVersion: null,
-          headers: request.requestHeadersArray || [],
+          headers: requestHeadersArray,
           queryString: Array.isArray(request.queryString) ? request.queryString : [],
           cookies: Array.isArray(request.requestCookies) ? request.requestCookies : [],
-          headerPresence: request.headerPresence || {},
+          headerPresence: requestHeaderPresence,
           postDataSize: request.postDataSize || 0,
           hasPostData: Boolean(request.hasPostData),
+          postData: request.postDataText ? { mimeType: requestHeadersArray.find((entry) => entry.name.toLowerCase() === "content-type")?.value || null, text: request.postDataText, encoding: null } : null,
           resourceType: request.resourceType || null,
           frameUrl: request.frameUrl || null,
           isNavigationRequest: Boolean(request.isNavigationRequest),
           redirectDepth: request.redirectDepth || 0,
           redirectedFromUrl: request.redirectedFromUrl || null,
           bodySize: request.postDataSize || 0,
-          headersSize: -1,
+          headersSize: requestHeadersArray.length,
         },
         response: response ? {
           status: response.status,
           statusText: response.statusText || null,
           httpVersion: null,
-          headers: response.responseHeadersArray || [],
+          headers: responseHeadersArray,
           cookies: Array.isArray(response.responseCookies) ? response.responseCookies : [],
-          headerPresence: response.headerPresence || {},
+          headerPresence: responseHeaderPresence,
           contentType: response.contentType || null,
           contentLength: response.contentLength || null,
           fromServiceWorker: Boolean(response.fromServiceWorker),
           frameUrl: response.frameUrl || null,
           bodySize: response.contentLength ? Number(response.contentLength) || -1 : -1,
-          headersSize: -1,
+          headersSize: responseHeadersArray.length,
         } : null,
         failure: failure ? {
           errorText: failure.errorText || null,
@@ -4799,6 +4858,9 @@ function isSafeToggleCandidate(candidate) {
             : null,
         },
       });
+      if (redirectInfo) {
+        harEntries[harEntries.length - 1].redirect = redirectInfo;
+      }
     }
     networkManifest.summary = {
       requestCount: networkManifest.requests.length,
