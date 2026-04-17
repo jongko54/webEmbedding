@@ -2058,6 +2058,20 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "bodySections": body_sections,
         "interactions": interaction_cards,
         "shellPanels": shell_panels,
+        "shellTopology": {
+            "primaryRegion": "workspace" if app_shell_mode else None,
+            "regionOrder": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+            "regions": [
+                {
+                    "id": panel.get("id"),
+                    "role": panel.get("role"),
+                    "title": panel.get("title"),
+                    "itemCount": len(panel.get("items", []) if isinstance(panel.get("items", []), list) else []),
+                }
+                for panel in shell_panels
+                if isinstance(panel, dict)
+            ],
+        },
         "shellSummary": {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
@@ -2349,6 +2363,7 @@ def _render_bounded_reference_page_tsx() -> str:
             '  const appShellMode = data.layoutMode === "app-shell";',
             '  const shellPanels = data.shellPanels ?? [];',
             '  const shellSummary = data.shellSummary ?? {};',
+            '  const shellTopology = data.shellTopology ?? {};',
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
             '    const inputType = data.hero.focusInput?.inputType ?? "text";',
@@ -2550,6 +2565,10 @@ def _render_bounded_reference_page_tsx() -> str:
             '          <div className="bounded-meta bounded-meta--inline">',
             '            <span className="bounded-chip bounded-chip--muted">{shellSummary.kind ?? "app-shell-dashboard-next-app"}</span>',
             '            <span className="bounded-chip bounded-chip--muted">{`${shellSummary.panelCount ?? shellPanels.length} panels`}</span>',
+            '            {shellTopology.primaryRegion ? <span className="bounded-chip">primary: {shellTopology.primaryRegion}</span> : null}',
+            '            {(shellTopology.regionOrder ?? []).slice(0, 4).map((role) => (',
+            '              <span className="bounded-chip bounded-chip--muted" key={role}>{role}</span>',
+            "            ))}",
             '            {(shellSummary.panelTitles ?? []).slice(0, 3).map((title) => (',
             '              <span className="bounded-chip" key={title}>{title}</span>',
             "            ))}",
@@ -3160,6 +3179,10 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
 
     app_shell_panel_bits: list[str] = []
     if app_shell_mode:
+        shell_topology = {
+            "primaryRegion": "workspace",
+            "regionOrder": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+        }
         shell_summary = {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
@@ -3172,6 +3195,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 '      <div class="bounded-meta bounded-meta--inline">',
                 f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["kind"]}</span>',
                 f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["panelCount"]} panels</span>',
+                f'        <span class="bounded-chip">primary: {escape(str(shell_topology["primaryRegion"]))}</span>',
+                *[f'        <span class="bounded-chip bounded-chip--muted">{escape(str(role))}</span>' for role in shell_topology["regionOrder"][:4] if role],
                 *[f'        <span class="bounded-chip">{escape(str(title))}</span>' for title in shell_summary["panelTitles"][:3] if title],
                 "      </div>",
                 '      <div style="display:grid; gap:16px; grid-template-columns:minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);">',
@@ -4139,6 +4164,13 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "screenshot-led composition checks",
                 "DOM and CSS fidelity layered after the visual pass",
             ],
+            "verification_hints": [
+                "stage bounds align to the captured viewport",
+                "overlay controls stay visible and reachable",
+                "palette and contrast remain consistent with the reference",
+                "responsive variants keep the same composition hierarchy",
+                "screenshot similarity is the primary check before DOM detail",
+            ],
             "focus": [
                 "stage geometry",
                 "dominant palette",
@@ -4249,6 +4281,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "panelCount": len(app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []),
         "panelRoles": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
     }
+    summary["shellTopology"] = app_model.get("shellTopology") or {
+        "primaryRegion": "workspace" if app_model.get("layoutMode") == "app-shell" else None,
+        "regionOrder": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
+    }
     summary["layoutMode"] = app_model.get("layoutMode")
     summary["layoutTokens"] = app_model.get("layoutTokens") or {}
     if (summary.get("visual_fallback") or {}).get("available"):
@@ -4256,6 +4292,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "Visual fallback mode: prioritize captured stage geometry and composition before exact component-level reconstruction.",
             "Use screenshot evidence to keep canvas/WebGL-heavy surfaces faithful even when DOM structure is sparse.",
             "Treat overlay chrome as bounded HTML/CSS and keep responsive variants aligned to captured viewport geometry.",
+            "Judge fidelity primarily by screenshot similarity, then verify control reachability and responsive composition parity.",
         ]
     html = _render_html(summary)
     css = _render_css(summary)

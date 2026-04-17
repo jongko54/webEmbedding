@@ -51,7 +51,7 @@ def plan_reproduction_path(
             3,
             {
                 "stage": "renderer",
-                "action": "prefer an app-shell renderer family that preserves toolbar, sidebar, workspace, and inspector panels before landing-page compression",
+                "action": "prefer an app-shell renderer family that preserves toolbar, sidebar, workspace, and inspector topology before landing-page compression",
             },
         )
 
@@ -151,6 +151,13 @@ def plan_reproduction_path(
                 "text hierarchy",
                 "overlay controls",
                 "viewport-specific composition",
+            ],
+            "verification_hints": [
+                "stage bounds align to the captured viewport",
+                "overlay controls stay visible and reachable",
+                "palette and contrast remain consistent with the reference",
+                "responsive variants keep the same composition hierarchy",
+                "screenshot similarity is the primary check before DOM detail",
             ],
         }
 

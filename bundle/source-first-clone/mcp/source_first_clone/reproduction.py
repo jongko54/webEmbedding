@@ -293,6 +293,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- Keep panel and state boundaries explicit; do not collapse the surface into a centered landing-page layout.",
                         "- Prefer dashboard-style composition with stable sidebars and content panes before hero-style compression.",
                         "- Keep shell topology legible in the rebuild prompt: navigation, workspace, inspector, and auxiliary regions should remain separable.",
+                        "- Preserve region order and primary panel emphasis when available; do not flatten the shell into one generic content column.",
                     ]
                 )
             if str(site_profile.get("primary_surface") or "").lower() == "canvas-or-webgl-surface" or str(route_hints.get("renderer_route") or "").lower() == "visual-fallback-rebuild":
@@ -321,6 +322,16 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- viewport-anchored stage geometry",
                         "- screenshot-led composition checks",
                         "- DOM and CSS fidelity layered after the visual pass",
+                    ]
+                )
+                prompt_lines.append("Visual fallback verification hints:")
+                prompt_lines.extend(
+                    [
+                        "- confirm stage bounds align to the captured viewport",
+                        "- keep overlay controls visible and reachable",
+                        "- preserve palette and contrast from the reference",
+                        "- check responsive variants against the same composition hierarchy",
+                        "- use screenshot similarity before judging DOM-level detail",
                     ]
                 )
                 prompt_lines.append("Visual fallback capture hints:")

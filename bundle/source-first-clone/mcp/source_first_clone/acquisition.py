@@ -1912,6 +1912,7 @@ function evaluateInteractionRuntime(payload) {
         shadowHostTag: null,
         surfaceIndex: 0,
       }),
+      rootPath: ["document"],
     }];
     const seenDocuments = new Set([rootDocument]);
     const seenShadows = new Set();
@@ -1929,6 +1930,7 @@ function evaluateInteractionRuntime(payload) {
         shadowHostTag: null,
         surfaceIndex: 0,
       }),
+      rootPath: ["document"],
     }];
     while (queue.length && roots.length < maxFrameDocuments + 64) {
       const current = queue.shift();
@@ -1951,6 +1953,7 @@ function evaluateInteractionRuntime(payload) {
               shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
               surfaceIndex: roots.length,
             }),
+            rootPath: (current.rootPath || ["document"]).concat([`shadow-root:${element.tagName ? element.tagName.toLowerCase() : "unknown"}`]),
           };
           roots.push(shadowEntry);
           queue.push(shadowEntry);
@@ -1978,6 +1981,7 @@ function evaluateInteractionRuntime(payload) {
                 shadowHostTag: null,
                 surfaceIndex: roots.length,
               }),
+              rootPath: (current.rootPath || ["document"]).concat([`frame-document:${frameDoc.location && frameDoc.location.href ? frameDoc.location.href : (element.getAttribute("src") || element.src || "unknown")}`]),
             };
             roots.push(frameEntry);
             queue.push(frameEntry);
@@ -1992,6 +1996,9 @@ function evaluateInteractionRuntime(payload) {
       return 0;
     }
     let score = 0;
+    if (targetContext.rootPath && entry.rootPath && Array.isArray(targetContext.rootPath) && Array.isArray(entry.rootPath) && targetContext.rootPath.length === entry.rootPath.length && targetContext.rootPath.every((value, index) => value === entry.rootPath[index])) {
+      score += 180;
+    }
     if (targetContext.rootSignature && entry.rootSignature && entry.rootSignature === targetContext.rootSignature) {
       score += 160;
     }
@@ -2711,6 +2718,23 @@ function isSafeToggleCandidate(candidate) {
         return [];
       }
     };
+    const parseCookieAttributes = (parts) => {
+      const attrs = { path: null, domain: null, expires: null, httpOnly: null, secure: null, sameSite: null };
+      for (const rawPart of parts || []) {
+        const part = String(rawPart || "").trim();
+        if (!part) continue;
+        const separatorIndex = part.indexOf("=");
+        const key = (separatorIndex === -1 ? part : part.slice(0, separatorIndex)).trim().toLowerCase();
+        const value = separatorIndex === -1 ? "" : part.slice(separatorIndex + 1).trim();
+        if (key === "path") attrs.path = value || null;
+        else if (key === "domain") attrs.domain = value || null;
+        else if (key === "expires") attrs.expires = value || null;
+        else if (key === "samesite") attrs.sameSite = value || null;
+        else if (key === "httponly") attrs.httpOnly = true;
+        else if (key === "secure") attrs.secure = true;
+      }
+      return attrs;
+    };
     const splitCookiePairs = (rawCookieValue) => {
       if (!rawCookieValue) {
         return [];
@@ -2739,7 +2763,37 @@ function isSafeToggleCandidate(candidate) {
           httpOnly: null,
           secure: null,
           sameSite: null,
-        }));
+          }));
+    };
+    const splitSetCookieValues = (rawCookieValue) => {
+      if (!rawCookieValue) {
+        return [];
+      }
+      return String(rawCookieValue)
+        .split(/,(?=[^;=]+=[^;=]+)/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((cookieString) => {
+          const segments = cookieString.split(";").map((part) => part.trim()).filter(Boolean);
+          if (!segments.length) return null;
+          const first = segments.shift();
+          const separatorIndex = first.indexOf("=");
+          const name = separatorIndex === -1 ? first.trim() : first.slice(0, separatorIndex).trim();
+          const value = separatorIndex === -1 ? "" : first.slice(separatorIndex + 1).trim();
+          if (!name) return null;
+          const attrs = parseCookieAttributes(segments);
+          return {
+            name,
+            value,
+            path: attrs.path,
+            domain: attrs.domain,
+            expires: attrs.expires,
+            httpOnly: attrs.httpOnly,
+            secure: attrs.secure,
+            sameSite: attrs.sameSite,
+          };
+        })
+        .filter(Boolean);
     };
     const cookiePairsFromHeaders = (headers, key) => {
       const normalized = headers || {};
@@ -2748,9 +2802,9 @@ function isSafeToggleCandidate(candidate) {
         return [];
       }
       if (Array.isArray(raw)) {
-        return raw.flatMap((item) => splitCookiePairs(item));
+        return raw.flatMap((item) => key === "set-cookie" ? splitSetCookieValues(item) : splitCookiePairs(item));
       }
-      return splitCookiePairs(raw);
+      return key === "set-cookie" ? splitSetCookieValues(raw) : splitCookiePairs(raw);
     };
     const filterHeaders = (headers, keys) => {
       const normalized = headers || {};
@@ -2907,15 +2961,32 @@ function isSafeToggleCandidate(candidate) {
       }
       const fetchStart = Number.isFinite(Number(timing.fetchStart)) ? Number(timing.fetchStart) : 0;
       const domContentLoadedEventEnd = Number.isFinite(Number(timing.domContentLoadedEventEnd)) ? Number(timing.domContentLoadedEventEnd) : null;
+      const domContentLoadedEventStart = Number.isFinite(Number(timing.domContentLoadedEventStart)) ? Number(timing.domContentLoadedEventStart) : null;
       const loadEventEnd = Number.isFinite(Number(timing.loadEventEnd)) ? Number(timing.loadEventEnd) : null;
+      const loadEventStart = Number.isFinite(Number(timing.loadEventStart)) ? Number(timing.loadEventStart) : null;
       const responseEnd = Number.isFinite(Number(timing.responseEnd)) ? Number(timing.responseEnd) : null;
+      const responseStart = Number.isFinite(Number(timing.responseStart)) ? Number(timing.responseStart) : null;
+      const domInteractive = Number.isFinite(Number(timing.domInteractive)) ? Number(timing.domInteractive) : null;
+      const domComplete = Number.isFinite(Number(timing.domComplete)) ? Number(timing.domComplete) : null;
+      const paintEntries = performance && typeof performance.getEntriesByType === "function"
+        ? performance.getEntriesByType("paint")
+        : [];
+      const firstPaintEntry = Array.isArray(paintEntries) ? paintEntries.find((entry) => entry && entry.name === "first-paint") || null : null;
+      const firstContentfulPaintEntry = Array.isArray(paintEntries) ? paintEntries.find((entry) => entry && entry.name === "first-contentful-paint") || null : null;
       return {
         type: timing.type || null,
         startTime: Number.isFinite(Number(timing.startTime)) ? Number(timing.startTime) : 0,
         fetchStart,
         responseEnd,
+        responseStart,
+        domInteractive,
+        domComplete,
+        domContentLoadedEventStart,
         domContentLoadedEventEnd,
+        loadEventStart,
         loadEventEnd,
+        firstPaint: firstPaintEntry && Number.isFinite(Number(firstPaintEntry.startTime)) ? Number(firstPaintEntry.startTime) : null,
+        firstContentfulPaint: firstContentfulPaintEntry && Number.isFinite(Number(firstContentfulPaintEntry.startTime)) ? Number(firstContentfulPaintEntry.startTime) : null,
         domContentLoadedDuration: domContentLoadedEventEnd !== null ? Math.max(0, domContentLoadedEventEnd - fetchStart) : null,
         loadDuration: loadEventEnd !== null ? Math.max(0, loadEventEnd - fetchStart) : null,
       };
@@ -3972,24 +4043,26 @@ function isSafeToggleCandidate(candidate) {
     }));
     const interactiveCandidates = await page.evaluate(() => {
       const collectCandidateRoots = (rootDocument = document, maxFrameDocuments = 12) => {
-        const roots = [{
-          root: rootDocument,
-          kind: "document",
-          frameSrc: null,
-          frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
-          shadowHostTag: null,
-          surfaceIndex: 0,
-        }];
+      const roots = [{
+        root: rootDocument,
+        kind: "document",
+        frameSrc: null,
+        frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+        shadowHostTag: null,
+        surfaceIndex: 0,
+        rootPath: ["document"],
+      }];
         const seenDocuments = new Set([rootDocument]);
         const seenShadows = new Set();
-        const queue = [{
-          root: rootDocument,
-          kind: "document",
-          frameSrc: null,
-          frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
-          shadowHostTag: null,
-          surfaceIndex: 0,
-        }];
+      const queue = [{
+        root: rootDocument,
+        kind: "document",
+        frameSrc: null,
+        frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+        shadowHostTag: null,
+        surfaceIndex: 0,
+        rootPath: ["document"],
+      }];
         while (queue.length && roots.length < maxFrameDocuments + 64) {
           const current = queue.shift();
           const scope = current.root;
@@ -4001,10 +4074,11 @@ function isSafeToggleCandidate(candidate) {
                 root: element.shadowRoot,
                 kind: "shadow-root",
                 frameSrc: current.frameSrc || null,
-                frameUrl: current.frameUrl || null,
-                shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
-                surfaceIndex: roots.length,
-              };
+            frameUrl: current.frameUrl || null,
+            shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+            surfaceIndex: roots.length,
+            rootPath: (current.rootPath || ["document"]).concat([`shadow-root:${element.tagName ? element.tagName.toLowerCase() : "unknown"}`]),
+          };
               roots.push(shadowEntry);
               queue.push(shadowEntry);
             }
@@ -4017,14 +4091,15 @@ function isSafeToggleCandidate(candidate) {
               }
               if (frameDoc && frameDoc.documentElement && !seenDocuments.has(frameDoc) && roots.length < maxFrameDocuments + 64) {
                 seenDocuments.add(frameDoc);
-                const frameEntry = {
-                  root: frameDoc,
-                  kind: "frame-document",
-                  frameSrc: element.getAttribute("src") || element.src || null,
-                  frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
-                  shadowHostTag: null,
-                  surfaceIndex: roots.length,
-                };
+            const frameEntry = {
+              root: frameDoc,
+              kind: "frame-document",
+              frameSrc: element.getAttribute("src") || element.src || null,
+              frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
+              shadowHostTag: null,
+              surfaceIndex: roots.length,
+              rootPath: (current.rootPath || ["document"]).concat([`frame-document:${frameDoc.location && frameDoc.location.href ? frameDoc.location.href : (element.getAttribute("src") || element.src || "unknown")}`]),
+            };
                 roots.push(frameEntry);
                 queue.push(frameEntry);
               }
@@ -4304,18 +4379,6 @@ function isSafeToggleCandidate(candidate) {
       const seen = new Set();
       const nodes = [];
       const rootContext = new WeakMap();
-      const buildRootSignature = (context) => {
-        if (!context || typeof context !== "object") {
-          return "document||||0";
-        }
-        return [
-          context.kind || "document",
-          context.frameSrc || "",
-          context.frameUrl || "",
-          context.shadowHostTag || "",
-          typeof context.surfaceIndex === "number" ? String(context.surfaceIndex) : "",
-        ].join("|");
-      };
       const pushNode = (element) => {
         if (!element || seen.has(element) || !isVisibleCandidate(element)) {
           return;
@@ -4333,7 +4396,14 @@ function isSafeToggleCandidate(candidate) {
             frameUrl: entry.frameUrl || null,
             shadowHostTag: entry.shadowHostTag,
             surfaceIndex: entry.surfaceIndex,
-            rootSignature: entry.rootSignature || buildRootSignature(entry),
+            rootPath: Array.isArray(entry.rootPath) ? entry.rootPath : ["document"],
+            rootSignature: entry.rootSignature || [
+              entry.kind || "document",
+              entry.frameSrc || "",
+              entry.frameUrl || "",
+              entry.shadowHostTag || "",
+              typeof entry.surfaceIndex === "number" ? String(entry.surfaceIndex) : "",
+            ].join("|"),
           });
           pushNode(element);
         }
@@ -4344,7 +4414,14 @@ function isSafeToggleCandidate(candidate) {
             frameUrl: entry.frameUrl || null,
             shadowHostTag: entry.shadowHostTag,
             surfaceIndex: entry.surfaceIndex,
-            rootSignature: entry.rootSignature || buildRootSignature(entry),
+            rootPath: Array.isArray(entry.rootPath) ? entry.rootPath : ["document"],
+            rootSignature: entry.rootSignature || [
+              entry.kind || "document",
+              entry.frameSrc || "",
+              entry.frameUrl || "",
+              entry.shadowHostTag || "",
+              typeof entry.surfaceIndex === "number" ? String(entry.surfaceIndex) : "",
+            ].join("|"),
           });
           pushNode(element);
         }
@@ -4359,7 +4436,14 @@ function isSafeToggleCandidate(candidate) {
               frameUrl: entry.frameUrl || null,
               shadowHostTag: entry.shadowHostTag,
               surfaceIndex: entry.surfaceIndex,
-              rootSignature: entry.rootSignature || buildRootSignature(entry),
+              rootPath: Array.isArray(entry.rootPath) ? entry.rootPath : ["document"],
+              rootSignature: entry.rootSignature || [
+                entry.kind || "document",
+                entry.frameSrc || "",
+                entry.frameUrl || "",
+                entry.shadowHostTag || "",
+                typeof entry.surfaceIndex === "number" ? String(entry.surfaceIndex) : "",
+              ].join("|"),
             });
             pushNode(element);
           }
@@ -4375,7 +4459,14 @@ function isSafeToggleCandidate(candidate) {
         const view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
         const style = view.getComputedStyle(element);
         const classification = classifySurfaceKinds(element, style);
-        const contextMeta = rootContext.get(element) || { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0, rootSignature: buildRootSignature({ kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 }) };
+        const contextMeta = rootContext.get(element) || {
+          kind: "document",
+          frameSrc: null,
+          frameUrl: null,
+          shadowHostTag: null,
+          surfaceIndex: 0,
+          rootSignature: "document||||0",
+        };
         const summaryLabel = [
           getInteractionLabel(element),
           classification.kinds.length ? classification.kinds.join("+") : null,
@@ -4471,7 +4562,7 @@ function isSafeToggleCandidate(candidate) {
     let traceOrder = 0;
   const normalizeTraceRootContext = (rootContext) => {
     if (!rootContext || typeof rootContext !== "object") {
-      return { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0, rootSignature: buildRootSignature({ kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 }) };
+      return { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0, rootSignature: "document||||0", rootPath: ["document"] };
     }
     return {
       kind: rootContext.kind || "document",
@@ -4479,7 +4570,14 @@ function isSafeToggleCandidate(candidate) {
       frameUrl: rootContext.frameUrl || null,
       shadowHostTag: rootContext.shadowHostTag || null,
       surfaceIndex: typeof rootContext.surfaceIndex === "number" ? rootContext.surfaceIndex : null,
-      rootSignature: rootContext.rootSignature || buildRootSignature(rootContext),
+      rootPath: Array.isArray(rootContext.rootPath) ? rootContext.rootPath : ["document"],
+      rootSignature: rootContext.rootSignature || [
+        rootContext.kind || "document",
+        rootContext.frameSrc || "",
+        rootContext.frameUrl || "",
+        rootContext.shadowHostTag || "",
+        typeof rootContext.surfaceIndex === "number" ? String(rootContext.surfaceIndex) : "",
+      ].join("|"),
     };
   };
     const pushTraceStep = (step) => {
@@ -4519,6 +4617,8 @@ function isSafeToggleCandidate(candidate) {
           frameUrl: page.url(),
           shadowHostTag: null,
           surfaceIndex: 0,
+          rootPath: ["document"],
+          rootSignature: ["document", "", page.url(), "", "0"].join("|"),
         },
       });
       try {
@@ -4882,8 +4982,12 @@ function isSafeToggleCandidate(candidate) {
       likelyHasBody: networkManifest.responses.filter((entry) => ![204, 205, 304].includes(Number(entry.status || 0)) && (Boolean(entry.contentLength) || Boolean(entry.contentType))).length,
     };
     const queryParameterCount = networkManifest.requests.reduce((total, entry) => total + (Array.isArray(entry.queryString) ? entry.queryString.length : 0), 0);
+    const requestCookieCount = networkManifest.requests.reduce((total, entry) => total + (Array.isArray(entry.requestCookies) ? entry.requestCookies.length : 0), 0);
+    const responseCookieCount = networkManifest.responses.reduce((total, entry) => total + (Array.isArray(entry.responseCookies) ? entry.responseCookies.length : 0), 0);
     const requestHeaderBytes = networkManifest.requests.reduce((total, entry) => total + headersSizeFromArray(entry.requestHeadersArray || []), 0);
     const responseHeaderBytes = networkManifest.responses.reduce((total, entry) => total + headersSizeFromArray(entry.responseHeadersArray || []), 0);
+    const requestBodyBytes = networkManifest.requests.reduce((total, entry) => total + Math.max(0, Number(entry.postDataSize || 0)), 0);
+    const responseBodyBytes = networkManifest.responses.reduce((total, entry) => total + Math.max(0, Number(entry.contentLength || 0)), 0);
     const responseRedirectCount = networkManifest.responses.filter((entry) => Boolean(entry.redirectURL) || (Number(entry.status || 0) >= 300 && Number(entry.status || 0) < 400)).length;
     const frameUrlSample = Array.from(new Set(
       networkManifest.requests
@@ -5019,8 +5123,12 @@ function isSafeToggleCandidate(candidate) {
       timingBucketCounts,
       responseBodyAvailability,
       queryParameterCount,
+      requestCookieCount,
+      responseCookieCount,
       requestHeaderBytes,
       responseHeaderBytes,
+      requestBodyBytes,
+      responseBodyBytes,
       responseRedirectCount,
       navigationRequestCount: networkManifest.requests.filter((entry) => entry.isNavigationRequest).length,
       postDataRequestCount: networkManifest.requests.filter((entry) => entry.hasPostData).length,
