@@ -99,6 +99,7 @@ def plan_reproduction_path_tool(arguments: dict[str, Any]) -> dict[str, Any]:
         license_text=arguments.get("license_text"),
         candidates=arguments.get("candidates"),
         source_signals=arguments.get("source_signals"),
+        site_profile=arguments.get("site_profile"),
         capture_bundle=arguments.get("capture_bundle"),
     )
 
@@ -212,6 +213,7 @@ TOOLS = [
                 "license_text": {"type": "string"},
                 "candidates": {"type": "array", "items": {"type": "object"}},
                 "source_signals": {"type": "array", "items": {"type": "string"}},
+                "site_profile": {"type": "object"},
             },
         },
     },
@@ -264,6 +266,7 @@ TOOLS = [
                 "license_text": {"type": "string"},
                 "candidates": {"type": "array", "items": {"type": "object"}},
                 "source_signals": {"type": "array", "items": {"type": "string"}},
+                "site_profile": {"type": "object"},
                 "capture_bundle": {"type": "object"},
             },
         },

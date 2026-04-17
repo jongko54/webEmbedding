@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -50,10 +51,11 @@ def default_bundle_dir() -> Path:
     return repo_root() / "bundle" / PLUGIN_NAME
 
 
-def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any]:
+def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
     if str(capture_root) not in sys.path:
         sys.path.insert(0, str(capture_root))
+    from source_first_clone.acquisition import inspect_reference
     from source_first_clone.acquisition import detect_runtime_capabilities
     from source_first_clone.capture_bundle import capture_reference_bundle
     from source_first_clone.orchestration import clone_reference_url
@@ -62,6 +64,7 @@ def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any]:
     from source_first_clone.verification import verify_fidelity_report
 
     return (
+        inspect_reference,
         detect_runtime_capabilities,
         capture_reference_bundle,
         build_reproduction_bundle,
@@ -260,8 +263,147 @@ def command_paths(args: argparse.Namespace) -> int:
 
 def command_capabilities(args: argparse.Namespace) -> int:
     del args
-    detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     print(json.dumps(detect_runtime_capabilities(), indent=2))
+    return 0
+
+
+def compact_site_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+    route_hints = profile.get("route_hints", {}) if isinstance(profile.get("route_hints"), dict) else {}
+    signals = profile.get("signals", {}) if isinstance(profile.get("signals"), dict) else {}
+    return {
+        "primary_surface": profile.get("primary_surface"),
+        "confidence": profile.get("confidence"),
+        "platform": profile.get("platform"),
+        "route_hints": {
+            "acquisition_profile": route_hints.get("acquisition_profile"),
+            "renderer_route": route_hints.get("renderer_route"),
+            "renderer_family": route_hints.get("renderer_family"),
+            "critical_depths": route_hints.get("critical_depths"),
+        },
+        "signals": {
+            "frame_blocked": signals.get("frame_blocked"),
+            "app_shell": signals.get("app_shell"),
+            "auth_detected": signals.get("auth_detected"),
+            "canvas_detected": signals.get("canvas_detected"),
+            "shadow_dom_detected": signals.get("shadow_dom_detected"),
+            "multi_frame": signals.get("multi_frame"),
+            "longform": signals.get("longform"),
+            "runtime_frameworks": signals.get("runtime_frameworks"),
+            "exact_candidate_present": signals.get("exact_candidate_present"),
+            "exact_candidate_kinds": signals.get("exact_candidate_kinds"),
+        },
+        "notes": profile.get("notes"),
+    }
+
+
+def compact_capture_depth(captures: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(captures, dict):
+        return None
+    html_capture = captures.get("html", {}) if isinstance(captures.get("html"), dict) else {}
+    accessibility_capture = captures.get("accessibility", {}) if isinstance(captures.get("accessibility"), dict) else {}
+    dom_capture = captures.get("dom", {}) if isinstance(captures.get("dom"), dict) else {}
+    css_capture = captures.get("cssAnalysis", {}) if isinstance(captures.get("cssAnalysis"), dict) else {}
+    assets_capture = captures.get("assets", {}) if isinstance(captures.get("assets"), dict) else {}
+    interactions_capture = captures.get("interactions", {}) if isinstance(captures.get("interactions"), dict) else {}
+    interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures.get("interactionTrace"), dict) else {}
+    screenshot_capture = captures.get("screenshot", {}) if isinstance(captures.get("screenshot"), dict) else {}
+    network_capture = captures.get("network", {}) if isinstance(captures.get("network"), dict) else {}
+    asset_summary = assets_capture.get("summary") if isinstance(assets_capture.get("summary"), dict) else None
+    network_summary = None
+    if isinstance(network_capture.get("content"), dict):
+        network_summary = network_capture["content"].get("summary")
+    if not any([html_capture, accessibility_capture, dom_capture, css_capture, asset_summary, interactions_capture, interaction_trace_capture, screenshot_capture, network_summary]):
+        return None
+    network_depth = None
+    if isinstance(network_summary, dict):
+        network_depth = {
+            "request_count": network_summary.get("requestCount"),
+            "response_count": network_summary.get("responseCount"),
+            "failure_count": network_summary.get("failureCount"),
+            "redirect_count": network_summary.get("redirectCount"),
+            "navigation_request_count": network_summary.get("navigationRequestCount"),
+            "post_data_request_count": network_summary.get("postDataRequestCount"),
+            "service_worker_response_count": network_summary.get("serviceWorkerResponseCount"),
+            "frame_url_count": network_summary.get("frameUrlCount"),
+            "resource_type_counts": network_summary.get("resourceTypeCounts"),
+            "response_status_counts": network_summary.get("responseStatusCounts"),
+            "failure_reason_counts": network_summary.get("failureReasonCounts"),
+            "timing_bucket_counts": network_summary.get("timingBucketCounts"),
+            "request_header_presence_summary": network_summary.get("requestHeaderPresenceSummary"),
+            "response_header_presence_summary": network_summary.get("responseHeaderPresenceSummary"),
+            "response_body_availability": network_summary.get("responseBodyAvailability"),
+            "frame_url_sample": network_summary.get("frameUrlSample"),
+            "page_timings": network_summary.get("pageTimings"),
+            "har_export_path": network_summary.get("harExportPath"),
+            "har_page_count": network_summary.get("harPageCount"),
+            "har_entry_count": network_summary.get("harEntryCount"),
+            "har_like_entry_count": network_summary.get("harLikeEntryCount"),
+            "har_like_page_count": network_summary.get("harLikePageCount"),
+        }
+    return {
+        "html": {
+            "available": html_capture.get("available"),
+            "length": html_capture.get("length"),
+        },
+        "accessibility": {
+            "available": accessibility_capture.get("available"),
+        },
+        "dom": {
+            "node_count": dom_capture.get("nodeCount"),
+            "shadow_root_count": dom_capture.get("shadowRootCount"),
+            "frame_document_count": dom_capture.get("frameDocumentCount"),
+            "inaccessible_frame_count": dom_capture.get("inaccessibleFrameCount"),
+        },
+        "css": {
+            "stylesheet_count": css_capture.get("stylesheetCount"),
+            "accessible_stylesheet_count": css_capture.get("accessibleStylesheetCount"),
+            "linked_stylesheet_count": css_capture.get("linkedStylesheetCount"),
+            "preload_link_count": css_capture.get("preloadLinkCount"),
+            "font_face_rule_count": css_capture.get("fontFaceRuleCount"),
+            "inline_style_tag_count": css_capture.get("inlineStyleTagCount"),
+            "style_attribute_count": css_capture.get("styleAttributeCount"),
+        },
+        "network": network_depth,
+        "assets": asset_summary,
+        "interactions": {
+            "available": interactions_capture.get("available"),
+            "entry_count": interactions_capture.get("entryCount"),
+        },
+        "interaction_trace": {
+            "available": interaction_trace_capture.get("available"),
+            "step_count": interaction_trace_capture.get("stepCount"),
+            "replayed_count": interaction_trace_capture.get("replayedCount"),
+        },
+        "screenshot": {
+            "available": screenshot_capture.get("available"),
+            "byte_length": screenshot_capture.get("byteLength"),
+            "mime_type": screenshot_capture.get("mimeType"),
+        },
+    }
+
+
+def command_inspect(args: argparse.Namespace) -> int:
+    inspect_reference, _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    result = inspect_reference(args.url, timeout_seconds=args.timeout_seconds)
+    if args.full_json:
+        print(json.dumps(result, indent=2))
+        return 0
+    payload = {
+        "url": result.get("url"),
+        "final_url": result.get("final_url"),
+        "status": result.get("status"),
+        "title": result.get("title"),
+        "platform": result.get("platform"),
+        "frame_policy": result.get("frame_policy"),
+        "source_signals": result.get("source_signals"),
+        "site_profile": compact_site_profile(result.get("site_profile")),
+        "candidate_count": len(result.get("candidate_urls") or []),
+        "candidate_sample": (result.get("candidate_urls") or [])[:12],
+    }
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -269,6 +411,9 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
     summary = json.loads(json.dumps(result))
     runtime = summary.get("runtime", {})
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    static_root = summary.get("static", {}) if isinstance(summary.get("static"), dict) else {}
+    summary["site_profile"] = compact_site_profile(summary.get("site_profile") or static_root.get("site_profile"))
+    summary["capture_depth"] = compact_capture_depth(captures)
     if isinstance(runtime.get("networkHits"), list):
         hits = runtime["networkHits"]
         runtime["networkHitCount"] = len(hits)
@@ -308,12 +453,24 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
         screenshot_capture.pop("base64", None)
     bundle = summary.get("bundle", {})
     captured_artifacts = bundle.get("captured_artifacts", {}) if isinstance(bundle, dict) else {}
+    network_artifact = captured_artifacts.get("network") if isinstance(captured_artifacts.get("network"), dict) else {}
     artifact_html = captured_artifacts.get("html")
     if isinstance(artifact_html, dict):
         artifact_html.pop("content", None)
     artifact_trace = captured_artifacts.get("interaction_trace")
     if isinstance(artifact_trace, dict):
         artifact_trace.pop("content", None)
+    if isinstance(network_artifact, dict):
+        capture_depth = summary.get("capture_depth")
+        if isinstance(capture_depth, dict):
+            network_depth = capture_depth.get("network")
+            if isinstance(network_depth, dict):
+                network_depth["har_export_path"] = network_artifact.get("har_export_path")
+                network_depth["har_like_path"] = network_artifact.get("har_like_path")
+                network_depth["har_page_count"] = network_artifact.get("har_page_count")
+                network_depth["har_entry_count"] = network_artifact.get("har_entry_count")
+                network_depth["har_like_page_count"] = network_artifact.get("har_like_page_count")
+                network_depth["har_like_entry_count"] = network_artifact.get("har_like_entry_count")
     breakpoint_summary = summary.get("breakpoints")
     if isinstance(breakpoint_summary, dict):
         variants = breakpoint_summary.get("variants")
@@ -321,11 +478,14 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
             breakpoint_summary["variant_count"] = len(variants)
             breakpoint_summary["variant_sample"] = variants[:3]
             breakpoint_summary.pop("variants", None)
+    static = summary.get("static", {})
+    if isinstance(static, dict):
+        static["site_profile"] = compact_site_profile(static.get("site_profile"))
     return summary
 
 
 def command_capture(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, _detect_runtime_capabilities, capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     result = capture_reference_bundle(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -362,6 +522,12 @@ def compact_reproduction_result(result: dict[str, Any]) -> dict[str, Any]:
         summary["candidateCount"] = len(candidates)
         summary["candidateSample"] = candidates[:15]
         summary.pop("candidates", None)
+    summary["site_profile"] = compact_site_profile(summary.get("site_profile"))
+    capture_bundle = summary.get("capture_bundle")
+    if isinstance(capture_bundle, dict):
+        runtime = capture_bundle.get("runtime", {})
+        captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+        summary["capture_depth"] = compact_capture_depth(captures)
     self_verify = summary.get("self_verify")
     if isinstance(self_verify, dict):
         breakpoint_summary = self_verify.get("breakpoints", {})
@@ -468,7 +634,7 @@ def compact_rebuild_scaffold_summary(scaffold: dict[str, Any]) -> dict[str, Any]
 
 
 def command_reproduce(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, _detect_runtime_capabilities, capture_reference_bundle, build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     capture_bundle = capture_reference_bundle(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -507,11 +673,16 @@ def compact_clone_result(result: dict[str, Any]) -> dict[str, Any]:
     capture_bundle = summary.get("capture_bundle")
     if isinstance(capture_bundle, dict):
         summary["capture_bundle"] = compact_capture_result(capture_bundle)
+        summary["site_profile"] = summary["capture_bundle"].get("site_profile")
+        summary["capture_depth"] = summary["capture_bundle"].get("capture_depth")
+    reproduction = summary.get("reproduction")
+    if isinstance(reproduction, dict) and not summary.get("site_profile"):
+        summary["site_profile"] = reproduction.get("site_profile")
     return summary
 
 
 def command_clone(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     result = clone_reference_url(
         url=args.url,
         timeout_seconds=args.timeout_seconds,
@@ -540,7 +711,7 @@ def compact_scaffold_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def command_scaffold(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, build_rebuild_scaffold = load_capture_api()
     capture_bundle = load_json_file(args.capture_bundle)
     result = build_rebuild_scaffold(capture_bundle)
     if args.output_dir:
@@ -554,7 +725,7 @@ def command_scaffold(args: argparse.Namespace) -> int:
 
 
 def command_verify(args: argparse.Namespace) -> int:
-    _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
+    _inspect_reference, _detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     reference_bundle = load_json_file(args.reference_bundle)
     candidate_bundle = load_json_file(args.candidate_bundle)
     result = verify_fidelity_report(
@@ -565,6 +736,25 @@ def command_verify(args: argparse.Namespace) -> int:
     )
     print(json.dumps(result, indent=2))
     return 0
+
+
+def command_benchmark(args: argparse.Namespace) -> int:
+    script_path = repo_root() / "scripts" / "benchmark_routes.py"
+    command: list[str] = [sys.executable, str(script_path)]
+    for url in args.url or []:
+        command.extend(["--url", url])
+    if args.urls_file:
+        command.extend(["--urls-file", args.urls_file])
+    if args.corpus_name:
+        command.extend(["--corpus-name", args.corpus_name])
+    command.extend(["--out", args.out])
+    command.extend(["--timeout-seconds", str(args.timeout_seconds)])
+    if args.capture:
+        command.append("--capture")
+    if args.skip_runtime_trace:
+        command.append("--skip-runtime-trace")
+    completed = subprocess.run(command, check=False)
+    return completed.returncode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -594,6 +784,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     capabilities_parser = subparsers.add_parser("capabilities", help="Detect runtime capture dependencies.")
     capabilities_parser.set_defaults(func=command_capabilities)
+
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect a URL and print its universal site profile and route hints.")
+    inspect_parser.add_argument("--url", required=True, help="Reference URL to inspect.")
+    inspect_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    inspect_parser.add_argument("--full-json", action="store_true", help="Print the full raw inspection payload.")
+    inspect_parser.set_defaults(func=command_inspect)
 
     capture_parser = subparsers.add_parser("capture", help="Run a session-aware capture bundle flow.")
     capture_parser.add_argument("--url", required=True, help="Reference URL to capture.")
@@ -667,6 +863,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--reference-url", help="Optional explicit reference URL.")
     verify_parser.add_argument("--candidate-url", help="Optional explicit candidate URL.")
     verify_parser.set_defaults(func=command_verify)
+
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run the universal route benchmark wrapper.")
+    benchmark_parser.add_argument("--url", action="append", default=[], help="URL to include. Repeat for multiple URLs.")
+    benchmark_parser.add_argument("--urls-file", help="Text file with one URL per line.")
+    benchmark_parser.add_argument("--corpus-name", help="Optional label for the benchmark corpus or URL set.")
+    benchmark_parser.add_argument("--out", required=True, help="Output directory for the benchmark run.")
+    benchmark_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    benchmark_parser.add_argument("--capture", action="store_true", help="Also persist a shallow capture bundle per URL.")
+    benchmark_parser.add_argument("--skip-runtime-trace", action="store_true", help="When capturing, skip deep runtime trace and keep the benchmark static-only.")
+    benchmark_parser.set_defaults(func=command_benchmark)
 
     return parser
 

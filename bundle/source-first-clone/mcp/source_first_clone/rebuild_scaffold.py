@@ -1684,6 +1684,8 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         summary.get("description")
         or "Bounded rebuild scaffold derived from DOM, style, asset, and interaction capture. Use it as a practical app starter, not an exact reproduction claim."
     )
+    surface_class = str(summary.get("surface_class") or "").lower()
+    app_shell_mode = surface_class in {"js-app-shell-surface", "authenticated-app-surface"}
     hero_section = next(
         (
             section
@@ -1699,7 +1701,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     hero_copy = hero_section.get("copy") or str(subtitle)
     if hero_copy == "Captured layout block derived from the source page structure.":
         hero_copy = str(subtitle)
-    layout_mode = "centered-focus" if str(hero_section.get("tag") or "").lower() in {"form", "main"} else "structured-grid"
+    layout_mode = "app-shell" if app_shell_mode else ("centered-focus" if str(hero_section.get("tag") or "").lower() in {"form", "main"} else "structured-grid")
     if layout_mode == "centered-focus":
         hero_title = str(summary.get("title") or hero_title)
         hero_copy = ""
@@ -1898,6 +1900,73 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         }
         for section in section_cards
     ]
+    shell_panels: list[dict[str, Any]] = []
+    if app_shell_mode:
+        shell_panels = [
+            {
+                "id": "shell-sidebar",
+                "role": "sidebar",
+                "title": "Navigation",
+                "items": [
+                    {
+                        "label": link.get("label"),
+                        "href": link.get("href"),
+                        "styleSnapshot": link.get("styleSnapshot") or {},
+                        "kind": "link",
+                    }
+                    for link in masthead_links[:6]
+                ]
+                or [
+                    {
+                        "label": section.get("title"),
+                        "copy": section.get("copy"),
+                        "styleSnapshot": section.get("styleSnapshot") or {},
+                        "kind": "section",
+                    }
+                    for section in section_cards[:4]
+                ],
+            },
+            {
+                "id": "shell-workspace",
+                "role": "workspace",
+                "title": hero_title,
+                "items": [
+                    {
+                        "label": section.get("title"),
+                        "copy": section.get("copy"),
+                        "meta": section.get("meta"),
+                        "styleSnapshot": section.get("styleSnapshot") or {},
+                        "role": section.get("role"),
+                        "kind": "section",
+                    }
+                    for section in (body_sections[:4] or section_cards[:4])
+                ],
+            },
+            {
+                "id": "shell-inspector",
+                "role": "inspector",
+                "title": "Inspector",
+                "items": [
+                    {
+                        "label": card.get("label"),
+                        "copy": card.get("copy"),
+                        "states": card.get("states"),
+                        "styleSnapshot": card.get("styleSnapshot") or {},
+                        "controlTag": card.get("controlTag"),
+                        "kind": "interaction",
+                    }
+                    for card in interaction_cards[:6]
+                ]
+                or [
+                    {
+                        "label": bit,
+                        "copy": bit,
+                        "kind": "signal",
+                    }
+                    for bit in signal_bits[:4]
+                ],
+            },
+        ]
     layout_tokens = _build_layout_tokens(style_tokens=summary.get("styleTokens") or {}, masthead_links=masthead_links, focus_shell_style=focus_shell_style, focus_input=focus_input if isinstance(focus_input, dict) else {}, focus_actions=action_items)
 
     return {
@@ -1966,6 +2035,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         },
         "bodySections": body_sections,
         "interactions": interaction_cards,
+        "shellPanels": shell_panels,
         "outline": outline_cards,
         "reconstruction": {
             "version": "reconstruction.v1",
@@ -2243,6 +2313,8 @@ def _render_bounded_reference_page_tsx() -> str:
             "  const focusShellStyle = styleFromSnapshot(data.hero.focusShellStyle, true);",
             "  const focusInputStyle = styleFromSnapshot(data.hero.focusInput?.styleSnapshot);",
             '  const centeredFocus = data.layoutMode === "centered-focus";',
+            '  const appShellMode = data.layoutMode === "app-shell";',
+            '  const shellPanels = data.shellPanels ?? [];',
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
             '    const inputType = data.hero.focusInput?.inputType ?? "text";',
@@ -2438,6 +2510,35 @@ def _render_bounded_reference_page_tsx() -> str:
             "        )}",
             "      </div>",
             "",
+            '      {appShellMode ? (',
+            '        <div className="bounded-panel bounded-stack bounded-app-shell">',
+            '          <p className="bounded-kicker">App-shell surface</p>',
+            '          <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px)" }}>',
+            "            {shellPanels.map((panel) => (",
+            '              <div className="bounded-panel bounded-stack" key={panel.id}>',
+            '                <p className="bounded-kicker">{panel.title}</p>',
+            "                {(panel.items ?? []).slice(0, 6).map((item, index) => (",
+            '                  <div className="bounded-mini-card" key={`${panel.id}-${item.label ?? item.copy ?? index}`} style={styleFromSnapshot(item.styleSnapshot)}>',
+            '                    <strong>{item.label ?? item.kind ?? "panel item"}</strong>',
+            '                    {item.copy ? <p>{item.copy}</p> : null}',
+            '                    {item.meta ? <span className="bounded-outline-meta">{item.meta}</span> : null}',
+            '                    {item.states?.length ? (',
+            '                      <div className="bounded-meta bounded-meta--inline">',
+            "                        {item.states.slice(0, 3).map((state) => (",
+            '                          <span className="bounded-chip bounded-chip--muted" key={state}>',
+            "                            {state}",
+            "                          </span>",
+            "                        ))}",
+            "                      </div>",
+            "                    ) : null}",
+            "                  </div>",
+            "                ))}",
+            "              </div>",
+            "            ))}",
+            "          </div>",
+            "        </div>",
+            "      ) : null}",
+            "",
             '      <div className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}`}>',
             '            <div className="bounded-stage-canvas">',
             "              {data.sections.slice(0, 8).map((section) => (",
@@ -2613,6 +2714,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     focus_auxiliary = hero.get("focusAuxiliary", []) if isinstance(hero.get("focusAuxiliary", []), list) else []
     layout_mode = str(app_model.get("layoutMode") or "structured-grid")
     centered_focus = layout_mode == "centered-focus"
+    app_shell_mode = layout_mode == "app-shell"
+    shell_panels = app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
     viewport_height = max(int(viewport.get("height") or 1200), 1)
@@ -3014,6 +3117,56 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             )
         )
 
+    app_shell_panel_bits: list[str] = []
+    if app_shell_mode:
+        app_shell_panel_bits.extend(
+            [
+                '    <div class="bounded-panel bounded-stack bounded-app-shell">',
+                '      <p class="bounded-kicker">App-shell surface</p>',
+                '      <div style="display:grid; gap:16px; grid-template-columns:minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);">',
+            ]
+        )
+        for panel in shell_panels[:3]:
+            if not isinstance(panel, dict):
+                continue
+            app_shell_panel_bits.append('        <div class="bounded-panel bounded-stack">')
+            app_shell_panel_bits.append(f'          <p class="bounded-kicker">{escape(str(panel.get("title") or "Panel"))}</p>')
+            panel_items = panel.get("items", []) if isinstance(panel.get("items", []), list) else []
+            for item in panel_items[:6]:
+                if not isinstance(item, dict):
+                    continue
+                item_style = _style_attr_from_snapshot(item.get("styleSnapshot"))
+                style_attr = ""
+                if item_style:
+                    item_style_inline = item_style.removeprefix(' style="').removesuffix('"')
+                    style_attr = f' style="{item_style_inline}"'
+                app_shell_panel_bits.extend(
+                    [
+                        f'          <div class="bounded-mini-card"{style_attr} data-shell-item-kind="{escape(str(item.get("kind") or "item"))}">',
+                        f'            <strong>{escape(str(item.get("label") or item.get("kind") or "panel item"))}</strong>',
+                    ]
+                )
+                if item.get("copy"):
+                    app_shell_panel_bits.append(f'            <p>{escape(str(item.get("copy") or ""))}</p>')
+                if item.get("meta"):
+                    app_shell_panel_bits.append(f'            <span class="bounded-outline-meta">{escape(str(item.get("meta") or ""))}</span>')
+                states = item.get("states", []) if isinstance(item.get("states", []), list) else []
+                if states:
+                    app_shell_panel_bits.append('            <div class="bounded-meta bounded-meta--inline">')
+                    for state in states[:3]:
+                        app_shell_panel_bits.append(f'              <span class="bounded-chip bounded-chip--muted">{escape(str(state))}</span>')
+                    app_shell_panel_bits.append("            </div>")
+                app_shell_panel_bits.append("          </div>")
+            if not panel_items:
+                app_shell_panel_bits.append('          <div class="bounded-mini-card"><strong>No panel items</strong></div>')
+            app_shell_panel_bits.append("        </div>")
+        app_shell_panel_bits.extend(
+            [
+                "      </div>",
+                "    </div>",
+            ]
+        )
+
     return "\n".join(
         [
             "<!doctype html>",
@@ -3090,6 +3243,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 ]
             ),
             "    </div>",
+            *app_shell_panel_bits,
             f'    <div class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}">',
             '      <div class="bounded-stage-canvas">',
             *stage_cards,
@@ -3897,12 +4051,26 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
 
     frame_policy = static.get("frame_policy", {}) if isinstance(static.get("frame_policy", {}), dict) else {}
     meta = static.get("meta", {}) if isinstance(static.get("meta", {}), dict) else {}
+    site_profile = static.get("site_profile", {}) if isinstance(static.get("site_profile"), dict) else {}
+    route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+    surface_class = str(site_profile.get("primary_surface") or "static-document")
     breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
     breakpoint_variants = breakpoint_summary.get("variants", []) if isinstance(breakpoint_summary, dict) else []
     css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
     typography = _derive_typography(style_entries)
     style_tokens = _derive_style_tokens(style_entries)
     palette = _normalize_palette(_derive_palette(style_entries), css_analysis)
+    renderer_kind = "role-inferred-next-app"
+    renderer_strategy = "capture-bundle-to-sectioned-app"
+    if surface_class in {"js-app-shell-surface", "frame-blocked-app-surface", "authenticated-app-surface"}:
+        renderer_kind = "app-shell-dashboard-next-app"
+        renderer_strategy = "capture-bundle-to-app-shell"
+    elif surface_class == "canvas-or-webgl-surface":
+        renderer_kind = "visual-fallback-next-app"
+        renderer_strategy = "capture-bundle-to-visual-stage"
+    elif surface_class == "multi-frame-document-surface":
+        renderer_kind = "frame-aware-next-app"
+        renderer_strategy = "capture-bundle-to-frame-aware-app"
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
@@ -3915,6 +4083,9 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "frame_policy": frame_policy,
         "platform": static.get("platform") or "generic",
         "platform_adapter": static.get("platform_adapter") or {},
+        "site_profile": site_profile,
+        "surface_class": surface_class,
+        "route_hints": route_hints,
         "source_signals": static.get("source_signals") or [],
         "candidate_count": len(static.get("candidate_urls") or []),
         "candidate_sample": (static.get("candidate_urls") or [])[:6],
@@ -3967,8 +4138,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "sample": interaction_sample,
         },
         "renderer": {
-            "kind": "role-inferred-next-app",
-            "strategy": "capture-bundle-to-sectioned-app",
+            "kind": renderer_kind,
+            "strategy": renderer_strategy,
+            "family": renderer_kind,
+            "route": route_hints.get("renderer_route"),
             "entrypoints": [
                 "next-app/app/page.tsx",
                 "next-app/components/BoundedReferencePage.tsx",

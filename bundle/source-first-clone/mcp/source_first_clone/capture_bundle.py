@@ -46,6 +46,7 @@ def capture_reference_bundle(
         license_text=license_text,
         candidates=candidates,
         source_signals=merged_source_signals,
+        site_profile=static.get("site_profile"),
     )
     runtime_output_dir = Path(output_dir).expanduser().resolve() if output_dir else None
     breakpoint_requests = _resolve_breakpoint_requests(
@@ -344,6 +345,10 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
         bundle_payload["bundle"]["captured_artifacts"]["dom"] = {
             "available": True,
             "node_count_approx": dom_capture.get("nodeCountApprox"),
+            "node_count": dom_capture.get("nodeCount"),
+            "shadow_root_count": dom_capture.get("shadowRootCount"),
+            "frame_document_count": dom_capture.get("frameDocumentCount"),
+            "inaccessible_frame_count": dom_capture.get("inaccessibleFrameCount"),
             "path": str(dom_path),
         }
 
@@ -377,20 +382,57 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "available": True,
             "stylesheet_count": css_analysis_capture.get("stylesheetCount"),
             "accessible_stylesheet_count": css_analysis_capture.get("accessibleStylesheetCount"),
+            "linked_stylesheet_count": css_analysis_capture.get("linkedStylesheetCount"),
             "inline_style_tag_count": css_analysis_capture.get("inlineStyleTagCount"),
             "style_attribute_count": css_analysis_capture.get("styleAttributeCount"),
+            "preload_link_count": css_analysis_capture.get("preloadLinkCount"),
+            "font_face_rule_count": css_analysis_capture.get("fontFaceRuleCount"),
             "path": str(css_analysis_path),
         }
 
     network_capture = runtime_capture.get("network", {}) if isinstance(runtime_capture, dict) else {}
     if network_capture.get("available") and network_capture.get("content") is not None:
         network_path = output_dir / "network" / "manifest.json"
-        network_path.write_text(json.dumps(network_capture["content"], indent=2) + "\n")
+        network_content = network_capture["content"] if isinstance(network_capture.get("content"), dict) else {}
+        network_path.write_text(json.dumps(network_content, indent=2) + "\n")
         persisted["files"]["network_manifest"] = str(network_path)
+        network_summary = network_content.get("summary") if isinstance(network_content.get("summary"), dict) else {}
+        har_like = network_content.get("harLike") if isinstance(network_content.get("harLike"), dict) else None
+        har_standard = network_content.get("har") if isinstance(network_content.get("har"), dict) else None
+        har_path = None
+        har_like_path = None
+        if har_standard is not None:
+            har_path = output_dir / "network" / "har.json"
+            har_path.write_text(json.dumps(har_standard, indent=2) + "\n")
+            persisted["files"]["network_har"] = str(har_path)
+        elif har_like is not None:
+            har_path = output_dir / "network" / "har.json"
+            har_fallback = _standardize_har_like(har_like)
+            har_path.write_text(json.dumps(har_fallback, indent=2) + "\n")
+            persisted["files"]["network_har"] = str(har_path)
+        if har_like is not None:
+            har_like_path = output_dir / "network" / "har-like.json"
+            har_like_path.write_text(json.dumps(har_like, indent=2) + "\n")
+            persisted["files"]["network_har_like"] = str(har_like_path)
         bundle_payload["bundle"]["captured_artifacts"]["network"] = {
             "available": True,
             "request_count": network_capture.get("requestCount"),
             "response_count": network_capture.get("responseCount"),
+            "failure_count": network_capture.get("failureCount"),
+            "frame_url_count": network_capture.get("frameUrlCount"),
+            "redirect_count": network_summary.get("redirectCount"),
+            "redirect_sample_count": len(network_summary.get("redirectSample") or []),
+            "request_header_presence_summary": network_summary.get("requestHeaderPresenceSummary"),
+            "response_header_presence_summary": network_summary.get("responseHeaderPresenceSummary"),
+            "timing_bucket_counts": network_summary.get("timingBucketCounts"),
+            "response_body_availability": network_summary.get("responseBodyAvailability"),
+            "page_timings": network_summary.get("pageTimings"),
+            "har_export_path": str(har_path) if har_path else None,
+            "har_page_count": har_standard.get("summary", {}).get("pageCount") if har_standard else None,
+            "har_entry_count": har_standard.get("summary", {}).get("entryCount") if har_standard else None,
+            "har_like_entry_count": har_like.get("summary", {}).get("entryCount") if har_like else None,
+            "har_like_page_count": har_like.get("summary", {}).get("pageCount") if har_like else None,
+            "har_like_path": str(har_like_path) if har_like_path else None,
             "path": str(network_path),
         }
 
@@ -469,3 +511,32 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
     persisted["files"]["capture_manifest"] = str(capture_json_path)
 
     return persisted
+
+
+def _standardize_har_like(har_like: dict[str, Any]) -> dict[str, Any]:
+    pages = har_like.get("pages") if isinstance(har_like.get("pages"), list) else []
+    entries = har_like.get("entries") if isinstance(har_like.get("entries"), list) else []
+    summary = har_like.get("summary") if isinstance(har_like.get("summary"), dict) else {}
+    return {
+        "log": {
+            "version": "1.2",
+            "creator": {
+                "name": "webEmbedding",
+                "version": "0.1",
+            },
+            "browser": {
+                "name": "Playwright Chromium",
+                "version": None,
+            },
+            "pages": pages,
+            "entries": entries,
+        },
+        "summary": {
+            "pageCount": summary.get("pageCount", len(pages)),
+            "entryCount": summary.get("entryCount", len(entries)),
+            "requestCount": summary.get("requestCount"),
+            "responseCount": summary.get("responseCount"),
+            "failureCount": summary.get("failureCount"),
+            "redirectCount": summary.get("redirectCount"),
+        },
+    }

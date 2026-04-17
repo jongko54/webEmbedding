@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from .constants import DEFAULT_BROWSER_PATHS, LICENSE_HINTS, URL_PATTERNS, USER_AGENT
 from .platform_adapters import inspect_platform_adapter, merge_platform_candidates
+from .site_profile import classify_site_profile
 
 
 def is_candidate_noise(url: str) -> bool:
@@ -128,7 +129,7 @@ def build_platform_only_inspection(url: str, error: Exception | None = None) -> 
     notes = list(platform_adapter.get("notes") or [])
     if error:
         notes.append(f"Static fetch fallback used because upstream fetch failed: {error}")
-    return {
+    inspection = {
         "url": url,
         "final_url": url,
         "status": None,
@@ -151,6 +152,16 @@ def build_platform_only_inspection(url: str, error: Exception | None = None) -> 
         "source_signals": platform_adapter.get("source_signals", []),
         "candidate_urls": merge_platform_candidates([], platform_adapter.get("candidates")),
     }
+    inspection["site_profile"] = classify_site_profile(
+        final_url=url,
+        html="",
+        headers={},
+        frame_policy=inspection["frame_policy"],
+        platform_adapter=inspection["platform_adapter"],
+        meta={},
+        candidate_urls=inspection["candidate_urls"],
+    )
+    return inspection
 
 
 def analyze_frame_policy(headers: dict[str, str] | None) -> dict[str, Any]:
@@ -232,6 +243,19 @@ def extract_license_hints(html: str) -> list[str]:
     return [hint for hint in LICENSE_HINTS if hint in lowered]
 
 
+def normalize_candidate_url(base_url: str, raw_url: str) -> str | None:
+    candidate = urljoin(base_url, unescape((raw_url or "").strip()))
+    for marker in ("&quot;", "\"", "{", "}", ",&quot;", "},", "],", "\\u003c"):
+        if marker in candidate:
+            candidate = candidate.split(marker, 1)[0]
+    candidate = candidate.strip()
+    if not candidate.startswith(("http://", "https://")):
+        return None
+    if len(candidate) > 2048:
+        return None
+    return candidate
+
+
 def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     final_candidates: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -240,7 +264,9 @@ def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str
         matches = pattern.findall(html)
         for raw_match in matches:
             candidate = raw_match if isinstance(raw_match, str) else raw_match[0]
-            normalized = urljoin(base_url, candidate.strip())
+            normalized = normalize_candidate_url(base_url, candidate)
+            if not normalized:
+                continue
             if is_candidate_noise(normalized):
                 continue
             if normalized in seen:
@@ -252,12 +278,15 @@ def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str
     for raw in generic_urls:
         if not re.search(r"(spline|preview|embed|viewer|scene|iframe|remix|export)", raw, re.I):
             continue
-        if is_candidate_noise(raw):
+        normalized = normalize_candidate_url(base_url, raw)
+        if not normalized:
             continue
-        if raw in seen:
+        if is_candidate_noise(normalized):
             continue
-        seen.add(raw)
-        final_candidates.append({"kind": "runtime-hint", "url": raw})
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        final_candidates.append({"kind": "runtime-hint", "url": normalized})
 
     return merge_platform_candidates(final_candidates, adapter_candidates)
 
@@ -277,7 +306,7 @@ def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
     candidate_urls = build_candidates(fetched["final_url"], html, adapter_candidates=platform_adapter.get("candidates"))
     if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidate_urls = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidate_urls]
-    return {
+    inspection = {
         "url": url,
         "final_url": fetched["final_url"],
         "status": fetched["status"],
@@ -291,6 +320,16 @@ def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
         "source_signals": platform_adapter.get("source_signals", []),
         "candidate_urls": candidate_urls,
     }
+    inspection["site_profile"] = classify_site_profile(
+        final_url=fetched["final_url"],
+        html=html,
+        headers=fetched.get("headers", {}),
+        frame_policy=frame_policy,
+        platform_adapter=platform_adapter,
+        meta=meta,
+        candidate_urls=candidate_urls,
+    )
+    return inspection
 
 
 def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
@@ -306,6 +345,7 @@ def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, 
                 "platform": fallback.get("platform"),
                 "platform_adapter": fallback.get("platform_adapter"),
                 "source_signals": fallback.get("source_signals", []),
+                "site_profile": fallback.get("site_profile"),
                 "candidates": fallback.get("candidate_urls", []),
             }
         raise
@@ -315,6 +355,15 @@ def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, 
     candidates = build_candidates(fetched["final_url"], fetched["html"], adapter_candidates=platform_adapter.get("candidates"))
     if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidates = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidates]
+    site_profile = classify_site_profile(
+        final_url=fetched["final_url"],
+        html=fetched["html"],
+        headers=fetched.get("headers", {}),
+        frame_policy=frame_policy,
+        platform_adapter=platform_adapter,
+        meta=meta,
+        candidate_urls=candidates,
+    )
     return {
         "url": url,
         "final_url": fetched["final_url"],
@@ -322,6 +371,7 @@ def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, 
         "platform": platform_adapter.get("platform"),
         "platform_adapter": platform_adapter,
         "source_signals": platform_adapter.get("source_signals", []),
+        "site_profile": site_profile,
         "candidates": candidates,
     }
 
@@ -1206,6 +1256,8 @@ function summarizeInteractionSignals(signals) {
 }
 
 function captureSemanticState(element, style) {
+  const ownerDocument = element && element.ownerDocument ? element.ownerDocument : document;
+  const ownerWindow = ownerDocument && ownerDocument.defaultView ? ownerDocument.defaultView : window;
   const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
   const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && element.scrollWidth > element.clientWidth + 4;
   const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && element.scrollHeight > element.clientHeight + 4;
@@ -1243,11 +1295,11 @@ function captureSemanticState(element, style) {
     tabIndex: element.tabIndex,
     datasetKeys: datasetEntries.map(([key]) => key),
     datasetSample: Object.fromEntries(datasetEntries),
-    activeElementTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
-    activeElementMatches: document.activeElement === element,
+    activeElementTag: ownerDocument.activeElement ? ownerDocument.activeElement.tagName.toLowerCase() : null,
+    activeElementMatches: ownerDocument.activeElement === element,
     focusable: isFocusableElement(element, style),
     interactiveKind: getInteractionKind(element),
-    scrollY: Math.round(window.scrollY || window.pageYOffset || 0),
+    scrollY: Math.round(ownerWindow.scrollY || ownerWindow.pageYOffset || 0),
     scrollTop: Math.round(element.scrollTop || 0),
     scrollLeft: Math.round(element.scrollLeft || 0),
     scrollHeight: Math.round(element.scrollHeight || 0),
@@ -1271,12 +1323,83 @@ function captureSemanticState(element, style) {
   return semanticState;
 }
 
+function collectInteractionRoots(rootDocument = document, maxFrameDocuments = 12) {
+  const roots = [{ root: rootDocument, kind: "document", frameSrc: null, shadowHostTag: null }];
+  const seenDocuments = new Set([rootDocument]);
+  const seenShadows = new Set();
+  const queue = [{ root: rootDocument, kind: "document", frameSrc: null, shadowHostTag: null }];
+  while (queue.length && roots.length < maxFrameDocuments + 64) {
+    const current = queue.shift();
+    const scope = current.root;
+    const elements = Array.from(scope.querySelectorAll ? scope.querySelectorAll("*") : []).slice(0, 400);
+    for (const element of elements) {
+      if (element.shadowRoot && !seenShadows.has(element.shadowRoot)) {
+        seenShadows.add(element.shadowRoot);
+        const shadowEntry = {
+          root: element.shadowRoot,
+          kind: "shadow-root",
+          frameSrc: current.frameSrc || null,
+          shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+        };
+        roots.push(shadowEntry);
+        queue.push(shadowEntry);
+      }
+      if (element.tagName && element.tagName.toLowerCase() === "iframe") {
+        let frameDoc = null;
+        try {
+          frameDoc = element.contentDocument;
+        } catch (error) {
+          frameDoc = null;
+        }
+        if (frameDoc && frameDoc.documentElement && !seenDocuments.has(frameDoc) && roots.length < maxFrameDocuments + 64) {
+          seenDocuments.add(frameDoc);
+          const frameEntry = {
+            root: frameDoc,
+            kind: "frame-document",
+            frameSrc: element.getAttribute("src") || element.src || null,
+            shadowHostTag: null,
+          };
+          roots.push(frameEntry);
+          queue.push(frameEntry);
+        }
+      }
+    }
+  }
+  return roots;
+}
+
+function findInteractionElement(selector) {
+  for (const entry of collectInteractionRoots(document, 12)) {
+    const root = entry.root;
+    if (!root || typeof root.querySelector !== "function") continue;
+    const match = root.querySelector(selector);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function findControlledTarget(element, id) {
+  if (!id) return null;
+  const ownerDocument = element && element.ownerDocument ? element.ownerDocument : document;
+  for (const entry of collectInteractionRoots(ownerDocument, 12)) {
+    const root = entry.root;
+    if (root && typeof root.getElementById === "function") {
+      const match = root.getElementById(id);
+      if (match) return match;
+    }
+  }
+  return null;
+}
+
 function captureToggleState(selector) {
-  const element = document.querySelector(selector);
+  const element = findInteractionElement(selector);
   if (!element) {
     return { available: false, selector };
   }
-  const style = window.getComputedStyle(element);
+  const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+  const style = ownerWindow.getComputedStyle(element);
   const semanticState = captureSemanticState(element, style);
   const ids = String(element.getAttribute("aria-controls") || "")
     .split(/\s+/)
@@ -1284,11 +1407,12 @@ function captureToggleState(selector) {
     .filter(Boolean)
     .slice(0, 6);
   const controlledTargets = ids.map((id) => {
-    const target = document.getElementById(id);
+    const target = findControlledTarget(element, id);
     if (!target) {
       return { id, missing: true };
     }
-    const targetStyle = window.getComputedStyle(target);
+    const targetWindow = target.ownerDocument && target.ownerDocument.defaultView ? target.ownerDocument.defaultView : window;
+    const targetStyle = targetWindow.getComputedStyle(target);
     const targetRect = target.getBoundingClientRect();
     return {
       id,
@@ -1333,11 +1457,12 @@ function captureControlledTargetState(element) {
     .filter(Boolean)
     .slice(0, 6);
   return ids.map((id) => {
-    const target = document.getElementById(id);
+    const target = findControlledTarget(element, id);
     if (!target) {
       return { id, missing: true };
     }
-    const style = window.getComputedStyle(target);
+    const targetWindow = target.ownerDocument && target.ownerDocument.defaultView ? target.ownerDocument.defaultView : window;
+    const style = targetWindow.getComputedStyle(target);
     const rect = target.getBoundingClientRect();
     const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && target.scrollWidth > target.clientWidth + 4;
     const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && target.scrollHeight > target.clientHeight + 4;
@@ -1380,11 +1505,12 @@ function captureControlledTargetState(element) {
 }
 
 function captureInteractionState(selector) {
-  const element = document.querySelector(selector);
+  const element = findInteractionElement(selector);
   if (!element) {
     return { available: false, selector };
   }
-  const style = window.getComputedStyle(element);
+  const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+  const style = ownerWindow.getComputedStyle(element);
   const semanticState = captureSemanticState(element, style);
   return {
     available: true,
@@ -1398,6 +1524,739 @@ function captureInteractionState(selector) {
     stateSummary: semanticState.stateSummary,
     baseStyles: styleSnapshotFromComputed(style),
   };
+}
+
+function captureStyleSnapshot(selector) {
+  const element = findInteractionElement(selector);
+  if (!element) return null;
+  const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+  return styleSnapshotFromComputed(ownerWindow.getComputedStyle(element));
+}
+
+function hoverInteractionElement(selector) {
+  const element = findInteractionElement(selector);
+  if (!element) return { available: false, selector };
+  const rect = element.getBoundingClientRect();
+  const eventInit = { bubbles: true, cancelable: true, composed: true, clientX: rect.x + Math.max(1, rect.width / 2), clientY: rect.y + Math.max(1, rect.height / 2) };
+  try {
+    element.dispatchEvent(new PointerEvent("pointerover", eventInit));
+  } catch (error) {}
+  try {
+    element.dispatchEvent(new MouseEvent("mouseover", eventInit));
+    element.dispatchEvent(new MouseEvent("mouseenter", eventInit));
+  } catch (error) {}
+  return { available: true, selector };
+}
+
+function focusInteractionElement(selector) {
+  const element = findInteractionElement(selector);
+  if (!element || typeof element.focus !== "function") return { available: false, selector };
+  element.focus();
+  return { available: true, selector };
+}
+
+function blurInteractionElement(selector) {
+  const element = findInteractionElement(selector);
+  if (!element || typeof element.blur !== "function") return { available: false, selector };
+  element.blur();
+  return { available: true, selector };
+}
+
+function readInteractionValue(selector) {
+  const element = findInteractionElement(selector);
+  if (!element || !("value" in element)) return { available: false, selector, value: null };
+  return { available: true, selector, value: String(element.value || "") };
+}
+
+function writeInteractionValue(payload) {
+  const selector = payload && payload.selector ? payload.selector : null;
+  const value = payload && Object.prototype.hasOwnProperty.call(payload, "value") ? String(payload.value || "") : "";
+  const element = findInteractionElement(selector);
+  if (!element || !("value" in element)) return { available: false, selector };
+  const before = String(element.value || "");
+  element.value = value;
+  element.dispatchEvent(new Event("input", { bubbles: true, cancelable: true, composed: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true, cancelable: true, composed: true }));
+  return { available: true, selector, before, after: String(element.value || "") };
+}
+
+function readInteractionScroll(selector) {
+  const element = findInteractionElement(selector);
+  if (!element) return { available: false, selector };
+  return {
+    available: true,
+    selector,
+    scrollTop: Math.round(element.scrollTop || 0),
+    scrollLeft: Math.round(element.scrollLeft || 0),
+  };
+}
+
+function writeInteractionScroll(payload) {
+  const selector = payload && payload.selector ? payload.selector : null;
+  const element = findInteractionElement(selector);
+  if (!element) return { available: false, selector };
+  if (payload && typeof payload.scrollTop === "number") {
+    element.scrollTop = payload.scrollTop;
+  }
+  if (payload && typeof payload.scrollLeft === "number") {
+    element.scrollLeft = payload.scrollLeft;
+  }
+  if (payload && typeof payload.deltaX === "number") {
+    element.scrollLeft = Math.max(0, (element.scrollLeft || 0) + payload.deltaX);
+  }
+  if (payload && typeof payload.deltaY === "number") {
+    element.scrollTop = Math.max(0, (element.scrollTop || 0) + payload.deltaY);
+  }
+  return {
+    available: true,
+    selector,
+    scrollTop: Math.round(element.scrollTop || 0),
+    scrollLeft: Math.round(element.scrollLeft || 0),
+  };
+}
+
+function clickInteractionElement(selector) {
+  const element = findInteractionElement(selector);
+  if (!element) return { available: false, selector };
+  if (typeof element.click === "function") {
+    element.click();
+  } else {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+  }
+  return { available: true, selector };
+}
+
+function cleanupInteractionMarkers() {
+  document
+    .querySelectorAll('[data-web-embedding-interaction-id]')
+    .forEach((element) => element.removeAttribute('data-web-embedding-interaction-id'));
+  return true;
+}
+
+function evaluateInteractionRuntime(payload) {
+  const action = payload && payload.action ? String(payload.action) : null;
+  const selector = payload && payload.selector ? String(payload.selector) : null;
+  const value = payload && Object.prototype.hasOwnProperty.call(payload, "value") ? payload.value : null;
+  const deltaX = payload && typeof payload.deltaX === "number" ? payload.deltaX : null;
+  const deltaY = payload && typeof payload.deltaY === "number" ? payload.deltaY : null;
+  const scrollTop = payload && typeof payload.scrollTop === "number" ? payload.scrollTop : null;
+  const scrollLeft = payload && typeof payload.scrollLeft === "number" ? payload.scrollLeft : null;
+  const maxFrameDocuments = payload && typeof payload.maxFrameDocuments === "number" ? payload.maxFrameDocuments : 12;
+  const rootContext = payload && payload.rootContext && typeof payload.rootContext === "object" ? payload.rootContext : null;
+
+  const normalizeText = (raw, maxLength = 160) => {
+    if (!raw) return null;
+    const normalized = String(raw).replace(/\s+/g, " ").trim();
+    return normalized ? normalized.slice(0, maxLength) : null;
+  };
+  const styleSnapshotFromComputed = (style) => ({
+    display: style.display,
+    position: style.position,
+    color: style.color,
+    backgroundColor: style.backgroundColor,
+    borderColor: style.borderColor,
+    borderWidth: style.borderWidth,
+    borderRadius: style.borderRadius,
+    boxShadow: style.boxShadow,
+    opacity: style.opacity,
+    transform: style.transform,
+    filter: style.filter,
+    textDecoration: style.textDecoration,
+    outline: style.outline,
+    outlineOffset: style.outlineOffset,
+    cursor: style.cursor,
+  });
+  const getInteractionLabel = (element) => {
+    if (!element) return null;
+    const labelledBy = String(element.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    const labelParts = [];
+    for (const id of labelledBy) {
+      const labelNode = element.ownerDocument && typeof element.ownerDocument.getElementById === "function"
+        ? element.ownerDocument.getElementById(id)
+        : null;
+      if (labelNode) {
+        const text = normalizeText(labelNode.innerText || labelNode.textContent || "", 120);
+        if (text) {
+          labelParts.push(text);
+        }
+      }
+    }
+    if (labelParts.length) {
+      return labelParts.join(" ").trim();
+    }
+    if (element.id && element.ownerDocument) {
+      const escapedId = typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function"
+        ? CSS.escape(element.id)
+        : element.id.replace(/"/g, '\\"');
+      const selectorText = `label[for="${escapedId}"]`;
+      const directLabels = Array.from(element.ownerDocument.querySelectorAll(selectorText))
+        .map((node) => normalizeText(node.innerText || node.textContent || "", 120))
+        .filter(Boolean);
+      if (directLabels.length) {
+        return directLabels.join(" ").trim();
+      }
+    }
+    const wrappingLabel = typeof element.closest === "function" ? element.closest("label") : null;
+    if (wrappingLabel) {
+      const text = normalizeText(wrappingLabel.innerText || wrappingLabel.textContent || "", 120);
+      if (text) {
+        return text;
+      }
+    }
+    const fieldset = typeof element.closest === "function" ? element.closest("fieldset") : null;
+    if (fieldset) {
+      const legend = fieldset.querySelector("legend");
+      if (legend) {
+        const text = normalizeText(legend.innerText || legend.textContent || "", 120);
+        if (text) {
+          return text;
+        }
+      }
+    }
+    return (
+      normalizeText(element.getAttribute("aria-label"), 120) ||
+      normalizeText(element.getAttribute("title"), 120) ||
+      normalizeText(element.getAttribute("placeholder"), 120) ||
+      normalizeText(element.innerText || element.textContent || "", 120) ||
+      normalizeText("value" in element ? element.value : "", 120) ||
+      normalizeText(element.tagName.toLowerCase(), 80)
+    );
+  };
+  const getInteractionKind = (element) => {
+    const tag = element.tagName.toLowerCase();
+    const role = String(element.getAttribute("role") || "").toLowerCase();
+    const type = String(element.getAttribute("type") || "").toLowerCase();
+    if (element.isContentEditable || role === "textbox" || role === "searchbox") return "text-entry";
+    if (tag === "input" && ["text", "search", "url", "tel", "email", "password"].includes(type)) return "text-entry";
+    if (tag === "textarea") return "text-entry";
+    if (tag === "select" || role === "combobox") return "select";
+    if (tag === "summary" || ["button", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio", "option", "treeitem"].includes(role) || ["checkbox", "radio", "button"].includes(type)) return "toggle";
+    if (role === "tab") return "tab";
+    if (role === "link" || tag === "a") return "link";
+    if (role === "slider" || type === "range") return "slider";
+    if (element.hasAttribute("aria-haspopup")) return "disclosure";
+    return null;
+  };
+  const isFocusableElement = (element, style) => {
+    const tag = element.tagName.toLowerCase();
+    const role = String(element.getAttribute("role") || "").toLowerCase();
+    const type = String(element.getAttribute("type") || "").toLowerCase();
+    if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+    if (element.tabIndex >= 0) return true;
+    if (element.isContentEditable) return true;
+    if (["button", "summary", "details"].includes(tag)) return true;
+    if (tag === "a" && element.hasAttribute("href")) return true;
+    if (tag === "input" && !["hidden"].includes(type)) return true;
+    if (["textarea", "select"].includes(tag)) return true;
+    if (["button", "link", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio", "option", "treeitem", "combobox", "searchbox", "textbox", "slider"].includes(role)) return true;
+    return Boolean(style && style.outlineStyle !== "none" && style.visibility !== "hidden");
+  };
+  const describeInteractionTarget = (element, style) => {
+    const pieces = [element.tagName.toLowerCase()];
+    const role = element.getAttribute("role");
+    if (role) pieces.push(`role=${role}`);
+    const label = getInteractionLabel(element);
+    if (label) pieces.push(`label=${label}`);
+    if (style && style.position) pieces.push(`position=${style.position}`);
+    return pieces.join(" · ");
+  };
+  const summarizeInteractionSignals = (signals) => {
+    if (!signals || typeof signals !== "object") return null;
+    const summary = [];
+    if (signals.toggle && signals.toggle.detected) summary.push("toggle");
+    if (signals.textEntry && signals.textEntry.detected) summary.push("text-entry");
+    if (signals.scroll && signals.scroll.detected) summary.push("scroll");
+    if (signals.sticky && signals.sticky.detected) summary.push("sticky");
+    if (signals.modal && signals.modal.detected) summary.push("modal");
+    if (signals.carousel && signals.carousel.detected) summary.push("carousel");
+    if (signals.tabpanel && signals.tabpanel.detected) summary.push("tabpanel");
+    return summary.length ? summary.join(" · ") : null;
+  };
+  const captureInteractionSignals = (element, style) => {
+    const signals = {};
+    const role = String(element.getAttribute("role") || "").toLowerCase();
+    const tag = element.tagName.toLowerCase();
+    const type = String(element.getAttribute("type") || "").toLowerCase();
+    const ariaExpanded = element.getAttribute("aria-expanded");
+    const ariaPressed = element.getAttribute("aria-pressed");
+    const ariaSelected = element.getAttribute("aria-selected");
+    const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && element.scrollWidth > element.clientWidth + 4;
+    const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && element.scrollHeight > element.clientHeight + 4;
+    if (tag === "summary" || ariaExpanded !== null || ariaPressed !== null || ["button", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "checkbox", "radio"].includes(role) || ["checkbox", "radio", "button"].includes(type)) {
+      signals.toggle = { detected: true };
+    }
+    if (element.isContentEditable || role === "textbox" || role === "searchbox" || tag === "textarea" || (tag === "input" && !["hidden", "checkbox", "radio", "button", "submit", "reset", "file", "range", "color", "date", "datetime-local", "month", "time", "week"].includes(type))) {
+      signals.textEntry = { detected: true };
+    }
+    if (scrollableX || scrollableY) {
+      signals.scroll = { detected: true };
+    }
+    if (style.position === "sticky" || style.position === "fixed") {
+      signals.sticky = { detected: true };
+    }
+    if (role === "dialog" || element.getAttribute("aria-modal") === "true") {
+      signals.modal = { detected: true };
+    }
+    if (role === "tablist" || role === "tabpanel" || role === "tab") {
+      signals.tabpanel = { detected: true };
+    }
+    if (role === "carousel" || /carousel|slider|slideshow|gallery/i.test(String(element.className || ""))) {
+      signals.carousel = { detected: true };
+    }
+    return signals;
+  };
+  const captureSemanticState = (element, style) => {
+    const ownerDocument = element.ownerDocument || document;
+    const ownerWindow = ownerDocument.defaultView || window;
+    const datasetEntries = Object.entries(element.dataset || {}).slice(0, 8);
+    const scrollableX = /auto|scroll|overlay/.test(String(style.overflowX || style.overflow || "").toLowerCase()) && element.scrollWidth > element.clientWidth + 4;
+    const scrollableY = /auto|scroll|overlay/.test(String(style.overflowY || style.overflow || "").toLowerCase()) && element.scrollHeight > element.clientHeight + 4;
+    const semanticState = {
+      text: normalizeText(element.innerText || element.textContent || "", 120),
+      labelText: getInteractionLabel(element),
+      ariaLabel: element.getAttribute("aria-label"),
+      ariaDescription: element.getAttribute("aria-description"),
+      ariaRoleDescription: element.getAttribute("aria-roledescription"),
+      ariaLive: element.getAttribute("aria-live"),
+      ariaHasPopup: element.getAttribute("aria-haspopup"),
+      ariaExpanded: element.getAttribute("aria-expanded"),
+      ariaPressed: element.getAttribute("aria-pressed"),
+      ariaSelected: element.getAttribute("aria-selected"),
+      ariaControls: element.getAttribute("aria-controls"),
+      ariaCurrent: element.getAttribute("aria-current"),
+      role: element.getAttribute("role"),
+      tag: element.tagName.toLowerCase(),
+      type: element.getAttribute("type"),
+      href: element.getAttribute("href"),
+      target: element.getAttribute("target"),
+      rel: element.getAttribute("rel"),
+      name: element.getAttribute("name"),
+      placeholder: element.getAttribute("placeholder"),
+      title: element.getAttribute("title"),
+      autocomplete: element.getAttribute("autocomplete"),
+      inputMode: element.getAttribute("inputmode"),
+      value: "value" in element ? String(element.value || "") : null,
+      checked: "checked" in element ? Boolean(element.checked) : null,
+      selected: "selected" in element ? Boolean(element.selected) : null,
+      open: element.open === true,
+      hidden: Boolean(element.hidden),
+      disabled: Boolean(element.disabled),
+      contentEditable: element.isContentEditable ? "true" : element.getAttribute("contenteditable"),
+      tabIndex: element.tabIndex,
+      datasetKeys: datasetEntries.map(([key]) => key),
+      datasetSample: Object.fromEntries(datasetEntries),
+      activeElementTag: ownerDocument.activeElement ? ownerDocument.activeElement.tagName.toLowerCase() : null,
+      activeElementMatches: ownerDocument.activeElement === element,
+      focusable: isFocusableElement(element, style),
+      interactiveKind: getInteractionKind(element),
+      scrollY: Math.round(ownerWindow.scrollY || ownerWindow.pageYOffset || 0),
+      scrollTop: Math.round(element.scrollTop || 0),
+      scrollLeft: Math.round(element.scrollLeft || 0),
+      scrollHeight: Math.round(element.scrollHeight || 0),
+      scrollWidth: Math.round(element.scrollWidth || 0),
+      clientHeight: Math.round(element.clientHeight || 0),
+      clientWidth: Math.round(element.clientWidth || 0),
+      scrollableX,
+      scrollableY,
+      scrollableAxis: scrollableX && scrollableY ? "both" : scrollableY ? "y" : scrollableX ? "x" : null,
+      scrollSnapType: style.scrollSnapType,
+      scrollSnapAlign: style.scrollSnapAlign,
+      scrollSnapStop: style.scrollSnapStop,
+      position: style.position,
+      zIndex: style.zIndex,
+      interactionSignals: captureInteractionSignals(element, style),
+    };
+    if (style) {
+      semanticState.styleSnapshot = styleSnapshotFromComputed(style);
+    }
+    semanticState.stateSummary = summarizeInteractionSignals(semanticState.interactionSignals);
+    return semanticState;
+  };
+  const collectInteractionRoots = (rootDocument = document) => {
+    const roots = [{
+      root: rootDocument,
+      kind: "document",
+      frameSrc: null,
+      frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+      shadowHostTag: null,
+      surfaceIndex: 0,
+    }];
+    const seenDocuments = new Set([rootDocument]);
+    const seenShadows = new Set();
+    const queue = [{
+      root: rootDocument,
+      kind: "document",
+      frameSrc: null,
+      frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+      shadowHostTag: null,
+      surfaceIndex: 0,
+    }];
+    while (queue.length && roots.length < maxFrameDocuments + 64) {
+      const current = queue.shift();
+      const scope = current.root;
+      const elements = Array.from(scope.querySelectorAll ? scope.querySelectorAll("*") : []).slice(0, 400);
+      for (const element of elements) {
+        if (element.shadowRoot && !seenShadows.has(element.shadowRoot)) {
+          seenShadows.add(element.shadowRoot);
+          const shadowEntry = {
+            root: element.shadowRoot,
+            kind: "shadow-root",
+            frameSrc: current.frameSrc || null,
+            shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+          };
+          roots.push(shadowEntry);
+          queue.push(shadowEntry);
+        }
+        if (element.tagName && element.tagName.toLowerCase() === "iframe") {
+          let frameDoc = null;
+          try {
+            frameDoc = element.contentDocument;
+          } catch (error) {
+            frameDoc = null;
+          }
+          if (frameDoc && frameDoc.documentElement && !seenDocuments.has(frameDoc) && roots.length < maxFrameDocuments + 64) {
+            seenDocuments.add(frameDoc);
+            const frameEntry = {
+              root: frameDoc,
+              kind: "frame-document",
+              frameSrc: element.getAttribute("src") || element.src || null,
+              shadowHostTag: null,
+            };
+            roots.push(frameEntry);
+            queue.push(frameEntry);
+          }
+        }
+      }
+    }
+    return roots;
+  };
+  const scoreRootContext = (entry, targetContext) => {
+    if (!targetContext || typeof targetContext !== "object") {
+      return 0;
+    }
+    let score = 0;
+    if (typeof targetContext.surfaceIndex === "number" && entry.surfaceIndex === targetContext.surfaceIndex) {
+      score += 100;
+    }
+    if (targetContext.kind && entry.kind === targetContext.kind) {
+      score += 20;
+    }
+    if (targetContext.frameSrc && entry.frameSrc && entry.frameSrc === targetContext.frameSrc) {
+      score += 12;
+    }
+    if (targetContext.frameUrl && entry.frameUrl && entry.frameUrl === targetContext.frameUrl) {
+      score += 16;
+    }
+    if (targetContext.shadowHostTag && entry.shadowHostTag && entry.shadowHostTag === targetContext.shadowHostTag) {
+      score += 8;
+    }
+    return score;
+  };
+  const findInteractionElement = (targetSelector, targetContext = rootContext) => {
+    if (!targetSelector) return null;
+    const orderedRoots = collectInteractionRoots(document).slice().sort((left, right) => scoreRootContext(right, targetContext) - scoreRootContext(left, targetContext));
+    for (const entry of orderedRoots) {
+      const root = entry.root;
+      if (!root || typeof root.querySelector !== "function") continue;
+      const match = root.querySelector(targetSelector);
+      if (match) return match;
+    }
+    return null;
+  };
+  const findControlledTarget = (element, id, targetContext = rootContext) => {
+    if (!id) return null;
+    const ownerDocument = element && element.ownerDocument ? element.ownerDocument : document;
+    const orderedRoots = collectInteractionRoots(ownerDocument).slice().sort((left, right) => scoreRootContext(right, targetContext) - scoreRootContext(left, targetContext));
+    for (const entry of orderedRoots) {
+      const root = entry.root;
+      if (!root) continue;
+      if (typeof root.getElementById === "function") {
+        const match = root.getElementById(id);
+        if (match) return match;
+      }
+      if (typeof root.querySelector === "function") {
+        const escaped = typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function" ? CSS.escape(id) : id.replace(/"/g, '\\"');
+        const match = root.querySelector(`[id="${escaped}"]`);
+        if (match) return match;
+      }
+    }
+    return null;
+  };
+  const resolveTargetContext = (targetPayload) => {
+    if (targetPayload && targetPayload.rootContext && typeof targetPayload.rootContext === "object") {
+      return targetPayload.rootContext;
+    }
+    return rootContext;
+  };
+  const captureControlledTargetState = (element, targetContext = rootContext) => {
+    const ids = String(element.getAttribute("aria-controls") || "")
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+    return ids.map((id) => {
+      const target = findControlledTarget(element, id, targetContext);
+      if (!target) {
+        return { id, missing: true };
+      }
+      const targetWindow = target.ownerDocument && target.ownerDocument.defaultView ? target.ownerDocument.defaultView : window;
+      const targetStyle = targetWindow.getComputedStyle(target);
+      const targetRect = target.getBoundingClientRect();
+      return {
+        id,
+        tag: target.tagName.toLowerCase(),
+        role: target.getAttribute("role"),
+        kind: getInteractionKind(target),
+        label: getInteractionLabel(target),
+        focusable: isFocusableElement(target, targetStyle),
+        open: target.open === true,
+        hidden: Boolean(target.hidden),
+        ariaHidden: target.getAttribute("aria-hidden"),
+        ariaExpanded: target.getAttribute("aria-expanded"),
+        ariaSelected: target.getAttribute("aria-selected"),
+        display: targetStyle.display,
+        visibility: targetStyle.visibility,
+        rect: {
+          x: Math.round(targetRect.x),
+          y: Math.round(targetRect.y),
+          width: Math.round(targetRect.width),
+          height: Math.round(targetRect.height),
+        },
+        text: (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+      };
+    });
+  };
+  const captureInteractionState = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) {
+      return { available: false, selector: targetSelector };
+    }
+    const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+    const style = ownerWindow.getComputedStyle(element);
+    const semanticState = captureSemanticState(element, style);
+    return {
+      available: true,
+      selector: targetSelector,
+      inForm: Boolean(element.closest("form")),
+      interactionKind: getInteractionKind(element),
+      labelText: getInteractionLabel(element),
+      targetSummary: describeInteractionTarget(element, style),
+      controlledTargets: captureControlledTargetState(element, targetContext),
+      semanticState,
+      stateSummary: semanticState.stateSummary,
+      baseStyles: styleSnapshotFromComputed(style),
+    };
+  };
+  const captureStyleSnapshot = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return null;
+    const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+    return styleSnapshotFromComputed(ownerWindow.getComputedStyle(element));
+  };
+  const hoverInteractionElement = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return { available: false, selector: targetSelector };
+    const rect = element.getBoundingClientRect();
+    const eventInit = { bubbles: true, cancelable: true, composed: true, clientX: rect.x + Math.max(1, rect.width / 2), clientY: rect.y + Math.max(1, rect.height / 2) };
+    try {
+      element.dispatchEvent(new PointerEvent("pointerover", eventInit));
+    } catch (error) {}
+    try {
+      element.dispatchEvent(new MouseEvent("mouseover", eventInit));
+      element.dispatchEvent(new MouseEvent("mouseenter", eventInit));
+    } catch (error) {}
+    return { available: true, selector: targetSelector };
+  };
+  const focusInteractionElement = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element || typeof element.focus !== "function") return { available: false, selector: targetSelector };
+    element.focus();
+    return { available: true, selector: targetSelector };
+  };
+  const blurInteractionElement = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element || typeof element.blur !== "function") return { available: false, selector: targetSelector };
+    element.blur();
+    return { available: true, selector: targetSelector };
+  };
+  const captureToggleState = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return { available: false, selector: targetSelector };
+    const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+    const style = ownerWindow.getComputedStyle(element);
+    const semanticState = captureSemanticState(element, style);
+    const ids = String(element.getAttribute("aria-controls") || "")
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+    const controlledTargets = ids.map((id) => {
+      const target = findControlledTarget(element, id, targetContext);
+      if (!target) {
+        return { id, missing: true };
+      }
+      const targetWindow = target.ownerDocument && target.ownerDocument.defaultView ? target.ownerDocument.defaultView : window;
+      const targetStyle = targetWindow.getComputedStyle(target);
+      const targetRect = target.getBoundingClientRect();
+      return {
+        id,
+        tag: target.tagName.toLowerCase(),
+        role: target.getAttribute("role"),
+        kind: getInteractionKind(target),
+        label: getInteractionLabel(target),
+        focusable: isFocusableElement(target, targetStyle),
+        open: target.open === true,
+        hidden: Boolean(target.hidden),
+        ariaHidden: target.getAttribute("aria-hidden"),
+        ariaExpanded: target.getAttribute("aria-expanded"),
+        ariaSelected: target.getAttribute("aria-selected"),
+        display: targetStyle.display,
+        visibility: targetStyle.visibility,
+        rect: {
+          x: Math.round(targetRect.x),
+          y: Math.round(targetRect.y),
+          width: Math.round(targetRect.width),
+          height: Math.round(targetRect.height),
+        },
+        text: (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
+      };
+    });
+    return {
+      available: true,
+      selector: targetSelector,
+      inForm: Boolean(element.closest("form")),
+      interactionKind: getInteractionKind(element),
+      labelText: getInteractionLabel(element),
+      targetSummary: describeInteractionTarget(element, style),
+      controlledTargets,
+      semanticState,
+      stateSummary: semanticState.stateSummary,
+    };
+  };
+  const readInteractionValue = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element || !("value" in element)) return { available: false, selector: targetSelector, value: null };
+    return { available: true, selector: targetSelector, value: String(element.value || "") };
+  };
+  const writeInteractionValue = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? targetPayload.selector : null;
+    const targetValue = targetPayload && Object.prototype.hasOwnProperty.call(targetPayload, "value") ? String(targetPayload.value || "") : "";
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element || !("value" in element)) return { available: false, selector: targetSelector };
+    const before = String(element.value || "");
+    element.value = targetValue;
+    element.dispatchEvent(new Event("input", { bubbles: true, cancelable: true, composed: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true, cancelable: true, composed: true }));
+    return { available: true, selector: targetSelector, before, after: String(element.value || "") };
+  };
+  const readInteractionScroll = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return { available: false, selector: targetSelector };
+    return {
+      available: true,
+      selector: targetSelector,
+      scrollTop: Math.round(element.scrollTop || 0),
+      scrollLeft: Math.round(element.scrollLeft || 0),
+    };
+  };
+  const writeInteractionScroll = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? targetPayload.selector : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return { available: false, selector: targetSelector };
+    if (targetPayload && typeof targetPayload.scrollTop === "number") {
+      element.scrollTop = targetPayload.scrollTop;
+    }
+    if (targetPayload && typeof targetPayload.scrollLeft === "number") {
+      element.scrollLeft = targetPayload.scrollLeft;
+    }
+    if (targetPayload && typeof targetPayload.deltaX === "number") {
+      element.scrollLeft = Math.max(0, (element.scrollLeft || 0) + targetPayload.deltaX);
+    }
+    if (targetPayload && typeof targetPayload.deltaY === "number") {
+      element.scrollTop = Math.max(0, (element.scrollTop || 0) + targetPayload.deltaY);
+    }
+    return {
+      available: true,
+      selector: targetSelector,
+      scrollTop: Math.round(element.scrollTop || 0),
+      scrollLeft: Math.round(element.scrollLeft || 0),
+    };
+  };
+  const clickInteractionElement = (targetPayload) => {
+    const targetSelector = targetPayload && targetPayload.selector ? String(targetPayload.selector) : null;
+    const targetContext = resolveTargetContext(targetPayload);
+    const element = findInteractionElement(targetSelector, targetContext);
+    if (!element) return { available: false, selector: targetSelector };
+    if (typeof element.click === "function") {
+      element.click();
+    } else {
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    }
+    return { available: true, selector: targetSelector };
+  };
+  const cleanupInteractionMarkers = () => {
+    for (const entry of collectInteractionRoots(document)) {
+      const root = entry.root;
+      if (!root || typeof root.querySelectorAll !== "function") continue;
+      root
+        .querySelectorAll('[data-web-embedding-interaction-id]')
+        .forEach((element) => element.removeAttribute('data-web-embedding-interaction-id'));
+    }
+    return true;
+  };
+
+  switch (action) {
+    case "hover":
+      return hoverInteractionElement(payload);
+    case "focus":
+      return focusInteractionElement(payload);
+    case "blur":
+      return blurInteractionElement(payload);
+    case "capture-style":
+      return captureStyleSnapshot(payload);
+    case "capture-state":
+      return captureInteractionState(payload);
+    case "capture-toggle":
+      return captureToggleState(payload);
+    case "read-value":
+      return readInteractionValue(payload);
+    case "write-value":
+      return writeInteractionValue(payload);
+    case "read-scroll":
+      return readInteractionScroll(payload);
+    case "write-scroll":
+      return writeInteractionScroll(payload);
+    case "click":
+      return clickInteractionElement(payload);
+    case "cleanup":
+      return cleanupInteractionMarkers();
+    default:
+      return { available: false, action, selector };
+  }
 }
 
 function summarizeInteractionState(state) {
@@ -1637,25 +2496,234 @@ function isSafeToggleCandidate(candidate) {
 
     const page = context.pages()[0] || await context.newPage();
     const hits = [];
+    const failedRequestEntries = [];
+    const redirectRequestEntries = [];
+    const requestIds = new WeakMap();
+    let requestSequence = 0;
+    const pageStartedDateTime = new Date().toISOString();
+    const commonRequestHeaderKeys = [
+      "accept",
+      "accept-language",
+      "cache-control",
+      "content-type",
+      "cookie",
+      "origin",
+      "pragma",
+      "referer",
+      "sec-ch-ua",
+      "sec-ch-ua-mobile",
+      "sec-ch-ua-platform",
+      "sec-fetch-dest",
+      "sec-fetch-mode",
+      "sec-fetch-site",
+      "sec-fetch-user",
+      "user-agent",
+      "x-requested-with",
+    ];
+    const commonResponseHeaderKeys = [
+      "cache-control",
+      "content-encoding",
+      "content-length",
+      "content-security-policy",
+      "content-type",
+      "date",
+      "etag",
+      "expires",
+      "last-modified",
+      "location",
+      "set-cookie",
+      "server",
+      "transfer-encoding",
+      "vary",
+      "x-frame-options",
+      "x-powered-by",
+    ];
+    const summarizeHeaderPresence = (headers, keys) => {
+      const normalized = headers || {};
+      const present = [];
+      const missing = [];
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(normalized, key) && normalized[key] !== undefined && normalized[key] !== null && String(normalized[key]).trim() !== "") {
+          present.push(key);
+        } else {
+          missing.push(key);
+        }
+      }
+      return {
+        total: keys.length,
+        presentCount: present.length,
+        missingCount: missing.length,
+        present,
+        missing: missing.slice(0, 8),
+      };
+    };
+    const headersToArray = (headers, keys = null) => {
+      const normalized = headers || {};
+      const entries = [];
+      const sourceKeys = Array.isArray(keys) && keys.length ? keys : Object.keys(normalized);
+      for (const key of sourceKeys) {
+        if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
+          continue;
+        }
+        const value = normalized[key];
+        if (value === undefined || value === null || String(value).trim() === "") {
+          continue;
+        }
+        entries.push({ name: String(key), value: String(value) });
+      }
+      return entries;
+    };
+    const queryStringFromUrl = (rawUrl) => {
+      try {
+        const parsed = new URL(rawUrl);
+        return Array.from(parsed.searchParams.entries()).map(([name, value]) => ({
+          name,
+          value,
+        }));
+      } catch (error) {
+        return [];
+      }
+    };
+    const splitCookiePairs = (rawCookieValue) => {
+      if (!rawCookieValue) {
+        return [];
+      }
+      return String(rawCookieValue)
+        .split(/;\s*/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((pair) => {
+          const separatorIndex = pair.indexOf("=");
+          if (separatorIndex === -1) {
+            return { name: pair, value: "" };
+          }
+          return {
+            name: pair.slice(0, separatorIndex).trim(),
+            value: pair.slice(separatorIndex + 1).trim(),
+          };
+        })
+        .filter((item) => item.name);
+    };
+    const cookiePairsFromHeaders = (headers, key) => {
+      const normalized = headers || {};
+      const raw = normalized[key];
+      if (!raw) {
+        return [];
+      }
+      if (Array.isArray(raw)) {
+        return raw.flatMap((item) => splitCookiePairs(item));
+      }
+      return splitCookiePairs(raw);
+    };
+    const filterHeaders = (headers, keys) => {
+      const normalized = headers || {};
+      const out = {};
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(normalized, key) && normalized[key] !== undefined && normalized[key] !== null && String(normalized[key]).trim() !== "") {
+          out[key] = String(normalized[key]);
+        }
+      }
+      return out;
+    };
+    const timingBucket = (timing) => {
+      if (!timing || typeof timing !== "object") {
+        return "unknown";
+      }
+      const value = Number.isFinite(Number(timing.responseEnd)) && Number(timing.responseEnd) >= 0
+        ? Number(timing.responseEnd)
+        : Number.isFinite(Number(timing.responseStart)) && Number(timing.responseStart) >= 0
+          ? Number(timing.responseStart)
+          : Number.isFinite(Number(timing.requestStart)) && Number(timing.requestStart) >= 0
+            ? Number(timing.requestStart)
+            : null;
+      if (value === null) {
+        return "unknown";
+      }
+      if (value < 100) return "sub-100ms";
+      if (value < 300) return "100-300ms";
+      if (value < 800) return "300-800ms";
+      if (value < 2000) return "800ms-2s";
+      return "2s+";
+    };
 
     page.on("request", (request) => {
+      const requestId = ++requestSequence;
+      requestIds.set(request, requestId);
+      let frameUrl = null;
+      try {
+        frameUrl = request.frame() ? request.frame().url() : null;
+      } catch (error) {}
+      let redirectDepth = 0;
+      let redirectedFromUrl = null;
+      try {
+        let previous = typeof request.redirectedFrom === "function" ? request.redirectedFrom() : null;
+        while (previous && redirectDepth < 8) {
+          redirectDepth += 1;
+          if (!redirectedFromUrl) {
+            redirectedFromUrl = previous.url ? previous.url() : null;
+          }
+          previous = typeof previous.redirectedFrom === "function" ? previous.redirectedFrom() : null;
+        }
+      } catch (error) {}
       requestEntries.push({
+        requestId,
         url: request.url(),
         method: request.method(),
         resourceType: request.resourceType(),
         isNavigationRequest: request.isNavigationRequest(),
+        frameUrl,
+        hasPostData: Boolean(request.postData()),
+        postDataSize: request.postData() ? request.postData().length : 0,
+        requestHeaders: filterHeaders(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
+        requestHeadersArray: headersToArray(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
+        requestCookies: cookiePairsFromHeaders(typeof request.headers === "function" ? request.headers() : {}, "cookie"),
+        queryString: queryStringFromUrl(request.url()),
+        headerPresence: summarizeHeaderPresence(typeof request.headers === "function" ? request.headers() : {}, commonRequestHeaderKeys),
+        redirectDepth,
+        redirectedFromUrl,
+        timingBucket: timingBucket(typeof request.timing === "function" ? request.timing() : null),
+        observedAt: Date.now(),
       });
+      if (redirectDepth > 0) {
+        redirectRequestEntries.push({
+          requestId,
+          url: request.url(),
+          method: request.method(),
+          resourceType: request.resourceType(),
+          frameUrl,
+          redirectDepth,
+          redirectedFromUrl,
+          observedAt: Date.now(),
+        });
+      }
     });
 
     page.on("response", (response) => {
       const target = response.url();
       const request = response.request();
+      const requestId = requestIds.get(request) || null;
+      let frameUrl = null;
+      try {
+        frameUrl = request.frame() ? request.frame().url() : null;
+      } catch (error) {}
       responseEntries.push({
+        requestId,
         url: target,
         status: response.status(),
+        statusText: typeof response.statusText === "function" ? response.statusText() : null,
         resourceType: request.resourceType(),
         method: request.method(),
         contentType: response.headers()["content-type"] || null,
+        contentLength: response.headers()["content-length"] || null,
+        responseHeaders: filterHeaders(response.headers(), commonResponseHeaderKeys),
+        responseHeadersArray: headersToArray(response.headers(), commonResponseHeaderKeys),
+        responseCookies: cookiePairsFromHeaders(response.headers(), "set-cookie"),
+        headerPresence: summarizeHeaderPresence(response.headers(), commonResponseHeaderKeys),
+        frameUrl,
+        fromServiceWorker: typeof response.fromServiceWorker === "function" ? response.fromServiceWorker() : false,
+        timingBucket: timingBucket(typeof response.timing === "function" ? response.timing() : (typeof request.timing === "function" ? request.timing() : null)),
+        responseTiming: typeof response.timing === "function" ? response.timing() : null,
+        observedAt: Date.now(),
       });
       if (!regex.test(target)) {
         return;
@@ -1663,15 +2731,133 @@ function isSafeToggleCandidate(candidate) {
       hits.push({ status: response.status(), url: target });
     });
 
+    page.on("requestfailed", (request) => {
+      const requestId = requestIds.get(request) || null;
+      let frameUrl = null;
+      try {
+        frameUrl = request.frame() ? request.frame().url() : null;
+      } catch (error) {}
+      const failure = request.failure ? request.failure() : null;
+      failedRequestEntries.push({
+        requestId,
+        url: request.url(),
+        method: request.method(),
+        resourceType: request.resourceType(),
+        isNavigationRequest: request.isNavigationRequest(),
+        frameUrl,
+        errorText: failure && failure.errorText ? failure.errorText : null,
+        observedAt: Date.now(),
+      });
+    });
+
     await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 90000 });
     await page.waitForTimeout(waitSeconds * 1000);
+    const navigationTiming = await page.evaluate(() => {
+      const navEntry = performance && typeof performance.getEntriesByType === "function"
+        ? performance.getEntriesByType("navigation")[0] || null
+        : null;
+      const timing = navEntry || (performance && performance.timing ? performance.timing : null);
+      if (!timing) {
+        return null;
+      }
+      const fetchStart = Number.isFinite(Number(timing.fetchStart)) ? Number(timing.fetchStart) : 0;
+      const domContentLoadedEventEnd = Number.isFinite(Number(timing.domContentLoadedEventEnd)) ? Number(timing.domContentLoadedEventEnd) : null;
+      const loadEventEnd = Number.isFinite(Number(timing.loadEventEnd)) ? Number(timing.loadEventEnd) : null;
+      const responseEnd = Number.isFinite(Number(timing.responseEnd)) ? Number(timing.responseEnd) : null;
+      return {
+        type: timing.type || null,
+        startTime: Number.isFinite(Number(timing.startTime)) ? Number(timing.startTime) : 0,
+        fetchStart,
+        responseEnd,
+        domContentLoadedEventEnd,
+        loadEventEnd,
+        domContentLoadedDuration: domContentLoadedEventEnd !== null ? Math.max(0, domContentLoadedEventEnd - fetchStart) : null,
+        loadDuration: loadEventEnd !== null ? Math.max(0, loadEventEnd - fetchStart) : null,
+      };
+    }).catch(() => null);
+
+    const interactionRuntimeSources = {
+      trimText: trimText.toString(),
+      styleSnapshotFromComputed: styleSnapshotFromComputed.toString(),
+      diffStyleSnapshots: diffStyleSnapshots.toString(),
+      safeReplayValue: safeReplayValue.toString(),
+      normalizeText: normalizeText.toString(),
+      resolveLabelFromReferences: resolveLabelFromReferences.toString(),
+      resolveAssociatedLabel: resolveAssociatedLabel.toString(),
+      resolveFormContextLabel: resolveFormContextLabel.toString(),
+      resolveDescriptionFromReferences: resolveDescriptionFromReferences.toString(),
+      getInteractionKind: getInteractionKind.toString(),
+      isFocusableElement: isFocusableElement.toString(),
+      compactLabelText: compactLabelText.toString(),
+      getInteractionLabel: getInteractionLabel.toString(),
+      describeInteractionTarget: describeInteractionTarget.toString(),
+      normalizeClassName: normalizeClassName.toString(),
+      classTokens: classTokens.toString(),
+      captureNodeSignature: captureNodeSignature.toString(),
+      isVisibleElement: isVisibleElement.toString(),
+      isScrollableElement: isScrollableElement.toString(),
+      describeScrollableElement: describeScrollableElement.toString(),
+      findMatchingAncestor: findMatchingAncestor.toString(),
+      findScrollableAncestor: findScrollableAncestor.toString(),
+      captureScrollSignals: captureScrollSignals.toString(),
+      captureStickySignals: captureStickySignals.toString(),
+      captureModalSignals: captureModalSignals.toString(),
+      captureCarouselSignals: captureCarouselSignals.toString(),
+      captureTabpanelSignals: captureTabpanelSignals.toString(),
+      captureInteractionSignals: captureInteractionSignals.toString(),
+      summarizeInteractionSignals: summarizeInteractionSignals.toString(),
+      captureSemanticState: captureSemanticState.toString(),
+      collectInteractionRoots: collectInteractionRoots.toString(),
+      findInteractionElement: findInteractionElement.toString(),
+      findControlledTarget: findControlledTarget.toString(),
+      captureToggleState: captureToggleState.toString(),
+      captureControlledTargetState: captureControlledTargetState.toString(),
+      captureInteractionState: captureInteractionState.toString(),
+      captureStyleSnapshot: captureStyleSnapshot.toString(),
+      hoverInteractionElement: hoverInteractionElement.toString(),
+      focusInteractionElement: focusInteractionElement.toString(),
+      blurInteractionElement: blurInteractionElement.toString(),
+      readInteractionValue: readInteractionValue.toString(),
+      writeInteractionValue: writeInteractionValue.toString(),
+      readInteractionScroll: readInteractionScroll.toString(),
+      writeInteractionScroll: writeInteractionScroll.toString(),
+      clickInteractionElement: clickInteractionElement.toString(),
+      cleanupInteractionMarkers: cleanupInteractionMarkers.toString(),
+    };
+
+    await page.evaluate((sources) => {
+      const target = globalThis;
+      if (!target.__webEmbeddingRuntimeHelpersInstalled) {
+        target.__webEmbeddingRuntimeHelpersInstalled = {};
+      }
+      for (const [name, source] of Object.entries(sources || {})) {
+        if (target.__webEmbeddingRuntimeHelpersInstalled[name] === true) {
+          continue;
+        }
+        target[name] = (0, eval)(`(${source})`);
+        (0, eval)(`var ${name} = globalThis[${JSON.stringify(name)}];`);
+        target.__webEmbeddingRuntimeHelpersInstalled[name] = true;
+      }
+      return Object.keys(target.__webEmbeddingRuntimeHelpersInstalled).length;
+    }, interactionRuntimeSources);
 
     const html = captureHtml ? await page.content() : null;
     const screenshotBytes = captureScreenshot ? await page.screenshot({ fullPage: true, type: "png" }) : null;
     const accessibilityTree = page.accessibility && typeof page.accessibility.snapshot === "function"
       ? await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null)
       : null;
-    const domSnapshot = await page.evaluate(() => {
+    const domSnapshotPayload = await page.evaluate(() => {
+      function safeFrameDocument(element) {
+        if (!element || !element.tagName || element.tagName.toLowerCase() !== "iframe") {
+          return null;
+        }
+        try {
+          const doc = element.contentDocument;
+          return doc && doc.documentElement ? doc : null;
+        } catch (error) {
+          return "inaccessible-frame";
+        }
+      }
       function summarize(node, depth, maxDepth, maxChildren) {
         if (depth > maxDepth || !node) return null;
         if (node.nodeType === Node.TEXT_NODE) {
@@ -1690,6 +2876,9 @@ function isSafeToggleCandidate(candidate) {
           text: (element.innerText || "").replace(/\s+/g, " ").trim().slice(0, 120) || null,
           children: [],
         };
+        if (entry.tag === "iframe") {
+          entry.src = element.getAttribute("src") || null;
+        }
         const children = Array.from(element.childNodes).slice(0, maxChildren);
         for (const child of children) {
           const summarized = summarize(child, depth + 1, maxDepth, maxChildren);
@@ -1697,10 +2886,86 @@ function isSafeToggleCandidate(candidate) {
             entry.children.push(summarized);
           }
         }
+        if (element.shadowRoot) {
+          const shadowChildren = Array.from(element.shadowRoot.childNodes).slice(0, maxChildren);
+          const shadowSummary = [];
+          for (const child of shadowChildren) {
+            const summarized = summarize(child, depth + 1, maxDepth, maxChildren);
+            if (summarized) {
+              shadowSummary.push(summarized);
+            }
+          }
+          if (shadowSummary.length) {
+            entry.shadowRoot = {
+              mode: element.shadowRoot.mode || "open",
+              children: shadowSummary,
+            };
+          }
+        }
+        if (element.tagName && element.tagName.toLowerCase() === "iframe") {
+          const frameDocument = safeFrameDocument(element);
+          if (frameDocument === "inaccessible-frame") {
+            entry.frameDocument = { type: "inaccessible-frame" };
+          } else if (frameDocument && frameDocument.documentElement) {
+            const frameSummary = summarize(frameDocument.documentElement, depth + 1, maxDepth, maxChildren);
+            if (frameSummary) {
+              entry.frameDocument = frameSummary;
+            }
+          }
+        }
         return entry;
       }
-      return summarize(document.documentElement, 0, 5, 12);
+      function collectStats(entry) {
+        const stats = {
+          nodeCount: 0,
+          shadowRootCount: 0,
+          frameDocumentCount: 0,
+          inaccessibleFrameCount: 0,
+          shadowHostTags: [],
+          frameSources: [],
+        };
+        function walk(node) {
+          if (!node || typeof node !== "object") return;
+          stats.nodeCount += 1;
+          if (node.shadowRoot && Array.isArray(node.shadowRoot.children) && node.shadowRoot.children.length) {
+            stats.shadowRootCount += 1;
+            if (node.tag && stats.shadowHostTags.length < 12 && !stats.shadowHostTags.includes(node.tag)) {
+              stats.shadowHostTags.push(node.tag);
+            }
+            for (const child of node.shadowRoot.children) {
+              walk(child);
+            }
+          }
+          if (node.frameDocument && typeof node.frameDocument === "object") {
+            if (node.frameDocument.type === "inaccessible-frame") {
+              stats.inaccessibleFrameCount += 1;
+            } else {
+              stats.frameDocumentCount += 1;
+              if (node.src && stats.frameSources.length < 12 && !stats.frameSources.includes(node.src)) {
+                stats.frameSources.push(node.src);
+              }
+              walk(node.frameDocument);
+            }
+          }
+          if (Array.isArray(node.children)) {
+            for (const child of node.children) {
+              walk(child);
+            }
+          }
+        }
+        walk(entry);
+        return stats;
+      }
+      const documentSummary = summarize(document.documentElement, 0, 5, 12);
+      return {
+        document: documentSummary,
+        stats: collectStats(documentSummary),
+      };
     });
+    const domSnapshot = domSnapshotPayload && typeof domSnapshotPayload === "object" ? domSnapshotPayload.document : domSnapshotPayload;
+    const domSnapshotStats = domSnapshotPayload && typeof domSnapshotPayload === "object" && domSnapshotPayload.stats
+      ? domSnapshotPayload.stats
+      : { nodeCount: 0, shadowRootCount: 0, frameDocumentCount: 0, inaccessibleFrameCount: 0 };
     const styleSummary = await page.evaluate(() => {
       const normalizeValue = (value) => String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
       const normalizeText = (value, maxLength = 160) => {
@@ -2347,6 +3612,33 @@ function isSafeToggleCandidate(candidate) {
       return entries.slice(0, sampleLimit);
     });
     const assetInventory = await page.evaluate(() => {
+      const collectDocumentRoots = (rootDocument, maxFrames = 12) => {
+        const roots = [{ kind: "document", document: rootDocument, frameSrc: null }];
+        const queue = [rootDocument];
+        const seen = new Set([rootDocument]);
+        while (queue.length && roots.length < maxFrames + 1) {
+          const current = queue.shift();
+          const frames = Array.from(current.querySelectorAll("iframe")).slice(0, maxFrames);
+          for (const frame of frames) {
+            let frameDoc = null;
+            try {
+              frameDoc = frame.contentDocument;
+            } catch (error) {
+              frameDoc = null;
+            }
+            if (!frameDoc || !frameDoc.documentElement || seen.has(frameDoc)) continue;
+            seen.add(frameDoc);
+            roots.push({
+              kind: "frame-document",
+              document: frameDoc,
+              frameSrc: frame.getAttribute("src") || frame.src || null,
+            });
+            queue.push(frameDoc);
+            if (roots.length >= maxFrames + 1) break;
+          }
+        }
+        return roots;
+      };
       const normalize = (value) => {
         if (!value) return null;
         try {
@@ -2356,13 +3648,63 @@ function isSafeToggleCandidate(candidate) {
         }
       };
       const uniq = (values) => Array.from(new Set(values.filter(Boolean)));
+      const roots = collectDocumentRoots(document, 12);
+      const backgroundImages = uniq(
+        roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("body *")).slice(0, 200))
+          .flatMap((node) => {
+            const style = window.getComputedStyle(node);
+            const raw = String(style.backgroundImage || "");
+            if (!raw || raw === "none") return [];
+            return Array.from(raw.matchAll(/url\\((['\"]?)(.*?)\\1\\)/g)).map((match) => normalize(match[2]));
+          })
+      );
+      const preloadLinks = roots.flatMap(({ document: doc, frameSrc }) =>
+        Array.from(doc.querySelectorAll('link[rel="preload"], link[rel="prefetch"], link[rel="modulepreload"]')).map((node) => ({
+          rel: node.getAttribute("rel"),
+          href: normalize(node.getAttribute("href") || node.href),
+          as: node.getAttribute("as"),
+          crossOrigin: node.getAttribute("crossorigin"),
+          frameSrc,
+        }))
+      );
+      const fontFaces = [];
+      for (const { document: doc, frameSrc } of roots) {
+        for (const sheet of Array.from(doc.styleSheets || []).slice(0, 24)) {
+          let rules = [];
+          try {
+            rules = Array.from(sheet.cssRules || []);
+          } catch (error) {
+            continue;
+          }
+          for (const rule of rules) {
+            if (rule && rule.type === CSSRule.FONT_FACE_RULE) {
+              const style = rule.style || {};
+              fontFaces.push({
+                family: style.getPropertyValue("font-family") || null,
+                src: style.getPropertyValue("src") || null,
+                weight: style.getPropertyValue("font-weight") || null,
+                style: style.getPropertyValue("font-style") || null,
+                display: style.getPropertyValue("font-display") || null,
+                frameSrc,
+              });
+            }
+          }
+        }
+      }
       return {
-        images: uniq(Array.from(document.images, (node) => normalize(node.currentSrc || node.src))),
-        scripts: uniq(Array.from(document.scripts, (node) => normalize(node.src))),
-        stylesheets: uniq(Array.from(document.querySelectorAll('link[rel="stylesheet"]'), (node) => normalize(node.href))),
-        videos: uniq(Array.from(document.querySelectorAll("video"), (node) => normalize(node.currentSrc || node.src))),
-        audios: uniq(Array.from(document.querySelectorAll("audio"), (node) => normalize(node.currentSrc || node.src))),
-        iframes: uniq(Array.from(document.querySelectorAll("iframe"), (node) => normalize(node.src))),
+        images: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.images, (node) => normalize(node.currentSrc || node.src)))),
+        scripts: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.scripts, (node) => normalize(node.src)))),
+        stylesheets: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll('link[rel="stylesheet"]'), (node) => normalize(node.href)))),
+        videos: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("video"), (node) => normalize(node.currentSrc || node.src)))),
+        audios: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("audio"), (node) => normalize(node.currentSrc || node.src)))),
+        iframes: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("iframe"), (node) => normalize(node.src)))),
+        backgroundImages,
+        preloadLinks: preloadLinks.filter((entry) => entry.href),
+        fontFaces,
+        roots: roots.map((entry) => ({
+          kind: entry.kind,
+          frameSrc: entry.frameSrc,
+        })),
       };
     });
     const cssAnalysis = await page.evaluate(() => {
@@ -2425,6 +3767,24 @@ function isSafeToggleCandidate(candidate) {
         className: typeof element.className === "string" && element.className ? trimText(element.className, 120) : null,
         style: trimText(element.getAttribute("style") || "", 200),
       }));
+      const preloadLinks = Array.from(
+        document.querySelectorAll('link[rel="preload"], link[rel="prefetch"], link[rel="modulepreload"]')
+      ).slice(0, 20).map((node, index) => ({
+        index,
+        rel: node.getAttribute("rel"),
+        href: normalize(node.getAttribute("href") || node.href),
+        as: node.getAttribute("as"),
+        crossOrigin: node.getAttribute("crossorigin"),
+      }));
+      const fontFaceRules = [];
+      for (const sheet of styleSheets) {
+        if (!sheet.accessible) continue;
+        for (const ruleText of sheet.sampleRules || []) {
+          if (/^@font-face/i.test(ruleText)) {
+            fontFaceRules.push(trimText(ruleText, 220));
+          }
+        }
+      }
       const rootStyle = window.getComputedStyle(document.documentElement);
       const bodyStyle = window.getComputedStyle(document.body || document.documentElement);
       return {
@@ -2435,6 +3795,8 @@ function isSafeToggleCandidate(candidate) {
         linkedStylesheets: styleSheets,
         inlineStyleBlocks,
         styleAttributeSample: styleAttributeNodes,
+        preloadLinkSample: preloadLinks,
+        fontFaceSample: fontFaceRules.slice(0, 12),
         rootComputedStyle: {
           color: rootStyle.color,
           backgroundColor: rootStyle.backgroundColor,
@@ -2464,6 +3826,68 @@ function isSafeToggleCandidate(candidate) {
       initialScrollX: Math.round(window.scrollX || window.pageXOffset || 0),
     }));
     const interactiveCandidates = await page.evaluate(() => {
+      const collectCandidateRoots = (rootDocument = document, maxFrameDocuments = 12) => {
+        const roots = [{
+          root: rootDocument,
+          kind: "document",
+          frameSrc: null,
+          frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+          shadowHostTag: null,
+          surfaceIndex: 0,
+        }];
+        const seenDocuments = new Set([rootDocument]);
+        const seenShadows = new Set();
+        const queue = [{
+          root: rootDocument,
+          kind: "document",
+          frameSrc: null,
+          frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+          shadowHostTag: null,
+          surfaceIndex: 0,
+        }];
+        while (queue.length && roots.length < maxFrameDocuments + 64) {
+          const current = queue.shift();
+          const scope = current.root;
+          const elements = Array.from(scope.querySelectorAll ? scope.querySelectorAll("*") : []).slice(0, 400);
+          for (const element of elements) {
+            if (element.shadowRoot && !seenShadows.has(element.shadowRoot)) {
+              seenShadows.add(element.shadowRoot);
+              const shadowEntry = {
+                root: element.shadowRoot,
+                kind: "shadow-root",
+                frameSrc: current.frameSrc || null,
+                frameUrl: current.frameUrl || null,
+                shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+                surfaceIndex: roots.length,
+              };
+              roots.push(shadowEntry);
+              queue.push(shadowEntry);
+            }
+            if (element.tagName && element.tagName.toLowerCase() === "iframe") {
+              let frameDoc = null;
+              try {
+                frameDoc = element.contentDocument;
+              } catch (error) {
+                frameDoc = null;
+              }
+              if (frameDoc && frameDoc.documentElement && !seenDocuments.has(frameDoc) && roots.length < maxFrameDocuments + 64) {
+                seenDocuments.add(frameDoc);
+                const frameEntry = {
+                  root: frameDoc,
+                  kind: "frame-document",
+                  frameSrc: element.getAttribute("src") || element.src || null,
+                  frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
+                  shadowHostTag: null,
+                  surfaceIndex: roots.length,
+                };
+                roots.push(frameEntry);
+                queue.push(frameEntry);
+              }
+            }
+          }
+        }
+        return roots;
+      };
       const normalizeText = (value, maxLength = 160) => {
         if (!value) return null;
         const normalized = String(value).replace(/\s+/g, " ").trim();
@@ -2689,7 +4113,8 @@ function isSafeToggleCandidate(candidate) {
           return false;
         }
         const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
+        const view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+        const style = view.getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
       };
       const classifySurfaceKinds = (element, style) => {
@@ -2733,6 +4158,7 @@ function isSafeToggleCandidate(candidate) {
       };
       const seen = new Set();
       const nodes = [];
+      const rootContext = new WeakMap();
       const pushNode = (element) => {
         if (!element || seen.has(element) || !isVisibleCandidate(element)) {
           return;
@@ -2740,28 +4166,56 @@ function isSafeToggleCandidate(candidate) {
         seen.add(element);
         nodes.push(element);
       };
-      for (const element of Array.from(document.querySelectorAll(selector))) {
-        pushNode(element);
-      }
-      for (const element of Array.from(document.querySelectorAll(surfaceSelector))) {
-        pushNode(element);
-      }
-      for (const element of Array.from(document.querySelectorAll("body *")).slice(0, 1200)) {
-        const style = window.getComputedStyle(element);
-        const classification = classifySurfaceKinds(element, style);
-        if (classification.kinds.length) {
+      const roots = collectCandidateRoots(document, 12);
+      for (const entry of roots) {
+        const scope = entry.root;
+        for (const element of Array.from(scope.querySelectorAll ? scope.querySelectorAll(selector) : [])) {
+          rootContext.set(element, {
+            kind: entry.kind,
+            frameSrc: entry.frameSrc,
+            frameUrl: entry.frameUrl || null,
+            shadowHostTag: entry.shadowHostTag,
+            surfaceIndex: entry.surfaceIndex,
+          });
           pushNode(element);
         }
-        if (nodes.length >= 24) {
-          break;
+        for (const element of Array.from(scope.querySelectorAll ? scope.querySelectorAll(surfaceSelector) : [])) {
+          rootContext.set(element, {
+            kind: entry.kind,
+            frameSrc: entry.frameSrc,
+            frameUrl: entry.frameUrl || null,
+            shadowHostTag: entry.shadowHostTag,
+            surfaceIndex: entry.surfaceIndex,
+          });
+          pushNode(element);
+        }
+        for (const element of Array.from(scope.querySelectorAll ? scope.querySelectorAll("*") : []).slice(0, 1200)) {
+          const view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+          const style = view.getComputedStyle(element);
+          const classification = classifySurfaceKinds(element, style);
+          if (classification.kinds.length) {
+            rootContext.set(element, {
+              kind: entry.kind,
+              frameSrc: entry.frameSrc,
+              frameUrl: entry.frameUrl || null,
+              shadowHostTag: entry.shadowHostTag,
+              surfaceIndex: entry.surfaceIndex,
+            });
+            pushNode(element);
+          }
+          if (nodes.length >= 24) {
+            break;
+          }
         }
       }
       return nodes.slice(0, 24).map((element, index) => {
         const id = `web-embedding-${index}`;
         element.setAttribute('data-web-embedding-interaction-id', id);
         const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
+        const view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+        const style = view.getComputedStyle(element);
         const classification = classifySurfaceKinds(element, style);
+        const contextMeta = rootContext.get(element) || { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 };
         const summaryLabel = [
           getInteractionLabel(element),
           classification.kinds.length ? classification.kinds.join("+") : null,
@@ -2839,6 +4293,7 @@ function isSafeToggleCandidate(candidate) {
             position: classification.position,
             zIndex: classification.zIndex,
           },
+          rootContext: contextMeta,
         };
       });
     });
@@ -2854,11 +4309,24 @@ function isSafeToggleCandidate(candidate) {
       executions: [],
     };
     let traceOrder = 0;
+  const normalizeTraceRootContext = (rootContext) => {
+    if (!rootContext || typeof rootContext !== "object") {
+      return { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 };
+    }
+    return {
+      kind: rootContext.kind || "document",
+      frameSrc: rootContext.frameSrc || null,
+      frameUrl: rootContext.frameUrl || null,
+      shadowHostTag: rootContext.shadowHostTag || null,
+      surfaceIndex: typeof rootContext.surfaceIndex === "number" ? rootContext.surfaceIndex : null,
+    };
+  };
     const pushTraceStep = (step) => {
       traceOrder += 1;
       const entry = {
         id: `trace-${traceOrder}`,
         order: traceOrder,
+        rootContext: normalizeTraceRootContext(step && step.rootContext),
         ...step,
       };
       interactionTrace.steps.push(entry);
@@ -2867,6 +4335,7 @@ function isSafeToggleCandidate(candidate) {
     const pushExecution = (execution) => {
       interactionTrace.executions.push({
         order: interactionTrace.executions.length + 1,
+        rootContext: normalizeTraceRootContext(execution && execution.rootContext),
         ...execution,
       });
     };
@@ -2883,6 +4352,7 @@ function isSafeToggleCandidate(candidate) {
         scrollY,
         label: scrollY === 0 ? "scroll top" : `scroll ${scrollY}px`,
         interactionKind: "scroll",
+        rootContext: { kind: "document", frameSrc: null, shadowHostTag: null },
       });
       try {
         await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), scrollY);
@@ -2893,6 +4363,7 @@ function isSafeToggleCandidate(candidate) {
           kind: step.kind,
           status: "executed",
           observed: { scrollY: observedScroll },
+          rootContext: step.rootContext,
         });
       } catch (error) {
         pushExecution({
@@ -2900,14 +4371,13 @@ function isSafeToggleCandidate(candidate) {
           kind: step.kind,
           status: "failed",
           error: error.message,
+          rootContext: step.rootContext,
         });
       }
     }
     await page.evaluate((value) => window.scrollTo({ top: value, behavior: 'instant' }), pageMetrics.initialScrollY || 0);
     let scrollSurfaceReplayCount = 0;
     for (const candidate of interactiveCandidates) {
-      const x = Math.max(1, Math.round(candidate.rect.x + Math.min(candidate.rect.width / 2, Math.max(candidate.rect.width - 1, 1))));
-      const y = Math.max(1, Math.round(candidate.rect.y + Math.min(candidate.rect.height / 2, Math.max(candidate.rect.height - 1, 1))));
       const traceLabel = candidate.summaryLabel || candidate.labelText || candidate.label || candidate.text || candidate.ariaLabel || candidate.tag;
       let hoverStyles = null;
       let focusStyles = null;
@@ -2918,67 +4388,20 @@ function isSafeToggleCandidate(candidate) {
       let clickState = null;
 
       try {
-        await page.mouse.move(x, y);
+        await page.evaluate(evaluateInteractionRuntime, { action: "hover", selector: candidate.selector, rootContext: candidate.rootContext });
         await page.waitForTimeout(80);
-        hoverStyles = await page.evaluate((selector) => {
-          const styleSnapshotFromComputed = (style) => ({
-            display: style.display,
-            position: style.position,
-            color: style.color,
-            backgroundColor: style.backgroundColor,
-            borderColor: style.borderColor,
-            borderWidth: style.borderWidth,
-            borderRadius: style.borderRadius,
-            boxShadow: style.boxShadow,
-            opacity: style.opacity,
-            transform: style.transform,
-            filter: style.filter,
-            textDecoration: style.textDecoration,
-            outline: style.outline,
-            outlineOffset: style.outlineOffset,
-            cursor: style.cursor,
-          });
-          const element = document.querySelector(selector);
-          if (!element) return null;
-          return styleSnapshotFromComputed(window.getComputedStyle(element));
-        }, candidate.selector);
-        hoverState = await page.evaluate(captureInteractionState, candidate.selector);
+        hoverStyles = await page.evaluate(evaluateInteractionRuntime, { action: "capture-style", selector: candidate.selector, rootContext: candidate.rootContext });
+        hoverState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
       } catch (error) {
         hoverError = error.message;
       }
 
       try {
-        await page.focus(candidate.selector);
+        await page.evaluate(evaluateInteractionRuntime, { action: "focus", selector: candidate.selector, rootContext: candidate.rootContext });
         await page.waitForTimeout(60);
-        focusStyles = await page.evaluate((selector) => {
-          const styleSnapshotFromComputed = (style) => ({
-            display: style.display,
-            position: style.position,
-            color: style.color,
-            backgroundColor: style.backgroundColor,
-            borderColor: style.borderColor,
-            borderWidth: style.borderWidth,
-            borderRadius: style.borderRadius,
-            boxShadow: style.boxShadow,
-            opacity: style.opacity,
-            transform: style.transform,
-            filter: style.filter,
-            textDecoration: style.textDecoration,
-            outline: style.outline,
-            outlineOffset: style.outlineOffset,
-            cursor: style.cursor,
-          });
-          const element = document.querySelector(selector);
-          if (!element) return null;
-          return styleSnapshotFromComputed(window.getComputedStyle(element));
-        }, candidate.selector);
-        focusState = await page.evaluate(captureInteractionState, candidate.selector);
-        await page.evaluate((selector) => {
-          const element = document.querySelector(selector);
-          if (element && typeof element.blur === 'function') {
-            element.blur();
-          }
-        }, candidate.selector);
+        focusStyles = await page.evaluate(evaluateInteractionRuntime, { action: "capture-style", selector: candidate.selector, rootContext: candidate.rootContext });
+        focusState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
+        await page.evaluate(evaluateInteractionRuntime, { action: "blur", selector: candidate.selector, rootContext: candidate.rootContext });
       } catch (error) {
         focusError = error.message;
       }
@@ -2990,6 +4413,7 @@ function isSafeToggleCandidate(candidate) {
         selector: candidate.selector,
         label: traceLabel,
         interactionKind: "hover",
+        rootContext: candidate.rootContext,
       });
       pushExecution({
         stepId: hoverStep.id,
@@ -2998,6 +4422,7 @@ function isSafeToggleCandidate(candidate) {
         changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, hoverStyles)),
         stateSummary: summarizeInteractionState(hoverState),
         error: hoverError,
+        rootContext: hoverStep.rootContext,
       });
       const focusStep = pushTraceStep({
         kind: "focus",
@@ -3006,6 +4431,7 @@ function isSafeToggleCandidate(candidate) {
         selector: candidate.selector,
         label: traceLabel,
         interactionKind: "focus",
+        rootContext: candidate.rootContext,
       });
       pushExecution({
         stepId: focusStep.id,
@@ -3014,6 +4440,7 @@ function isSafeToggleCandidate(candidate) {
         changedKeys: Object.keys(diffStyleSnapshots(candidate.baseStyles, focusStyles)),
         stateSummary: summarizeInteractionState(focusState),
         error: focusError,
+        rootContext: focusStep.rootContext,
       });
 
       if (scrollSurfaceReplayCount < 4 && Array.isArray(candidate.surfaceKinds) && candidate.surfaceKinds.includes("scroll") && candidate.scrollableAxis) {
@@ -3025,38 +4452,24 @@ function isSafeToggleCandidate(candidate) {
           selector: candidate.selector,
           label: `${traceLabel} scroll ${candidate.scrollableAxis}`,
           interactionKind: "scroll-surface",
+          rootContext: candidate.rootContext,
         });
         let beforeScrollState = null;
         let afterScrollState = null;
         try {
-          beforeScrollState = await page.evaluate(captureInteractionState, candidate.selector);
+          beforeScrollState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
           const scrollDeltaX = candidate.scrollableAxis === "x" || candidate.scrollableAxis === "both" ? Math.max(40, Math.round((candidate.clientWidth || 0) * 0.4)) : 0;
           const scrollDeltaY = candidate.scrollableAxis === "y" || candidate.scrollableAxis === "both" ? Math.max(40, Math.round((candidate.clientHeight || 0) * 0.4)) : 0;
-          const beforeScroll = await page.evaluate((selector) => {
-            const element = document.querySelector(selector);
-            if (!element) return null;
-            return {
-              scrollTop: Math.round(element.scrollTop || 0),
-              scrollLeft: Math.round(element.scrollLeft || 0),
-            };
-          }, candidate.selector);
-          await page.evaluate(({ selector, deltaX, deltaY }) => {
-            const element = document.querySelector(selector);
-            if (!element) return;
-            element.scrollLeft = Math.max(0, (element.scrollLeft || 0) + deltaX);
-            element.scrollTop = Math.max(0, (element.scrollTop || 0) + deltaY);
-          }, { selector: candidate.selector, deltaX: scrollDeltaX, deltaY: scrollDeltaY });
+          const beforeScroll = await page.evaluate(evaluateInteractionRuntime, { action: "read-scroll", selector: candidate.selector, rootContext: candidate.rootContext });
+          await page.evaluate(evaluateInteractionRuntime, { action: "write-scroll", selector: candidate.selector, deltaX: scrollDeltaX, deltaY: scrollDeltaY, rootContext: candidate.rootContext });
           await page.waitForTimeout(80);
-          afterScrollState = await page.evaluate(captureInteractionState, candidate.selector);
-          await page.evaluate(({ selector, scrollTop, scrollLeft }) => {
-            const element = document.querySelector(selector);
-            if (!element) return;
-            element.scrollTop = scrollTop;
-            element.scrollLeft = scrollLeft;
-          }, {
+          afterScrollState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
+          await page.evaluate(evaluateInteractionRuntime, {
+            action: "write-scroll",
             selector: candidate.selector,
             scrollTop: beforeScroll && typeof beforeScroll.scrollTop === "number" ? beforeScroll.scrollTop : 0,
             scrollLeft: beforeScroll && typeof beforeScroll.scrollLeft === "number" ? beforeScroll.scrollLeft : 0,
+            rootContext: candidate.rootContext,
           });
           pushExecution({
             stepId: scrollStep.id,
@@ -3072,6 +4485,7 @@ function isSafeToggleCandidate(candidate) {
               deltaX: scrollDeltaX,
               deltaY: scrollDeltaY,
             },
+            rootContext: scrollStep.rootContext,
           });
         } catch (error) {
           pushExecution({
@@ -3079,6 +4493,7 @@ function isSafeToggleCandidate(candidate) {
             kind: scrollStep.kind,
             status: "failed",
             error: error.message,
+            rootContext: scrollStep.rootContext,
           });
         }
       }
@@ -3095,15 +4510,18 @@ function isSafeToggleCandidate(candidate) {
           label: traceLabel,
           value: typeValue,
           interactionKind: "type",
+          rootContext: candidate.rootContext,
         });
         try {
-          beforeTypeState = await page.evaluate(captureInteractionState, candidate.selector);
-          const beforeValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
-          await page.fill(candidate.selector, typeValue);
+          beforeTypeState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
+          const beforeValuePayload = await page.evaluate(evaluateInteractionRuntime, { action: "read-value", selector: candidate.selector, rootContext: candidate.rootContext });
+          const beforeValue = beforeValuePayload && beforeValuePayload.available ? beforeValuePayload.value || "" : "";
+          await page.evaluate(evaluateInteractionRuntime, { action: "write-value", selector: candidate.selector, value: typeValue, rootContext: candidate.rootContext });
           await page.waitForTimeout(80);
-          afterTypeState = await page.evaluate(captureInteractionState, candidate.selector);
-          const afterValue = await page.$eval(candidate.selector, (element) => ('value' in element ? String(element.value || '') : ''));
-          await page.fill(candidate.selector, beforeValue);
+          afterTypeState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-state", selector: candidate.selector, rootContext: candidate.rootContext });
+          const afterValuePayload = await page.evaluate(evaluateInteractionRuntime, { action: "read-value", selector: candidate.selector, rootContext: candidate.rootContext });
+          const afterValue = afterValuePayload && afterValuePayload.available ? afterValuePayload.value || "" : "";
+          await page.evaluate(evaluateInteractionRuntime, { action: "write-value", selector: candidate.selector, value: beforeValue, rootContext: candidate.rootContext });
           pushExecution({
             stepId: typeStep.id,
             kind: typeStep.kind,
@@ -3114,6 +4532,7 @@ function isSafeToggleCandidate(candidate) {
               before: summarizeInteractionState(beforeTypeState),
               after: summarizeInteractionState(afterTypeState),
             },
+            rootContext: typeStep.rootContext,
           });
         } catch (error) {
           pushExecution({
@@ -3121,6 +4540,7 @@ function isSafeToggleCandidate(candidate) {
             kind: typeStep.kind,
             status: "failed",
             error: error.message,
+            rootContext: typeStep.rootContext,
           });
         }
       }
@@ -3134,6 +4554,7 @@ function isSafeToggleCandidate(candidate) {
           selector: candidate.selector,
           label: traceLabel,
           interactionKind: safeToggleLike ? "click-toggle" : "click-planned",
+          rootContext: candidate.rootContext,
         });
         if (!safeToggleLike) {
           pushExecution({
@@ -3141,22 +4562,23 @@ function isSafeToggleCandidate(candidate) {
             kind: clickStep.kind,
             status: "planned",
             reason: "Click replay is captured as a plan only unless the control looks like a safe toggle.",
+            rootContext: clickStep.rootContext,
           });
         } else {
           try {
-            const beforeState = await page.evaluate(captureToggleState, candidate.selector);
-            await page.click(candidate.selector, { timeout: 2500 });
+            const beforeState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-toggle", selector: candidate.selector, rootContext: candidate.rootContext });
+            await page.evaluate(evaluateInteractionRuntime, { action: "click", selector: candidate.selector, rootContext: candidate.rootContext });
             await page.waitForTimeout(80);
-            const afterState = await page.evaluate(captureToggleState, candidate.selector);
+            const afterState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-toggle", selector: candidate.selector, rootContext: candidate.rootContext });
             const stateDelta = diffInteractionStates(beforeState, afterState);
             const stateChanged = Object.keys(stateDelta).length > 0;
             let restoredState = null;
             let restoreError = null;
             if (stateChanged) {
               try {
-                await page.click(candidate.selector, { timeout: 2500 });
+                await page.evaluate(evaluateInteractionRuntime, { action: "click", selector: candidate.selector, rootContext: candidate.rootContext });
                 await page.waitForTimeout(60);
-                restoredState = await page.evaluate(captureToggleState, candidate.selector);
+                restoredState = await page.evaluate(evaluateInteractionRuntime, { action: "capture-toggle", selector: candidate.selector });
               } catch (error) {
                 restoreError = error.message;
               }
@@ -3185,6 +4607,7 @@ function isSafeToggleCandidate(candidate) {
                 restored: summarizeInteractionState(restoredState),
               },
               error: restoreError,
+              rootContext: clickStep.rootContext,
             });
           } catch (error) {
             clickState = {
@@ -3197,6 +4620,7 @@ function isSafeToggleCandidate(candidate) {
               status: "failed",
               safeToggleLike,
               error: error.message,
+              rootContext: clickStep.rootContext,
             });
           }
         }
@@ -3217,15 +4641,225 @@ function isSafeToggleCandidate(candidate) {
         clickState,
       });
     }
-    await page.evaluate(() => {
-      document
-        .querySelectorAll('[data-web-embedding-interaction-id]')
-        .forEach((element) => element.removeAttribute('data-web-embedding-interaction-id'));
-    });
+    await page.evaluate(evaluateInteractionRuntime, { action: "cleanup" });
     await page.mouse.move(1, 1);
     const networkManifest = {
       requests: uniqueByUrl(requestEntries).slice(0, 400),
       responses: uniqueByUrl(responseEntries).slice(0, 400),
+      failures: uniqueByUrl(failedRequestEntries).slice(0, 200),
+      redirects: uniqueByUrl(redirectRequestEntries).slice(0, 120),
+    };
+    const requestById = new Map();
+    for (const request of requestEntries) {
+      if (request && request.requestId !== undefined && request.requestId !== null && !requestById.has(request.requestId)) {
+        requestById.set(request.requestId, request);
+      }
+    }
+    const responseById = new Map();
+    for (const response of responseEntries) {
+      if (response && response.requestId !== undefined && response.requestId !== null && !responseById.has(response.requestId)) {
+        responseById.set(response.requestId, response);
+      }
+    }
+    const failureById = new Map();
+    for (const failure of failedRequestEntries) {
+      if (failure && failure.requestId !== undefined && failure.requestId !== null && !failureById.has(failure.requestId)) {
+        failureById.set(failure.requestId, failure);
+      }
+    }
+    const resourceTypeCounts = {};
+    for (const request of networkManifest.requests) {
+      const key = request.resourceType || "unknown";
+      resourceTypeCounts[key] = (resourceTypeCounts[key] || 0) + 1;
+    }
+    const responseStatusCounts = {};
+    for (const response of networkManifest.responses) {
+      const key = String(response.status || "unknown");
+      responseStatusCounts[key] = (responseStatusCounts[key] || 0) + 1;
+    }
+    const failureReasonCounts = {};
+    for (const failure of networkManifest.failures) {
+      const key = String(failure.errorText || "unknown");
+      failureReasonCounts[key] = (failureReasonCounts[key] || 0) + 1;
+    }
+    const requestHeaderPresenceSummary = {};
+    for (const request of networkManifest.requests) {
+      const presence = request.headerPresence || {};
+      for (const key of presence.present || []) {
+        requestHeaderPresenceSummary[key] = (requestHeaderPresenceSummary[key] || 0) + 1;
+      }
+    }
+    const responseHeaderPresenceSummary = {};
+    for (const response of networkManifest.responses) {
+      const presence = response.headerPresence || {};
+      for (const key of presence.present || []) {
+        responseHeaderPresenceSummary[key] = (responseHeaderPresenceSummary[key] || 0) + 1;
+      }
+    }
+    const redirectSample = networkManifest.redirects.slice(0, 12).map((entry) => ({
+      url: entry.url,
+      redirectedFromUrl: entry.redirectedFromUrl,
+      redirectDepth: entry.redirectDepth,
+      frameUrl: entry.frameUrl,
+      resourceType: entry.resourceType,
+    }));
+    const timingBucketCounts = {};
+    for (const entry of [...networkManifest.requests, ...networkManifest.responses]) {
+      const bucket = String(entry.timingBucket || "unknown");
+      timingBucketCounts[bucket] = (timingBucketCounts[bucket] || 0) + 1;
+    }
+    const responseBodyAvailability = {
+      withContentLength: networkManifest.responses.filter((entry) => Boolean(entry.contentLength)).length,
+      withTransferEncoding: networkManifest.responses.filter((entry) => Boolean((entry.headerPresence || {}).present && (entry.headerPresence.present || []).includes("transfer-encoding"))).length,
+      withContentEncoding: networkManifest.responses.filter((entry) => Boolean((entry.headerPresence || {}).present && (entry.headerPresence.present || []).includes("content-encoding"))).length,
+      likelyHasBody: networkManifest.responses.filter((entry) => ![204, 205, 304].includes(Number(entry.status || 0)) && (Boolean(entry.contentLength) || Boolean(entry.contentType))).length,
+    };
+    const frameUrlSample = Array.from(new Set(
+      networkManifest.requests
+        .map((entry) => entry.frameUrl)
+        .filter(Boolean)
+    )).slice(0, 20);
+    const harPages = [{
+      id: "page_1",
+      startedDateTime: pageStartedDateTime,
+      title: await page.title(),
+      pageUrl: page.url(),
+      frameUrlSample,
+      redirectCount: networkManifest.redirects.length,
+      pageTimings: navigationTiming ? {
+        onContentLoad: navigationTiming.domContentLoadedDuration,
+        onLoad: navigationTiming.loadDuration,
+      } : {
+        onContentLoad: null,
+        onLoad: null,
+      },
+    }];
+    const harEntries = [];
+    for (const request of requestEntries) {
+      const response = request.requestId !== undefined && request.requestId !== null ? responseById.get(request.requestId) : null;
+      const failure = request.requestId !== undefined && request.requestId !== null ? failureById.get(request.requestId) : null;
+      const responseTiming = response && response.responseTiming ? response.responseTiming : null;
+      harEntries.push({
+        startedDateTime: new Date(request.observedAt || Date.now()).toISOString(),
+        timeBucket: request.timingBucket || "unknown",
+        time: responseTiming && Number.isFinite(Number(responseTiming.responseEnd))
+          ? Math.max(0, Number(responseTiming.responseEnd))
+          : responseTiming && Number.isFinite(Number(responseTiming.responseStart))
+            ? Math.max(0, Number(responseTiming.responseStart))
+            : null,
+        pageref: "page_1",
+        request: {
+          method: request.method,
+          url: request.url,
+          httpVersion: null,
+          headers: request.requestHeadersArray || [],
+          queryString: Array.isArray(request.queryString) ? request.queryString : [],
+          cookies: Array.isArray(request.requestCookies) ? request.requestCookies : [],
+          headerPresence: request.headerPresence || {},
+          postDataSize: request.postDataSize || 0,
+          hasPostData: Boolean(request.hasPostData),
+          resourceType: request.resourceType || null,
+          frameUrl: request.frameUrl || null,
+          isNavigationRequest: Boolean(request.isNavigationRequest),
+          redirectDepth: request.redirectDepth || 0,
+          redirectedFromUrl: request.redirectedFromUrl || null,
+          bodySize: request.postDataSize || 0,
+          headersSize: -1,
+        },
+        response: response ? {
+          status: response.status,
+          statusText: response.statusText || null,
+          httpVersion: null,
+          headers: response.responseHeadersArray || [],
+          cookies: Array.isArray(response.responseCookies) ? response.responseCookies : [],
+          headerPresence: response.headerPresence || {},
+          contentType: response.contentType || null,
+          contentLength: response.contentLength || null,
+          fromServiceWorker: Boolean(response.fromServiceWorker),
+          frameUrl: response.frameUrl || null,
+          bodySize: response.contentLength ? Number(response.contentLength) || -1 : -1,
+          headersSize: -1,
+        } : null,
+        failure: failure ? {
+          errorText: failure.errorText || null,
+          resourceType: failure.resourceType || null,
+          frameUrl: failure.frameUrl || null,
+        } : null,
+        cache: {},
+        timings: {
+          bucket: response ? (response.timingBucket || request.timingBucket || "unknown") : (request.timingBucket || "unknown"),
+          requestStart: responseTiming && Number.isFinite(Number(responseTiming.requestStart)) ? Number(responseTiming.requestStart) : null,
+          responseStart: responseTiming && Number.isFinite(Number(responseTiming.responseStart)) ? Number(responseTiming.responseStart) : null,
+          responseEnd: responseTiming && Number.isFinite(Number(responseTiming.responseEnd)) ? Number(responseTiming.responseEnd) : null,
+          wait: responseTiming && Number.isFinite(Number(responseTiming.responseStart)) && Number.isFinite(Number(responseTiming.requestStart))
+            ? Math.max(0, Number(responseTiming.responseStart) - Number(responseTiming.requestStart))
+            : null,
+          receive: responseTiming && Number.isFinite(Number(responseTiming.responseEnd)) && Number.isFinite(Number(responseTiming.responseStart))
+            ? Math.max(0, Number(responseTiming.responseEnd) - Number(responseTiming.responseStart))
+            : null,
+        },
+      });
+    }
+    networkManifest.summary = {
+      requestCount: networkManifest.requests.length,
+      responseCount: networkManifest.responses.length,
+      failureCount: networkManifest.failures.length,
+      redirectCount: networkManifest.redirects.length,
+      resourceTypeCounts,
+      responseStatusCounts,
+      failureReasonCounts,
+      requestHeaderPresenceSummary,
+      responseHeaderPresenceSummary,
+      timingBucketCounts,
+      responseBodyAvailability,
+      navigationRequestCount: networkManifest.requests.filter((entry) => entry.isNavigationRequest).length,
+      postDataRequestCount: networkManifest.requests.filter((entry) => entry.hasPostData).length,
+      serviceWorkerResponseCount: networkManifest.responses.filter((entry) => entry.fromServiceWorker).length,
+      frameUrlSample,
+      redirectSample,
+      pageTimings: harPages[0].pageTimings,
+      harPageCount: harPages.length,
+      harEntryCount: harEntries.length,
+      harLikePageCount: harPages.length,
+      harLikeEntryCount: harEntries.length,
+    };
+    const harLog = {
+      version: "1.2",
+      creator: {
+        name: "webEmbedding",
+        version: "0.1",
+      },
+      browser: {
+        name: "Playwright Chromium",
+        version: null,
+      },
+      pages: harPages,
+      entries: harEntries.slice(0, 400),
+    };
+    networkManifest.harLike = {
+      version: "near-har.v1",
+      pages: harPages,
+      entries: harEntries.slice(0, 400),
+      summary: {
+        pageCount: harPages.length,
+        entryCount: harEntries.length,
+        requestCount: networkManifest.requests.length,
+        responseCount: networkManifest.responses.length,
+        failureCount: networkManifest.failures.length,
+        redirectCount: networkManifest.redirects.length,
+      },
+    };
+    networkManifest.har = {
+      log: harLog,
+      summary: {
+        pageCount: harPages.length,
+        entryCount: harEntries.length,
+        requestCount: networkManifest.requests.length,
+        responseCount: networkManifest.responses.length,
+        failureCount: networkManifest.failures.length,
+        redirectCount: networkManifest.redirects.length,
+        pageTimings: harPages[0].pageTimings,
+      },
     };
     const assetSummary = {
       images: assetInventory.images.length,
@@ -3234,6 +4868,10 @@ function isSafeToggleCandidate(candidate) {
       videos: assetInventory.videos.length,
       audios: assetInventory.audios.length,
       iframes: assetInventory.iframes.length,
+      backgroundImages: assetInventory.backgroundImages.length,
+      preloadLinks: assetInventory.preloadLinks.length,
+      fontFaces: assetInventory.fontFaces.length,
+      roots: Array.isArray(assetInventory.roots) ? assetInventory.roots.length : 0,
     };
     const htmlMatches = html
       ? Array.from(
@@ -3273,6 +4911,10 @@ function isSafeToggleCandidate(candidate) {
         dom: {
           available: Boolean(domSnapshot),
           nodeCountApprox: JSON.stringify(domSnapshot || {}).length,
+          nodeCount: domSnapshotStats.nodeCount,
+          shadowRootCount: domSnapshotStats.shadowRootCount,
+          frameDocumentCount: domSnapshotStats.frameDocumentCount,
+          inaccessibleFrameCount: domSnapshotStats.inaccessibleFrameCount,
           content: domSnapshot,
         },
         accessibility: {
@@ -3290,12 +4932,17 @@ function isSafeToggleCandidate(candidate) {
           accessibleStylesheetCount: cssAnalysis.accessibleStylesheetCount,
           inlineStyleTagCount: cssAnalysis.inlineStyleTagCount,
           styleAttributeCount: cssAnalysis.styleAttributeCount,
+          linkedStylesheetCount: Array.isArray(cssAnalysis.linkedStylesheets) ? cssAnalysis.linkedStylesheets.length : 0,
+          preloadLinkCount: Array.isArray(cssAnalysis.preloadLinkSample) ? cssAnalysis.preloadLinkSample.length : 0,
+          fontFaceRuleCount: Array.isArray(cssAnalysis.fontFaceSample) ? cssAnalysis.fontFaceSample.length : 0,
           content: cssAnalysis,
         },
         network: {
           available: true,
           requestCount: networkManifest.requests.length,
           responseCount: networkManifest.responses.length,
+          failureCount: networkManifest.failures.length,
+          frameUrlCount: frameUrlSample.length,
           content: networkManifest,
         },
         assets: {

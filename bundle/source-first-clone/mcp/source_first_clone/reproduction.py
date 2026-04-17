@@ -65,6 +65,8 @@ def infer_platform(url: str) -> str:
         return "spline"
     if "figma.com" in lowered:
         return "figma"
+    if "readymag" in lowered or "rmcdn" in lowered:
+        return "readymag"
     if "youtube.com" in lowered or "youtu.be" in lowered:
         return "youtube"
     if "vimeo.com" in lowered:
@@ -82,6 +84,10 @@ def classify_candidate(url: str) -> str:
     lowered = url.lower()
     if "https://www.figma.com/embed" in lowered:
         return "figma-embed"
+    if "https://embed.readymag.com" in lowered:
+        return "readymag-embed"
+    if "htmlsnippet-" in lowered and lowered.endswith(".html"):
+        return "readymag-html-snippet"
     if "https://www.youtube.com/embed/" in lowered:
         return "youtube-embed"
     if "https://player.vimeo.com/video/" in lowered:
@@ -171,10 +177,12 @@ def choose_exact_reuse_candidate(candidates: list[dict[str, Any]]) -> dict[str, 
         "youtube-embed": 4,
         "vimeo-embed": 5,
         "codepen-embed": 6,
-        "generic-embed": 7,
-        "iframe-src": 8,
-        "spline-code": 9,
-        "runtime-hint": 10,
+        "readymag-embed": 7,
+        "generic-embed": 8,
+        "iframe-src": 9,
+        "spline-code": 10,
+        "readymag-html-snippet": 11,
+        "runtime-hint": 12,
     }
     exact_candidates = sorted(
         candidates,
@@ -189,6 +197,7 @@ def choose_exact_reuse_candidate(candidates: list[dict[str, Any]]) -> dict[str, 
             "youtube-embed",
             "vimeo-embed",
             "codepen-embed",
+            "readymag-embed",
             "generic-embed",
             "iframe-src",
         }:
@@ -248,6 +257,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     platform_adapter = static.get("platform_adapter", {}) if isinstance(static, dict) else {}
     source_signals = static.get("source_signals", []) if isinstance(static, dict) else []
     candidate_urls = static.get("candidate_urls", []) if isinstance(static, dict) else []
+    site_profile = static.get("site_profile", {}) if isinstance(static, dict) else {}
     if platform != "generic":
         prompt_lines.append(f"Platform: {platform}")
     if isinstance(platform_adapter, dict):
@@ -264,6 +274,44 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
             if not isinstance(item, dict):
                 continue
             prompt_lines.append(f"- {item.get('kind')}: {item.get('url')}")
+    if isinstance(site_profile, dict) and site_profile:
+        route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+        prompt_lines.append(f"Site profile: {site_profile.get('primary_surface')} ({site_profile.get('confidence')})")
+        if route_hints:
+            prompt_lines.append(
+                f"Route hints: acquisition={route_hints.get('acquisition_profile')} renderer={route_hints.get('renderer_route')} family={route_hints.get('renderer_family')}"
+            )
+            critical_depths = route_hints.get("critical_depths", [])
+            if critical_depths:
+                prompt_lines.append("Critical capture depths:")
+                prompt_lines.extend(f"- {depth}" for depth in critical_depths[:8])
+            if str(site_profile.get("primary_surface") or "").lower() in {"js-app-shell-surface", "authenticated-app-surface"}:
+                prompt_lines.append("App-shell guidance:")
+                prompt_lines.extend(
+                    [
+                        "- Preserve shell chrome, toolbar rows, navigation rails, workspace panels, and inspector-like regions.",
+                        "- Keep panel and state boundaries explicit; do not collapse the surface into a centered landing-page layout.",
+                        "- Prefer dashboard-style composition with stable sidebars and content panes before hero-style compression.",
+                    ]
+                )
+            if str(site_profile.get("primary_surface") or "").lower() == "canvas-or-webgl-surface" or str(route_hints.get("renderer_route") or "").lower() == "visual-fallback-rebuild":
+                prompt_lines.append("Visual fallback scaffold:")
+                prompt_lines.extend(
+                    [
+                        "- Treat this as a visual-first rebuild, not a DOM-perfect source clone.",
+                        "- Preserve stage geometry, dominant palette, hierarchy, and stable controls before trying to mirror implementation details.",
+                        "- Prefer screenshot-led composition checks, then layer DOM and CSS fidelity on top.",
+                    ]
+                )
+                prompt_lines.append("Visual fallback capture hints:")
+                prompt_lines.extend(
+                    [
+                        "- capture canvas or WebGL element bounds and viewport screenshots",
+                        "- record overlay controls, caption text, and fixed-position affordances",
+                        "- keep breakpoint-specific composition notes for desktop, tablet, and mobile",
+                        "- include asset inventory and interaction trace samples for hover, click, and scroll states",
+                    ]
+                )
 
     if static.get("title"):
         prompt_lines.append(f"Page title: {static['title']}")
@@ -602,6 +650,7 @@ def build_reproduction_bundle(
     title = static.get("title") or "Embedded reference"
     plan = plan_reproduction_path(
         candidates=static.get("candidate_urls"),
+        site_profile=static.get("site_profile"),
         capture_bundle=capture_bundle,
     )
 
@@ -610,6 +659,8 @@ def build_reproduction_bundle(
         "plan": plan,
         "candidate_count": len(candidates),
         "candidates": candidates[:40],
+        "site_profile": static.get("site_profile"),
+        "visual_fallback": plan.get("visual_fallback"),
         "exact_reuse": None,
         "coverage": "approximate",
         "next_action": "rebuild",

@@ -928,9 +928,15 @@ def _dom_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str
     summary = f"DOM snapshots present; node counts {ref_stats.get('node_count', 0)} vs {cand_stats.get('node_count', 0)}"
     if ref_stats.get("node_count") and cand_stats.get("node_count"):
         summary += f"; tag overlap {overlap:.2f}"
+    if ref_stats.get("shadow_root_count") or cand_stats.get("shadow_root_count"):
+        summary += f"; shadow roots {ref_stats.get('shadow_root_count', 0)} vs {cand_stats.get('shadow_root_count', 0)}"
+    if ref_stats.get("frame_document_count") or cand_stats.get("frame_document_count"):
+        summary += f"; frame documents {ref_stats.get('frame_document_count', 0)} vs {cand_stats.get('frame_document_count', 0)}"
     node_score = _count_similarity(ref_stats.get("node_count"), cand_stats.get("node_count"))
     depth_score = _count_similarity(ref_stats.get("max_depth"), cand_stats.get("max_depth"))
-    similarity_parts = [score for score in [overlap, node_score, depth_score] if score is not None]
+    shadow_score = _count_similarity(ref_stats.get("shadow_root_count"), cand_stats.get("shadow_root_count"))
+    frame_score = _count_similarity(ref_stats.get("frame_document_count"), cand_stats.get("frame_document_count"))
+    similarity_parts = [score for score in [overlap, node_score, depth_score, shadow_score, frame_score] if score is not None]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
     return {
         "name": "dom snapshot",
@@ -944,6 +950,10 @@ def _dom_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str
             "node_count_delta": _numeric_delta(ref_stats.get("node_count"), cand_stats.get("node_count")),
             "tag_overlap": overlap,
             "depth_delta": _numeric_delta(ref_stats.get("max_depth"), cand_stats.get("max_depth")),
+            "shadow_root_delta": _numeric_delta(ref_stats.get("shadow_root_count"), cand_stats.get("shadow_root_count")),
+            "frame_document_delta": _numeric_delta(ref_stats.get("frame_document_count"), cand_stats.get("frame_document_count")),
+            "frame_sources_overlap": _set_overlap(ref_stats.get("frame_sources", set()), cand_stats.get("frame_sources", set())),
+            "shadow_host_overlap": _set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set())),
         },
     }
 
@@ -997,15 +1007,36 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
     cand_stats = _interaction_stats(candidate.get("content"))
     status = "present" if ref_present and cand_present else "missing"
     label_overlap = _set_overlap(ref_stats.get("labels", set()), cand_stats.get("labels", set()))
+    root_context_overlap = _set_overlap(ref_stats.get("root_contexts", set()), cand_stats.get("root_contexts", set()))
+    frame_src_overlap = _set_overlap(ref_stats.get("frame_sources", set()), cand_stats.get("frame_sources", set()))
+    shadow_host_overlap = _set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set()))
     summary = (
         f"interaction states present; entries {ref_stats.get('entry_count', 0)} vs {cand_stats.get('entry_count', 0)}"
     )
     if ref_stats.get("entry_count") and cand_stats.get("entry_count"):
         summary += f"; label overlap {label_overlap:.2f}"
+    if ref_stats.get("root_contexts") or cand_stats.get("root_contexts"):
+        summary += f"; rootContext overlap {root_context_overlap:.2f}"
+    if ref_stats.get("frame_sources") or cand_stats.get("frame_sources"):
+        summary += f"; frame-source overlap {frame_src_overlap:.2f}"
+    if ref_stats.get("shadow_host_tags") or cand_stats.get("shadow_host_tags"):
+        summary += f"; shadow-host overlap {shadow_host_overlap:.2f}"
     entry_score = _count_similarity(ref_stats.get("entry_count"), cand_stats.get("entry_count"))
     hover_score = _count_similarity(ref_stats.get("hover_changed"), cand_stats.get("hover_changed"))
     focus_score = _count_similarity(ref_stats.get("focus_changed"), cand_stats.get("focus_changed"))
-    similarity_parts = [score for score in [label_overlap, entry_score, hover_score, focus_score] if score is not None]
+    similarity_parts = [
+        score
+        for score in [
+            label_overlap,
+            root_context_overlap,
+            frame_src_overlap,
+            shadow_host_overlap,
+            entry_score,
+            hover_score,
+            focus_score,
+        ]
+        if score is not None
+    ]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
     return {
         "name": "interaction states",
@@ -1018,6 +1049,9 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
         "details": {
             "entry_count_delta": _numeric_delta(ref_stats.get("entry_count"), cand_stats.get("entry_count")),
             "label_overlap": label_overlap,
+            "root_context_overlap": root_context_overlap,
+            "frame_source_overlap": frame_src_overlap,
+            "shadow_host_overlap": shadow_host_overlap,
             "hover_delta_count": _numeric_delta(ref_stats.get("hover_changed"), cand_stats.get("hover_changed")),
             "focus_delta_count": _numeric_delta(ref_stats.get("focus_changed"), cand_stats.get("focus_changed")),
         },
@@ -1062,15 +1096,94 @@ def _supporting_check(name: str, reference: dict[str, Any], candidate: dict[str,
     ref_present = bool(reference.get("available"))
     cand_present = bool(candidate.get("available"))
     status = "present" if ref_present and cand_present else "missing"
+    details: dict[str, Any] = {}
+    similarity = 1.0 if status == "present" else 0.0
+    summary = f"{name} present" if status == "present" else f"{name} missing on one or both sides"
+    if status == "present" and name == "network manifest":
+        ref_meta = reference.get("metadata") or {}
+        cand_meta = candidate.get("metadata") or {}
+        ref_request_count = ref_meta.get("requestCount")
+        cand_request_count = cand_meta.get("requestCount")
+        ref_response_count = ref_meta.get("responseCount")
+        cand_response_count = cand_meta.get("responseCount")
+        ref_failure_count = ref_meta.get("failureCount")
+        cand_failure_count = cand_meta.get("failureCount")
+        request_score = _optional_count_similarity(ref_request_count, cand_request_count)
+        response_score = _optional_count_similarity(ref_response_count, cand_response_count)
+        failure_score = _optional_count_similarity(ref_failure_count, cand_failure_count)
+        redirect_score = _optional_count_similarity(ref_meta.get("redirectCount"), cand_meta.get("redirectCount"))
+        frame_score = _optional_count_similarity(ref_meta.get("frameUrlCount"), cand_meta.get("frameUrlCount"))
+        resource_type_overlap = _counter_overlap(
+            ref_meta.get("resourceTypeCounts"),
+            cand_meta.get("resourceTypeCounts"),
+        )
+        response_status_overlap = _counter_overlap(
+            ref_meta.get("responseStatusCounts"),
+            cand_meta.get("responseStatusCounts"),
+        )
+        failure_reason_overlap = _counter_overlap(
+            ref_meta.get("failureReasonCounts"),
+            cand_meta.get("failureReasonCounts"),
+        )
+        timing_bucket_overlap = _counter_overlap(
+            ref_meta.get("timingBucketCounts"),
+            cand_meta.get("timingBucketCounts"),
+        )
+        request_header_overlap = _counter_overlap(
+            ref_meta.get("requestHeaderPresenceSummary"),
+            cand_meta.get("requestHeaderPresenceSummary"),
+        )
+        response_header_overlap = _counter_overlap(
+            ref_meta.get("responseHeaderPresenceSummary"),
+            cand_meta.get("responseHeaderPresenceSummary"),
+        )
+        similarity_parts = [
+            score
+            for score in [
+                request_score,
+                response_score,
+                failure_score,
+                redirect_score,
+                frame_score,
+                resource_type_overlap,
+                response_status_overlap,
+                failure_reason_overlap,
+                timing_bucket_overlap,
+                request_header_overlap,
+                response_header_overlap,
+            ]
+            if score is not None
+        ]
+        if similarity_parts:
+            similarity = sum(similarity_parts) / len(similarity_parts)
+        summary = (
+            f"{name} present; requests {ref_request_count or 0} vs {cand_request_count or 0}; "
+            f"responses {ref_response_count or 0} vs {cand_response_count or 0}; "
+            f"failures {ref_failure_count or 0} vs {cand_failure_count or 0}; "
+            f"resource-type overlap {resource_type_overlap:.2f}; timing overlap {timing_bucket_overlap:.2f}"
+        )
+        details = {
+            "request_count_delta": _numeric_delta(ref_request_count, cand_request_count),
+            "response_count_delta": _numeric_delta(ref_response_count, cand_response_count),
+            "failure_count_delta": _numeric_delta(ref_failure_count, cand_failure_count),
+            "redirect_count_delta": _numeric_delta(ref_meta.get("redirectCount"), cand_meta.get("redirectCount")),
+            "frame_url_count_delta": _numeric_delta(ref_meta.get("frameUrlCount"), cand_meta.get("frameUrlCount")),
+            "resource_type_overlap": resource_type_overlap,
+            "response_status_overlap": response_status_overlap,
+            "failure_reason_overlap": failure_reason_overlap,
+            "timing_bucket_overlap": timing_bucket_overlap,
+            "request_header_overlap": request_header_overlap,
+            "response_header_overlap": response_header_overlap,
+        }
     return {
         "name": name,
         "core": False,
         "status": status,
-        "summary": f"{name} present" if status == "present" else f"{name} missing on one or both sides",
+        "summary": summary,
         "reference": _artifact_report_entry(reference),
         "candidate": _artifact_report_entry(candidate),
-        "similarity": 1.0 if status == "present" else 0.0,
-        "details": {},
+        "similarity": similarity,
+        "details": details,
     }
 
 
@@ -1214,6 +1327,10 @@ def _focus_hint(detail: dict[str, Any]) -> str:
             return "contrast, typography, or icon-shape drift"
         return drift_flags[0] if drift_flags else "coarse visual drift"
     if name == "dom snapshot":
+        if (detail_payload.get("frame_document_delta") or 0) != 0:
+            return "same-origin frame structure drift"
+        if (detail_payload.get("shadow_root_delta") or 0) != 0:
+            return "shadow-root structure drift"
         return "section structure or node hierarchy drift"
     if name == "computed styles":
         return "typography, spacing, or palette token drift"
@@ -1221,6 +1338,8 @@ def _focus_hint(detail: dict[str, Any]) -> str:
         return "hover/focus interaction coverage drift"
     if name == "interaction trace":
         return "scroll/type/click replay coverage drift"
+    if name == "network manifest":
+        return "runtime request graph drift"
     return "supporting evidence drift"
 
 
@@ -1251,13 +1370,20 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
             if not drift_flags:
                 actions.append("Recheck viewport, breakpoint, and hero composition; screenshot drift is still materially off.")
         elif detail["name"] == "dom snapshot":
-            actions.append("Align major section order and DOM depth before tuning styling; structure diverges too early.")
+            if (detail.get("details") or {}).get("frame_document_delta"):
+                actions.append("Extend same-origin frame traversal and replay before retuning the outer document structure.")
+            elif (detail.get("details") or {}).get("shadow_root_delta"):
+                actions.append("Increase shadow-root traversal and state capture before retuning the visible shell.")
+            else:
+                actions.append("Align major section order and DOM depth before tuning styling; structure diverges too early.")
         elif detail["name"] == "computed styles":
             actions.append("Audit font, spacing, and color tokens against the reference before polishing micro-detail.")
         elif detail["name"] == "interaction states":
             actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
         elif detail["name"] == "interaction trace":
             actions.append("Extend replay capture to cover the scroll, type, and click sequence used by the reference.")
+        elif detail["name"] == "network manifest":
+            actions.append("Capture runtime request graph, frame-local requests, and failure paths before trusting app-shell parity.")
     deduped: list[str] = []
     for action in actions:
         if action not in deduped:
@@ -1338,16 +1464,31 @@ def _build_message(
 
 def _dom_stats(content: Any) -> dict[str, Any]:
     if not isinstance(content, dict):
-        return {"node_count": 0, "max_depth": 0, "tags": {}, "sample_texts": []}
+        return {
+            "node_count": 0,
+            "max_depth": 0,
+            "tags": {},
+            "sample_texts": [],
+            "shadow_root_count": 0,
+            "frame_document_count": 0,
+            "inaccessible_frame_count": 0,
+            "shadow_host_tags": set(),
+            "frame_sources": set(),
+        }
 
     node_count = 0
     text_count = 0
     max_depth = 0
     tags: Counter[str] = Counter()
     sample_texts: list[str] = []
+    shadow_root_count = 0
+    frame_document_count = 0
+    inaccessible_frame_count = 0
+    shadow_host_tags: set[str] = set()
+    frame_sources: set[str] = set()
 
     def walk(node: Any, depth: int) -> None:
-        nonlocal node_count, text_count, max_depth
+        nonlocal node_count, text_count, max_depth, shadow_root_count, frame_document_count, inaccessible_frame_count
         if not isinstance(node, dict):
             return
         max_depth = max(max_depth, depth)
@@ -1364,11 +1505,29 @@ def _dom_stats(content: Any) -> dict[str, Any]:
             tag = str(node.get("tag") or "").lower()
             if tag:
                 tags[tag] += 1
+            if node.get("shadowRoot") and isinstance(node.get("shadowRoot"), dict):
+                shadow_root_count += 1
+                if tag:
+                    shadow_host_tags.add(tag)
             text = str(node.get("text") or "").strip()
             if text and text not in sample_texts:
                 sample_texts.append(text[:80])
             for child in node.get("children", []) or []:
                 walk(child, depth + 1)
+            shadow_root = node.get("shadowRoot")
+            if isinstance(shadow_root, dict):
+                for child in shadow_root.get("children", []) or []:
+                    walk(child, depth + 1)
+            frame_document = node.get("frameDocument")
+            if isinstance(frame_document, dict):
+                if frame_document.get("type") == "inaccessible-frame":
+                    inaccessible_frame_count += 1
+                else:
+                    frame_document_count += 1
+                    src = str(node.get("src") or "").strip()
+                    if src:
+                        frame_sources.add(src)
+                    walk(frame_document, depth + 1)
 
     walk(content, 1)
     return {
@@ -1377,6 +1536,11 @@ def _dom_stats(content: Any) -> dict[str, Any]:
         "max_depth": max_depth,
         "tags": dict(tags),
         "sample_texts": sample_texts[:8],
+        "shadow_root_count": shadow_root_count,
+        "frame_document_count": frame_document_count,
+        "inaccessible_frame_count": inaccessible_frame_count,
+        "shadow_host_tags": sorted(shadow_host_tags),
+        "frame_sources": sorted(frame_sources),
     }
 
 
@@ -1474,6 +1638,9 @@ def _text_profile(value: Any) -> str:
 def _interaction_stats(content: Any) -> dict[str, Any]:
     entries = content if isinstance(content, list) else []
     labels: set[str] = set()
+    root_contexts: set[str] = set()
+    frame_sources: set[str] = set()
+    shadow_host_tags: set[str] = set()
     hover_changed = 0
     focus_changed = 0
     for entry in entries[:24]:
@@ -1489,6 +1656,17 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         label = "|".join(bit for bit in label_bits if bit)
         if label:
             labels.add(label)
+        root_context = entry.get("rootContext") if isinstance(entry.get("rootContext"), dict) else {}
+        root_kind = _clean_text(root_context.get("kind"))
+        frame_src = _clean_text(root_context.get("frameSrc"))
+        shadow_host_tag = _clean_text(root_context.get("shadowHostTag"))
+        context_bits = [bit for bit in [root_kind, frame_src, shadow_host_tag] if bit]
+        if context_bits:
+            root_contexts.add("|".join(context_bits))
+        if frame_src:
+            frame_sources.add(frame_src)
+        if shadow_host_tag:
+            shadow_host_tags.add(shadow_host_tag)
         if isinstance(entry.get("hoverDelta"), dict) and entry["hoverDelta"]:
             hover_changed += 1
         if isinstance(entry.get("focusDelta"), dict) and entry["focusDelta"]:
@@ -1497,6 +1675,9 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         "entry_count": len(entries),
         "labels": sorted(labels),
         "label_sample": sorted(labels)[:8],
+        "root_contexts": sorted(root_contexts),
+        "frame_sources": sorted(frame_sources),
+        "shadow_host_tags": sorted(shadow_host_tags),
         "hover_changed": hover_changed,
         "focus_changed": focus_changed,
     }
@@ -1553,6 +1734,28 @@ def _set_overlap(reference: Any, candidate: Any) -> float:
     return intersection / union if union else 0.0
 
 
+def _counter_overlap(reference: Any, candidate: Any) -> float:
+    if reference in (None, {}) and candidate in (None, {}):
+        return 1.0
+    if not isinstance(reference, dict) or not isinstance(candidate, dict):
+        return 0.0
+    keys = set(reference.keys()) | set(candidate.keys())
+    if not keys:
+        return 1.0
+    overlap = 0.0
+    total = 0.0
+    for key in keys:
+        ref_value = reference.get(key, 0)
+        cand_value = candidate.get(key, 0)
+        if not isinstance(ref_value, (int, float)) or not isinstance(cand_value, (int, float)):
+            continue
+        overlap += min(float(ref_value), float(cand_value))
+        total += max(float(ref_value), float(cand_value))
+    if total <= 0:
+        return 1.0
+    return overlap / total
+
+
 def _tag_overlap(reference: Any, candidate: Any) -> float:
     reference_keys = set(reference.keys()) if isinstance(reference, dict) else set(reference or [])
     candidate_keys = set(candidate.keys()) if isinstance(candidate, dict) else set(candidate or [])
@@ -1584,6 +1787,14 @@ def _count_similarity(reference: Any, candidate: Any) -> float:
         return 1.0
     denominator = max(reference_value, candidate_value, 1.0)
     return max(0.0, 1.0 - abs(reference_value - candidate_value) / denominator)
+
+
+def _optional_count_similarity(reference: Any, candidate: Any) -> float | None:
+    if reference is None and candidate is None:
+        return None
+    if not isinstance(reference, (int, float)) or not isinstance(candidate, (int, float)):
+        return None
+    return _count_similarity(reference, candidate)
 
 
 def _artifact_size(artifact: dict[str, Any]) -> int | None:

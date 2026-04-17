@@ -1,0 +1,6 @@
+# Generic universal benchmark corpus
+# Keep the list small, public, and diverse so route/depth regressions are easy to spot.
+https://www.example.com
+https://www.wikipedia.org
+https://www.python.org
+https://www.google.com

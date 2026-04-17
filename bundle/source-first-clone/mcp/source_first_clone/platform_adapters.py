@@ -11,6 +11,8 @@ SPLINE_FILE_RE = re.compile(r"https://app\.spline\.design/file/[^\"'\s>]+", re.I
 SPLINE_VIEWER_RE = re.compile(r"https://viewer\.spline\.design/[^\"'\s>]+", re.I)
 FIGMA_DUPLICATE_RE = re.compile(r"duplicate\s+this\s+file", re.I)
 FIGMA_PATH_RE = re.compile(r"^/(?:community/file|file|proto|design|board|slides)/", re.I)
+READYMAG_RUNTIME_RE = re.compile(r"(readymag|rmcdn|embed\.readymag\.com|HtmlSnippet-[^\"'\s>]+\.html)", re.I)
+READYMAG_SNIPPET_RE = re.compile(r"https://c-p\.rmcdn\.net/[^\"'&\s>]+HtmlSnippet-[^\"'&\s>]+\.html", re.I)
 FRAMER_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)framer\.(?:app|website)$", re.I)
 FRAMER_RUNTIME_RE = re.compile(r"(?:data-framer|__framer|framer-embed)", re.I)
 FRAMER_ASSET_HINT_RE = re.compile(r"framerusercontent", re.I)
@@ -91,6 +93,8 @@ def inspect_platform_adapter(
         adapter.update(_inspect_spline(final_url, html))
     elif "figma.com" in lowered_url or "figma.com" in lowered_html:
         adapter.update(_inspect_figma(final_url, html))
+    elif _looks_like_readymag(final_url, generator, lowered_html):
+        adapter.update(_inspect_readymag(final_url, html, generator))
     elif _looks_like_framer(final_url, generator, lowered_html):
         adapter.update(_inspect_framer(final_url, html, generator))
     elif _looks_like_webflow(final_url, generator, lowered_html):
@@ -135,6 +139,16 @@ def _looks_like_framer(final_url: str, generator: str | None, lowered_html: str)
         or "framer" in generator_text
         or bool(FRAMER_RUNTIME_RE.search(lowered_html))
         or bool(FRAMER_ASSET_HINT_RE.search(lowered_html))
+    )
+
+
+def _looks_like_readymag(final_url: str, generator: str | None, lowered_html: str) -> bool:
+    host = _host(final_url)
+    generator_text = (generator or "").lower()
+    return (
+        host.endswith("readymag.com")
+        or "readymag" in generator_text
+        or bool(READYMAG_RUNTIME_RE.search(lowered_html))
     )
 
 
@@ -241,6 +255,45 @@ def _inspect_figma(final_url: str, html: str) -> dict[str, Any]:
         "source_signals": source_signals,
         "candidates": candidates,
         "notes": notes or ["Figma embed generation is active."],
+    }
+
+
+def _inspect_readymag(final_url: str, html: str, generator: str | None) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    notes = ["Readymag publish surface detected."]
+    source_signals: list[str] = ["readymag"]
+    lowered_html = (html or "").lower()
+    host = _host(final_url)
+
+    if host.endswith("readymag.com"):
+        notes.append("Readymag-managed host detected.")
+        _append_unique(source_signals, "published-host")
+    else:
+        notes.append("Custom domain appears to be backed by Readymag runtime assets.")
+        _append_unique(source_signals, "custom-domain")
+
+    if generator:
+        notes.append(f"Generator meta: {generator}")
+        _append_unique(source_signals, "generator")
+
+    if "embed.readymag.com" in lowered_html:
+        _append_candidate(candidates, "readymag-embed", "https://embed.readymag.com", "readymag")
+        notes.append("Readymag embed surface detected in page source.")
+        _append_unique(source_signals, "embed-like")
+
+    for match in READYMAG_SNIPPET_RE.findall(html or ""):
+        _append_candidate(candidates, "readymag-html-snippet", match.strip(), "readymag")
+    if any(item.get("kind") == "readymag-html-snippet" for item in candidates):
+        notes.append("Readymag HTML snippet exports were detected.")
+        _append_unique(source_signals, "snippet-export")
+        _append_unique(source_signals, "source")
+
+    return {
+        "platform": "readymag",
+        "confidence": "high",
+        "source_signals": source_signals,
+        "candidates": candidates,
+        "notes": notes,
     }
 
 
