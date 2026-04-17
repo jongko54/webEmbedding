@@ -422,6 +422,14 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "frame_url_count": network_capture.get("frameUrlCount"),
             "redirect_count": network_summary.get("redirectCount"),
             "redirect_sample_count": len(network_summary.get("redirectSample") or []),
+            "query_parameter_count": network_summary.get("queryParameterCount"),
+            "request_cookie_count": network_summary.get("requestCookieCount"),
+            "response_cookie_count": network_summary.get("responseCookieCount"),
+            "request_header_bytes": network_summary.get("requestHeaderBytes"),
+            "response_header_bytes": network_summary.get("responseHeaderBytes"),
+            "request_body_bytes": network_summary.get("requestBodyBytes"),
+            "response_body_bytes": network_summary.get("responseBodyBytes"),
+            "response_redirect_count": network_summary.get("responseRedirectCount"),
             "request_header_presence_summary": network_summary.get("requestHeaderPresenceSummary"),
             "response_header_presence_summary": network_summary.get("responseHeaderPresenceSummary"),
             "timing_bucket_counts": network_summary.get("timingBucketCounts"),
@@ -433,6 +441,8 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "har_like_entry_count": har_like.get("summary", {}).get("entryCount") if har_like else None,
             "har_like_page_count": har_like.get("summary", {}).get("pageCount") if har_like else None,
             "har_like_path": str(har_like_path) if har_like_path else None,
+            "har_summary": har_standard.get("summary") if har_standard else None,
+            "har_like_summary": har_like.get("summary") if har_like else None,
             "path": str(network_path),
         }
 

@@ -1989,6 +1989,11 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 ],
             },
         ]
+    shell_state = {
+        "emphasis": "workspace" if any(panel.get("role") == "workspace" for panel in shell_panels if isinstance(panel, dict)) else "navigation",
+        "focusRegion": "workspace" if app_shell_mode else None,
+        "activeRegions": [panel.get("role") for panel in shell_panels if isinstance(panel, dict) and panel.get("items")],
+    }
     layout_tokens = _build_layout_tokens(style_tokens=summary.get("styleTokens") or {}, masthead_links=masthead_links, focus_shell_style=focus_shell_style, focus_input=focus_input if isinstance(focus_input, dict) else {}, focus_actions=action_items)
 
     return {
@@ -2072,6 +2077,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(panel, dict)
             ],
         },
+        "shellState": shell_state,
         "shellSummary": {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
@@ -2364,6 +2370,7 @@ def _render_bounded_reference_page_tsx() -> str:
             '  const shellPanels = data.shellPanels ?? [];',
             '  const shellSummary = data.shellSummary ?? {};',
             '  const shellTopology = data.shellTopology ?? {};',
+            '  const shellState = data.shellState ?? {};',
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
             '    const inputType = data.hero.focusInput?.inputType ?? "text";',
@@ -2573,6 +2580,7 @@ def _render_bounded_reference_page_tsx() -> str:
             '              <span className="bounded-chip" key={title}>{title}</span>',
             "            ))}",
             "          </div>",
+            '          {shellState.emphasis ? <div className="bounded-meta bounded-meta--inline"><span className="bounded-chip bounded-chip--muted">state: {shellState.emphasis}</span>{(shellState.activeRegions ?? []).slice(0, 3).map((role) => (<span className="bounded-chip" key={role}>{role}</span>))}</div> : null}',
             '          <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px)" }}>',
             "            {shellPanels.map((panel) => (",
             '              <div className="bounded-panel bounded-stack" key={panel.id}>',
@@ -4170,6 +4178,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "palette and contrast remain consistent with the reference",
                 "responsive variants keep the same composition hierarchy",
                 "screenshot similarity is the primary check before DOM detail",
+                "stage, chrome, and caption layers remain separable in the rebuild",
             ],
             "focus": [
                 "stage geometry",
@@ -4285,6 +4294,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "primaryRegion": "workspace" if app_model.get("layoutMode") == "app-shell" else None,
         "regionOrder": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
     }
+    summary["shellState"] = app_model.get("shellState") or {
+        "emphasis": "workspace" if app_model.get("layoutMode") == "app-shell" else "navigation",
+        "focusRegion": "workspace" if app_model.get("layoutMode") == "app-shell" else None,
+    }
     summary["layoutMode"] = app_model.get("layoutMode")
     summary["layoutTokens"] = app_model.get("layoutTokens") or {}
     if (summary.get("visual_fallback") or {}).get("available"):
@@ -4293,6 +4306,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "Use screenshot evidence to keep canvas/WebGL-heavy surfaces faithful even when DOM structure is sparse.",
             "Treat overlay chrome as bounded HTML/CSS and keep responsive variants aligned to captured viewport geometry.",
             "Judge fidelity primarily by screenshot similarity, then verify control reachability and responsive composition parity.",
+            "Keep stage, chrome, and caption layers separable so the fallback remains legible and bounded.",
         ]
     html = _render_html(summary)
     css = _render_css(summary)

@@ -332,6 +332,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- preserve palette and contrast from the reference",
                         "- check responsive variants against the same composition hierarchy",
                         "- use screenshot similarity before judging DOM-level detail",
+                        "- keep stage, chrome, and caption layers separable in the rebuild",
                     ]
                 )
                 prompt_lines.append("Visual fallback capture hints:")

@@ -54,12 +54,12 @@ That does **not** mean the universal engine is complete.
 
 ## Current estimate
 
-Current estimate: **87 / 100**
+Current estimate: **88 / 100**
 
 ### Breakdown
 
 - Routing and inspection: `24 / 25`
-- Deep capture: `23 / 25`
+- Deep capture: `24 / 25`
 - Reconstruction and repair: `23 / 25`
 - CLI and benchmark visibility: `12 / 15`
 - Corpus coverage and regression evidence: `5 / 10`
@@ -85,9 +85,10 @@ Current estimate: **87 / 100**
 - persisted `network/har.json` export now exists alongside `manifest.json` and `har-like.json`
 - HAR exports now carry richer request/response/query/cookie/timing context for replay-oriented inspection
 - frame + shadow structure capture exists
-- frame/shadow verification now scores `frame_url_overlap` and `surface_index_overlap`
+- frame/shadow verification now scores `frame_url_overlap`, `surface_index_overlap`, `root_signature_overlap`, and `root_path_overlap`
 - bounded app-shell / dashboard routing now exists, but richer panel/state reconstruction is still incomplete
 - bounded canvas/WebGL visual-fallback routing now exists with an explicit stage-first rendering model
+- sample comparison artifacts now exist for strong and weak public cases, including a generated `.webm` demo clip
 
 ## Why it is not higher yet
 

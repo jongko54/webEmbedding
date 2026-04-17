@@ -158,6 +158,7 @@ def plan_reproduction_path(
                 "palette and contrast remain consistent with the reference",
                 "responsive variants keep the same composition hierarchy",
                 "screenshot similarity is the primary check before DOM detail",
+                "stage, chrome, and caption layers remain separable in the rebuild",
             ],
         }
 

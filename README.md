@@ -9,7 +9,7 @@ It does not assume that every URL should be rebuilt the same way. It inspects a 
 As of the current worktree:
 
 - best bounded runtime fidelity seen so far: `88 / 100`
-- current universal-engine completion estimate: `87 / 100`
+- current universal-engine completion estimate: `88 / 100`
 - current product shape:
   - `exact reuse` when the upstream surface is safely reusable
   - `bounded rebuild` when reuse is blocked
@@ -147,13 +147,16 @@ Current notable checkpoints:
 
 - `google.com`: `88 / 100`
 - `python.org`: `61 / 100`
+- current sample self-verify reruns:
+  - `google.com`: `85 / 100`
+  - `python.org`: `61 / 100`
 - exact-reuse cases are treated operationally as success paths instead of rebuild scores
 
 ### 2. Universal-engine completion
 
 This is how complete the engine is overall as a generic external-site system.
 
-Current estimate: **`87 / 100`**
+Current estimate: **`88 / 100`**
 
 Why it is not higher yet:
 
@@ -162,6 +165,7 @@ Why it is not higher yet:
 - app-shell/dashboard renderer family now exists in bounded form, but panel/state reconstruction is still early
 - canvas/WebGL fallback renderer family now exists in bounded form, but visual reconstruction is still early
 - benchmark corpus and regression CI are still light
+- richer app-shell and canvas/WebGL families now exist, but they are still bounded families rather than fully specialized renderers
 
 See:
 
@@ -213,6 +217,16 @@ node ./bin/web-embedding.mjs clone \
   --output-dir ./.tmp/reproductions/python
 ```
 
+Sample comparison demo:
+
+```bash
+python3 scripts/build_sample_demo.py
+node scripts/record_sample_demo.mjs \
+  /Users/jongho/workspace/webEmbedding/.tmp/sample-demo-20260417 \
+  /Users/jongho/workspace/webEmbedding/.tmp/sample-demo-20260417/video \
+  9000
+```
+
 Universal benchmark on a small corpus:
 
 ```bash
@@ -246,6 +260,10 @@ It now also exposes `renderer_family_counts`.
   Release artifact builder
 - `scripts/benchmark_routes.py`
   Universal route and depth benchmark
+- `scripts/build_sample_demo.py`
+  Builds a side-by-side sample comparison page from persisted source/clone screenshots
+- `scripts/record_sample_demo.mjs`
+  Records the sample comparison page to a Playwright `.webm` demo clip
 
 ## Documentation
 
