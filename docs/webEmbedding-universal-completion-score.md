@@ -54,13 +54,13 @@ That does **not** mean the universal engine is complete.
 
 ## Current estimate
 
-Current estimate: **86 / 100**
+Current estimate: **87 / 100**
 
 ### Breakdown
 
 - Routing and inspection: `24 / 25`
 - Deep capture: `23 / 25`
-- Reconstruction and repair: `22 / 25`
+- Reconstruction and repair: `23 / 25`
 - CLI and benchmark visibility: `12 / 15`
 - Corpus coverage and regression evidence: `5 / 10`
 

@@ -9,7 +9,7 @@ It does not assume that every URL should be rebuilt the same way. It inspects a 
 As of the current worktree:
 
 - best bounded runtime fidelity seen so far: `88 / 100`
-- current universal-engine completion estimate: `86 / 100`
+- current universal-engine completion estimate: `87 / 100`
 - current product shape:
   - `exact reuse` when the upstream surface is safely reusable
   - `bounded rebuild` when reuse is blocked
@@ -153,7 +153,7 @@ Current notable checkpoints:
 
 This is how complete the engine is overall as a generic external-site system.
 
-Current estimate: **`86 / 100`**
+Current estimate: **`87 / 100`**
 
 Why it is not higher yet:
 

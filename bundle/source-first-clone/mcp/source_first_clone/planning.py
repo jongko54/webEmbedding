@@ -92,7 +92,7 @@ def plan_reproduction_path(
             "breakpoint variants",
         ]
     if app_shell_like:
-        required_artifacts.append("shell chrome / panel summary")
+        required_artifacts.append("shell topology / panel summary")
     elif surface_class == "canvas-or-webgl-surface":
         required_artifacts = [
             "runtime HTML",
@@ -128,6 +128,13 @@ def plan_reproduction_path(
                 "Rebuild overlay chrome, captions, and controls as bounded HTML/CSS around the stage.",
                 "Use screenshots and runtime HTML to preserve composition before attempting DOM-level fidelity.",
                 "Keep responsive variants aligned to the captured viewport geometry.",
+            ],
+            "scaffold_hints": [
+                "single-stage layout with overlay chrome",
+                "bounded caption and control rails",
+                "viewport-anchored stage geometry",
+                "screenshot-led composition checks",
+                "DOM and CSS fidelity layered after the visual pass",
             ],
             "capture_hints": [
                 "viewport screenshot set",

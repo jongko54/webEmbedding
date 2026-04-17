@@ -1012,6 +1012,7 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
     frame_url_overlap = _set_overlap(ref_stats.get("frame_urls", set()), cand_stats.get("frame_urls", set()))
     shadow_host_overlap = _set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set()))
     surface_index_overlap = _set_overlap(ref_stats.get("surface_indices", set()), cand_stats.get("surface_indices", set()))
+    root_signature_overlap = _set_overlap(ref_stats.get("root_signatures", set()), cand_stats.get("root_signatures", set()))
     summary = (
         f"interaction states present; entries {ref_stats.get('entry_count', 0)} vs {cand_stats.get('entry_count', 0)}"
     )
@@ -1027,6 +1028,8 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
         summary += f"; shadow-host overlap {shadow_host_overlap:.2f}"
     if ref_stats.get("surface_indices") or cand_stats.get("surface_indices"):
         summary += f"; surface-index overlap {surface_index_overlap:.2f}"
+    if ref_stats.get("root_signatures") or cand_stats.get("root_signatures"):
+        summary += f"; root-signature overlap {root_signature_overlap:.2f}"
     entry_score = _count_similarity(ref_stats.get("entry_count"), cand_stats.get("entry_count"))
     hover_score = _count_similarity(ref_stats.get("hover_changed"), cand_stats.get("hover_changed"))
     focus_score = _count_similarity(ref_stats.get("focus_changed"), cand_stats.get("focus_changed"))
@@ -1039,6 +1042,7 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
             frame_url_overlap,
             shadow_host_overlap,
             surface_index_overlap,
+            root_signature_overlap,
             entry_score,
             hover_score,
             focus_score,
@@ -1062,6 +1066,7 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
             "frame_url_overlap": frame_url_overlap,
             "shadow_host_overlap": shadow_host_overlap,
             "surface_index_overlap": surface_index_overlap,
+            "root_signature_overlap": root_signature_overlap,
             "hover_delta_count": _numeric_delta(ref_stats.get("hover_changed"), cand_stats.get("hover_changed")),
             "focus_delta_count": _numeric_delta(ref_stats.get("focus_changed"), cand_stats.get("focus_changed")),
         },
@@ -1345,7 +1350,7 @@ def _focus_hint(detail: dict[str, Any]) -> str:
     if name == "computed styles":
         return "typography, spacing, or palette token drift"
     if name == "interaction states":
-        if (detail_payload.get("surface_index_overlap") or 0.0) < 0.5 or (detail_payload.get("frame_url_overlap") or 0.0) < 0.5:
+        if (detail_payload.get("root_signature_overlap") or 0.0) < 0.5 or (detail_payload.get("surface_index_overlap") or 0.0) < 0.5 or (detail_payload.get("frame_url_overlap") or 0.0) < 0.5:
             return "same-origin frame or shadow-root replay drift"
         return "hover/focus interaction coverage drift"
     if name == "interaction trace":
@@ -1391,7 +1396,8 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
         elif detail["name"] == "computed styles":
             actions.append("Audit font, spacing, and color tokens against the reference before polishing micro-detail.")
         elif detail["name"] == "interaction states":
-            if (detail.get("details") or {}).get("surface_index_overlap", 1.0) < 0.5 or (detail.get("details") or {}).get("frame_url_overlap", 1.0) < 0.5:
+            detail_bits = detail.get("details") or {}
+            if detail_bits.get("root_signature_overlap", 1.0) < 0.5 or detail_bits.get("surface_index_overlap", 1.0) < 0.5 or detail_bits.get("frame_url_overlap", 1.0) < 0.5:
                 actions.append("Extend root-aware replay into same-origin frame and shadow-root surfaces before retuning top-level hover/focus states.")
             else:
                 actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
@@ -1658,6 +1664,7 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
     frame_urls: set[str] = set()
     shadow_host_tags: set[str] = set()
     surface_indices: set[int] = set()
+    root_signatures: set[str] = set()
     hover_changed = 0
     focus_changed = 0
     for entry in entries[:24]:
@@ -1679,9 +1686,12 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         frame_url = _clean_text(root_context.get("frameUrl"))
         shadow_host_tag = _clean_text(root_context.get("shadowHostTag"))
         surface_index = root_context.get("surfaceIndex")
+        root_signature = _clean_text(root_context.get("rootSignature"))
         context_bits = [bit for bit in [root_kind, frame_src, frame_url, shadow_host_tag] if bit]
         if isinstance(surface_index, int):
             surface_indices.add(surface_index)
+        if root_signature:
+            root_signatures.add(root_signature)
         if context_bits:
             root_contexts.add("|".join(context_bits + ([str(surface_index)] if isinstance(surface_index, int) else [])))
         if frame_src:
@@ -1703,6 +1713,7 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         "frame_urls": sorted(frame_urls),
         "shadow_host_tags": sorted(shadow_host_tags),
         "surface_indices": sorted(surface_indices),
+        "root_signatures": sorted(root_signatures),
         "hover_changed": hover_changed,
         "focus_changed": focus_changed,
     }

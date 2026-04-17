@@ -1943,17 +1943,25 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "shell-workspace",
                 "role": "workspace",
-                "title": hero_title,
+                "title": "Workspace",
                 "items": [
                     {
-                        "label": section.get("title"),
-                        "copy": section.get("copy"),
-                        "meta": section.get("meta"),
-                        "styleSnapshot": section.get("styleSnapshot") or {},
-                        "role": section.get("role"),
-                        "kind": "section",
-                    }
-                    for section in (body_sections[:4] or section_cards[:4])
+                        "label": hero_title,
+                        "copy": hero_copy,
+                        "kind": "headline",
+                        "styleSnapshot": hero_section.get("styleSnapshot") or {},
+                    },
+                    *[
+                        {
+                            "label": section.get("title"),
+                            "copy": section.get("copy"),
+                            "meta": section.get("meta"),
+                            "styleSnapshot": section.get("styleSnapshot") or {},
+                            "role": section.get("role"),
+                            "kind": "section",
+                        }
+                        for section in (body_sections[:3] or section_cards[:3])
+                    ],
                 ],
             },
             {
@@ -2050,6 +2058,17 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "bodySections": body_sections,
         "interactions": interaction_cards,
         "shellPanels": shell_panels,
+        "shellSummary": {
+            "kind": "app-shell-dashboard-next-app",
+            "panelCount": len(shell_panels),
+            "panelTitles": [panel.get("title") for panel in shell_panels if isinstance(panel, dict)],
+            "panelRoles": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+            "panelItemCounts": [
+                len(panel.get("items", []) if isinstance(panel.get("items", []), list) else [])
+                for panel in shell_panels
+                if isinstance(panel, dict)
+            ],
+        },
         "outline": outline_cards,
         "reconstruction": {
             "version": "reconstruction.v1",
@@ -2329,6 +2348,7 @@ def _render_bounded_reference_page_tsx() -> str:
             '  const centeredFocus = data.layoutMode === "centered-focus";',
             '  const appShellMode = data.layoutMode === "app-shell";',
             '  const shellPanels = data.shellPanels ?? [];',
+            '  const shellSummary = data.shellSummary ?? {};',
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
             '    const inputType = data.hero.focusInput?.inputType ?? "text";',
@@ -2527,6 +2547,13 @@ def _render_bounded_reference_page_tsx() -> str:
             '      {appShellMode ? (',
             '        <div className="bounded-panel bounded-stack bounded-app-shell">',
             '          <p className="bounded-kicker">App-shell surface</p>',
+            '          <div className="bounded-meta bounded-meta--inline">',
+            '            <span className="bounded-chip bounded-chip--muted">{shellSummary.kind ?? "app-shell-dashboard-next-app"}</span>',
+            '            <span className="bounded-chip bounded-chip--muted">{`${shellSummary.panelCount ?? shellPanels.length} panels`}</span>',
+            '            {(shellSummary.panelTitles ?? []).slice(0, 3).map((title) => (',
+            '              <span className="bounded-chip" key={title}>{title}</span>',
+            "            ))}",
+            "          </div>",
             '          <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px)" }}>',
             "            {shellPanels.map((panel) => (",
             '              <div className="bounded-panel bounded-stack" key={panel.id}>',
@@ -3133,10 +3160,20 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
 
     app_shell_panel_bits: list[str] = []
     if app_shell_mode:
+        shell_summary = {
+            "kind": "app-shell-dashboard-next-app",
+            "panelCount": len(shell_panels),
+            "panelTitles": [panel.get("title") for panel in shell_panels if isinstance(panel, dict)],
+        }
         app_shell_panel_bits.extend(
             [
                 '    <div class="bounded-panel bounded-stack bounded-app-shell">',
                 '      <p class="bounded-kicker">App-shell surface</p>',
+                '      <div class="bounded-meta bounded-meta--inline">',
+                f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["kind"]}</span>',
+                f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["panelCount"]} panels</span>',
+                *[f'        <span class="bounded-chip">{escape(str(title))}</span>' for title in shell_summary["panelTitles"][:3] if title],
+                "      </div>",
                 '      <div style="display:grid; gap:16px; grid-template-columns:minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);">',
             ]
         )
@@ -4095,6 +4132,13 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "Use screenshots and runtime HTML to preserve composition before attempting DOM-level fidelity.",
                 "Keep responsive variants aligned to the captured viewport geometry.",
             ],
+            "scaffold_hints": [
+                "single-stage layout with overlay chrome",
+                "bounded caption and control rails",
+                "viewport-anchored stage geometry",
+                "screenshot-led composition checks",
+                "DOM and CSS fidelity layered after the visual pass",
+            ],
             "focus": [
                 "stage geometry",
                 "dominant palette",
@@ -4200,9 +4244,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     runtime_materialization = _build_runtime_materialization(summary, app_model, style_entries)
     summary["runtimeMaterialization"] = runtime_materialization
     app_model["runtimeMaterialization"] = runtime_materialization
-    summary["shell"] = {
-        "panel_count": len(app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []),
-        "panel_roles": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
+    summary["shell"] = app_model.get("shellSummary") or {
+        "kind": "app-shell-dashboard-next-app",
+        "panelCount": len(app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []),
+        "panelRoles": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
     }
     summary["layoutMode"] = app_model.get("layoutMode")
     summary["layoutTokens"] = app_model.get("layoutTokens") or {}

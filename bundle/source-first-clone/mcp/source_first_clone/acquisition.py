@@ -1650,6 +1650,18 @@ function evaluateInteractionRuntime(payload) {
   const scrollLeft = payload && typeof payload.scrollLeft === "number" ? payload.scrollLeft : null;
   const maxFrameDocuments = payload && typeof payload.maxFrameDocuments === "number" ? payload.maxFrameDocuments : 12;
   const rootContext = payload && payload.rootContext && typeof payload.rootContext === "object" ? payload.rootContext : null;
+  const buildRootSignature = (context) => {
+    if (!context || typeof context !== "object") {
+      return "document||||0";
+    }
+    return [
+      context.kind || "document",
+      context.frameSrc || "",
+      context.frameUrl || "",
+      context.shadowHostTag || "",
+      typeof context.surfaceIndex === "number" ? String(context.surfaceIndex) : "",
+    ].join("|");
+  };
 
   const normalizeText = (raw, maxLength = 160) => {
     if (!raw) return null;
@@ -1893,6 +1905,13 @@ function evaluateInteractionRuntime(payload) {
       frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
       shadowHostTag: null,
       surfaceIndex: 0,
+      rootSignature: buildRootSignature({
+        kind: "document",
+        frameSrc: null,
+        frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+        shadowHostTag: null,
+        surfaceIndex: 0,
+      }),
     }];
     const seenDocuments = new Set([rootDocument]);
     const seenShadows = new Set();
@@ -1903,6 +1922,13 @@ function evaluateInteractionRuntime(payload) {
       frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
       shadowHostTag: null,
       surfaceIndex: 0,
+      rootSignature: buildRootSignature({
+        kind: "document",
+        frameSrc: null,
+        frameUrl: rootDocument.location && rootDocument.location.href ? rootDocument.location.href : null,
+        shadowHostTag: null,
+        surfaceIndex: 0,
+      }),
     }];
     while (queue.length && roots.length < maxFrameDocuments + 64) {
       const current = queue.shift();
@@ -1918,6 +1944,13 @@ function evaluateInteractionRuntime(payload) {
             frameUrl: current.frameUrl || null,
             shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
             surfaceIndex: roots.length,
+            rootSignature: buildRootSignature({
+              kind: "shadow-root",
+              frameSrc: current.frameSrc || null,
+              frameUrl: current.frameUrl || null,
+              shadowHostTag: element.tagName ? element.tagName.toLowerCase() : null,
+              surfaceIndex: roots.length,
+            }),
           };
           roots.push(shadowEntry);
           queue.push(shadowEntry);
@@ -1938,6 +1971,13 @@ function evaluateInteractionRuntime(payload) {
               frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
               shadowHostTag: null,
               surfaceIndex: roots.length,
+              rootSignature: buildRootSignature({
+                kind: "frame-document",
+                frameSrc: element.getAttribute("src") || element.src || null,
+                frameUrl: frameDoc.location && frameDoc.location.href ? frameDoc.location.href : null,
+                shadowHostTag: null,
+                surfaceIndex: roots.length,
+              }),
             };
             roots.push(frameEntry);
             queue.push(frameEntry);
@@ -1952,6 +1992,9 @@ function evaluateInteractionRuntime(payload) {
       return 0;
     }
     let score = 0;
+    if (targetContext.rootSignature && entry.rootSignature && entry.rootSignature === targetContext.rootSignature) {
+      score += 160;
+    }
     if (typeof targetContext.surfaceIndex === "number" && entry.surfaceIndex === targetContext.surfaceIndex) {
       score += 100;
     }
@@ -2604,6 +2647,70 @@ function isSafeToggleCandidate(candidate) {
         return [];
       }
     };
+    const urlPartsFromUrl = (rawUrl) => {
+      try {
+        const parsed = new URL(rawUrl);
+        return {
+          href: parsed.href,
+          origin: parsed.origin,
+          protocol: parsed.protocol,
+          username: parsed.username || null,
+          password: parsed.password ? "***" : null,
+          host: parsed.host,
+          hostname: parsed.hostname,
+          port: parsed.port || null,
+          pathname: parsed.pathname,
+          search: parsed.search || "",
+          hash: parsed.hash || "",
+        };
+      } catch (error) {
+        return {
+          href: rawUrl || null,
+          origin: null,
+          protocol: null,
+          username: null,
+          password: null,
+          host: null,
+          hostname: null,
+          port: null,
+          pathname: null,
+          search: null,
+          hash: null,
+        };
+      }
+    };
+    const headersSizeFromArray = (entries) => {
+      if (!Array.isArray(entries) || !entries.length) {
+        return 0;
+      }
+      return entries.reduce((total, entry) => {
+        if (!entry || typeof entry.name !== "string") {
+          return total;
+        }
+        const value = typeof entry.value === "string" ? entry.value : String(entry.value || "");
+        return total + entry.name.length + value.length + 4;
+      }, 0);
+    };
+    const parseFormEncodedPostData = (postDataText, contentType) => {
+      if (!postDataText) {
+        return [];
+      }
+      const normalizedContentType = String(contentType || "").toLowerCase();
+      if (!normalizedContentType.includes("application/x-www-form-urlencoded") && !/^[^=]+=[^=]+/.test(postDataText)) {
+        return [];
+      }
+      try {
+        const parsed = new URLSearchParams(String(postDataText));
+        return Array.from(parsed.entries()).map(([name, value]) => ({
+          name,
+          value,
+          fileName: null,
+          contentType: null,
+        }));
+      } catch (error) {
+        return [];
+      }
+    };
     const splitCookiePairs = (rawCookieValue) => {
       if (!rawCookieValue) {
         return [];
@@ -2701,6 +2808,7 @@ function isSafeToggleCandidate(candidate) {
       requestEntries.push({
         requestId,
         url: requestUrl,
+        urlParts: urlPartsFromUrl(requestUrl),
         method: request.method(),
         resourceType: request.resourceType(),
         isNavigationRequest: request.isNavigationRequest(),
@@ -2708,6 +2816,7 @@ function isSafeToggleCandidate(candidate) {
         hasPostData: Boolean(postData),
         postDataSize: postData ? postData.length : 0,
         postDataText: postData ? String(postData).slice(0, 4096) : null,
+        postDataParams: parseFormEncodedPostData(postData ? String(postData).slice(0, 4096) : null, requestHeaders["content-type"] || requestHeaders["Content-Type"] || null),
         requestHeaders: filterHeaders(requestHeaders, commonRequestHeaderKeys),
         requestHeadersArray: headersToArray(requestHeaders),
         requestCookies: cookiePairsFromHeaders(requestHeaders, "cookie"),
@@ -2750,6 +2859,7 @@ function isSafeToggleCandidate(candidate) {
         method: request.method(),
         contentType: responseHeaders["content-type"] || null,
         contentLength: responseHeaders["content-length"] || null,
+        redirectURL: responseHeaders["location"] || null,
         responseHeaders: filterHeaders(responseHeaders, commonResponseHeaderKeys),
         responseHeadersArray: headersToArray(responseHeaders),
         responseCookies: cookiePairsFromHeaders(responseHeaders, "set-cookie"),
@@ -4194,6 +4304,18 @@ function isSafeToggleCandidate(candidate) {
       const seen = new Set();
       const nodes = [];
       const rootContext = new WeakMap();
+      const buildRootSignature = (context) => {
+        if (!context || typeof context !== "object") {
+          return "document||||0";
+        }
+        return [
+          context.kind || "document",
+          context.frameSrc || "",
+          context.frameUrl || "",
+          context.shadowHostTag || "",
+          typeof context.surfaceIndex === "number" ? String(context.surfaceIndex) : "",
+        ].join("|");
+      };
       const pushNode = (element) => {
         if (!element || seen.has(element) || !isVisibleCandidate(element)) {
           return;
@@ -4211,6 +4333,7 @@ function isSafeToggleCandidate(candidate) {
             frameUrl: entry.frameUrl || null,
             shadowHostTag: entry.shadowHostTag,
             surfaceIndex: entry.surfaceIndex,
+            rootSignature: entry.rootSignature || buildRootSignature(entry),
           });
           pushNode(element);
         }
@@ -4221,6 +4344,7 @@ function isSafeToggleCandidate(candidate) {
             frameUrl: entry.frameUrl || null,
             shadowHostTag: entry.shadowHostTag,
             surfaceIndex: entry.surfaceIndex,
+            rootSignature: entry.rootSignature || buildRootSignature(entry),
           });
           pushNode(element);
         }
@@ -4235,6 +4359,7 @@ function isSafeToggleCandidate(candidate) {
               frameUrl: entry.frameUrl || null,
               shadowHostTag: entry.shadowHostTag,
               surfaceIndex: entry.surfaceIndex,
+              rootSignature: entry.rootSignature || buildRootSignature(entry),
             });
             pushNode(element);
           }
@@ -4250,7 +4375,7 @@ function isSafeToggleCandidate(candidate) {
         const view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
         const style = view.getComputedStyle(element);
         const classification = classifySurfaceKinds(element, style);
-        const contextMeta = rootContext.get(element) || { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 };
+        const contextMeta = rootContext.get(element) || { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0, rootSignature: buildRootSignature({ kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 }) };
         const summaryLabel = [
           getInteractionLabel(element),
           classification.kinds.length ? classification.kinds.join("+") : null,
@@ -4346,7 +4471,7 @@ function isSafeToggleCandidate(candidate) {
     let traceOrder = 0;
   const normalizeTraceRootContext = (rootContext) => {
     if (!rootContext || typeof rootContext !== "object") {
-      return { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 };
+      return { kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0, rootSignature: buildRootSignature({ kind: "document", frameSrc: null, frameUrl: null, shadowHostTag: null, surfaceIndex: 0 }) };
     }
     return {
       kind: rootContext.kind || "document",
@@ -4354,6 +4479,7 @@ function isSafeToggleCandidate(candidate) {
       frameUrl: rootContext.frameUrl || null,
       shadowHostTag: rootContext.shadowHostTag || null,
       surfaceIndex: typeof rootContext.surfaceIndex === "number" ? rootContext.surfaceIndex : null,
+      rootSignature: rootContext.rootSignature || buildRootSignature(rootContext),
     };
   };
     const pushTraceStep = (step) => {
@@ -4755,6 +4881,10 @@ function isSafeToggleCandidate(candidate) {
       withContentEncoding: networkManifest.responses.filter((entry) => Boolean((entry.headerPresence || {}).present && (entry.headerPresence.present || []).includes("content-encoding"))).length,
       likelyHasBody: networkManifest.responses.filter((entry) => ![204, 205, 304].includes(Number(entry.status || 0)) && (Boolean(entry.contentLength) || Boolean(entry.contentType))).length,
     };
+    const queryParameterCount = networkManifest.requests.reduce((total, entry) => total + (Array.isArray(entry.queryString) ? entry.queryString.length : 0), 0);
+    const requestHeaderBytes = networkManifest.requests.reduce((total, entry) => total + headersSizeFromArray(entry.requestHeadersArray || []), 0);
+    const responseHeaderBytes = networkManifest.responses.reduce((total, entry) => total + headersSizeFromArray(entry.responseHeadersArray || []), 0);
+    const responseRedirectCount = networkManifest.responses.filter((entry) => Boolean(entry.redirectURL) || (Number(entry.status || 0) >= 300 && Number(entry.status || 0) < 400)).length;
     const frameUrlSample = Array.from(new Set(
       networkManifest.requests
         .map((entry) => entry.frameUrl)
@@ -4784,6 +4914,8 @@ function isSafeToggleCandidate(candidate) {
       const responseHeaderPresence = response ? (response.headerPresence || {}) : {};
       const requestHeadersArray = request.requestHeadersArray || [];
       const requestHeaderPresence = request.headerPresence || {};
+      const responseContentLength = response && response.contentLength ? Number(response.contentLength) || null : null;
+      const requestBodyText = request.postDataText || null;
       const redirectInfo = request.redirectDepth > 0 || request.redirectedFromUrl
         ? {
             redirectedFromUrl: request.redirectedFromUrl || null,
@@ -4816,14 +4948,19 @@ function isSafeToggleCandidate(candidate) {
           headerPresence: requestHeaderPresence,
           postDataSize: request.postDataSize || 0,
           hasPostData: Boolean(request.hasPostData),
-          postData: request.postDataText ? { mimeType: requestHeadersArray.find((entry) => entry.name.toLowerCase() === "content-type")?.value || null, text: request.postDataText, encoding: null } : null,
+          postData: requestBodyText ? {
+            mimeType: requestHeadersArray.find((entry) => entry.name.toLowerCase() === "content-type")?.value || null,
+            text: requestBodyText,
+            encoding: null,
+            params: Array.isArray(request.postDataParams) ? request.postDataParams : [],
+          } : null,
           resourceType: request.resourceType || null,
           frameUrl: request.frameUrl || null,
           isNavigationRequest: Boolean(request.isNavigationRequest),
           redirectDepth: request.redirectDepth || 0,
           redirectedFromUrl: request.redirectedFromUrl || null,
           bodySize: request.postDataSize || 0,
-          headersSize: requestHeadersArray.length,
+          headersSize: headersSizeFromArray(requestHeadersArray),
         },
         response: response ? {
           status: response.status,
@@ -4834,10 +4971,17 @@ function isSafeToggleCandidate(candidate) {
           headerPresence: responseHeaderPresence,
           contentType: response.contentType || null,
           contentLength: response.contentLength || null,
+          redirectURL: response.redirectURL || null,
           fromServiceWorker: Boolean(response.fromServiceWorker),
           frameUrl: response.frameUrl || null,
-          bodySize: response.contentLength ? Number(response.contentLength) || -1 : -1,
-          headersSize: responseHeadersArray.length,
+          bodySize: responseContentLength !== null ? responseContentLength : -1,
+          headersSize: headersSizeFromArray(responseHeadersArray),
+          content: {
+            size: responseContentLength !== null ? responseContentLength : 0,
+            mimeType: response.contentType || null,
+            compression: null,
+            text: null,
+          },
         } : null,
         failure: failure ? {
           errorText: failure.errorText || null,
@@ -4874,6 +5018,10 @@ function isSafeToggleCandidate(candidate) {
       responseHeaderPresenceSummary,
       timingBucketCounts,
       responseBodyAvailability,
+      queryParameterCount,
+      requestHeaderBytes,
+      responseHeaderBytes,
+      responseRedirectCount,
       navigationRequestCount: networkManifest.requests.filter((entry) => entry.isNavigationRequest).length,
       postDataRequestCount: networkManifest.requests.filter((entry) => entry.hasPostData).length,
       serviceWorkerResponseCount: networkManifest.responses.filter((entry) => entry.fromServiceWorker).length,
@@ -4909,6 +5057,10 @@ function isSafeToggleCandidate(candidate) {
         responseCount: networkManifest.responses.length,
         failureCount: networkManifest.failures.length,
         redirectCount: networkManifest.redirects.length,
+        queryParameterCount,
+        requestHeaderBytes,
+        responseHeaderBytes,
+        responseRedirectCount,
       },
     };
     networkManifest.har = {
@@ -4920,6 +5072,10 @@ function isSafeToggleCandidate(candidate) {
         responseCount: networkManifest.responses.length,
         failureCount: networkManifest.failures.length,
         redirectCount: networkManifest.redirects.length,
+        queryParameterCount,
+        requestHeaderBytes,
+        responseHeaderBytes,
+        responseRedirectCount,
         pageTimings: harPages[0].pageTimings,
       },
     };
