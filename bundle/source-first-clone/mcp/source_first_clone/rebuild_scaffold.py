@@ -1427,6 +1427,45 @@ def _interaction_control_tag(entry: dict[str, Any]) -> str:
     return "button"
 
 
+def _interaction_root_context(root_context: Any) -> dict[str, Any]:
+    context = root_context if isinstance(root_context, dict) else {}
+    root_path = [
+        _clean_text(part, 120)
+        for part in (context.get("rootPath") if isinstance(context.get("rootPath"), list) else [])
+        if _clean_text(part, 120)
+    ][:6]
+    return {
+        "kind": _clean_text(context.get("kind"), 40) or None,
+        "frameSrc": _clean_text(context.get("frameSrc"), 160) or None,
+        "frameUrl": _clean_text(context.get("frameUrl"), 160) or None,
+        "shadowHostTag": _clean_text(context.get("shadowHostTag"), 48) or None,
+        "surfaceIndex": context.get("surfaceIndex") if isinstance(context.get("surfaceIndex"), int) else None,
+        "rootSignature": _clean_text(context.get("rootSignature"), 200) or None,
+        "rootPath": root_path,
+    }
+
+
+def _interaction_surface_label(entry: dict[str, Any]) -> str | None:
+    root_context = _interaction_root_context(entry.get("rootContext"))
+    kind = root_context.get("kind")
+    shadow_host = root_context.get("shadowHostTag")
+    frame_src = root_context.get("frameSrc")
+    frame_url = root_context.get("frameUrl")
+    surface_index = root_context.get("surfaceIndex")
+    parts: list[str] = []
+    if kind:
+        parts.append(str(kind))
+    if shadow_host:
+        parts.append(f"host {shadow_host}")
+    elif frame_src:
+        parts.append(f"frame {frame_src}")
+    elif frame_url and kind != "document":
+        parts.append(f"frame {frame_url}")
+    if isinstance(surface_index, int):
+        parts.append(f"surface {surface_index}")
+    return " · ".join(parts) if parts else None
+
+
 def _viewport_side(summary: dict[str, Any], key: str, fallback: int) -> int:
     viewport = summary.get("viewport", {}) if isinstance(summary, dict) else {}
     try:
@@ -1555,7 +1594,9 @@ def _nav_aria_label(label: Any) -> str | None:
 def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     outline = summary.get("outline", []) if isinstance(summary, dict) else []
-    interactions = (summary.get("interactions", {}) or {}).get("sample", [])
+    interaction_summary = summary.get("interactions", {}) if isinstance(summary, dict) else {}
+    interactions = (interaction_summary or {}).get("sample", [])
+    interaction_trace = (interaction_summary or {}).get("traceSample", [])
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
     viewport_width = _viewport_side(summary, "width", 1440)
@@ -1625,6 +1666,9 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         click_keys = entry.get("clickStateDeltaKeys", [])
         if click_keys:
             states.append(f"click {len(click_keys)} deltas")
+        surface_label = _interaction_surface_label(entry)
+        if surface_label:
+            states.insert(0, surface_label)
         interaction_cards.append(
             {
                 "id": f"interaction-{index + 1}",
@@ -1642,6 +1686,26 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "states": states or ["interaction detected"],
                 "styleSnapshot": _style_snapshot_from_styles(entry.get("baseStyles")),
                 "rect": entry.get("rect"),
+                "rootContext": _interaction_root_context(entry.get("rootContext")),
+            }
+        )
+
+    trace_cards: list[dict[str, Any]] = []
+    for index, step in enumerate(interaction_trace[:12] if isinstance(interaction_trace, list) else []):
+        if not isinstance(step, dict):
+            continue
+        parts = [
+            _clean_text(step.get("kind"), 24),
+            _clean_text(step.get("label"), 72),
+            f"scrollY={step.get('scrollY')}" if isinstance(step.get("scrollY"), int) else "",
+            f"value {step.get('value')}" if step.get("value") else "",
+        ]
+        trace_cards.append(
+            {
+                "id": f"trace-{index + 1}",
+                "label": " ".join(part for part in parts if part) or f"Trace step {index + 1}",
+                "surface": _interaction_surface_label({"rootContext": step.get("rootContext")}) or "document",
+                "rootContext": _interaction_root_context(step.get("rootContext")),
             }
         )
 
@@ -2062,6 +2126,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         },
         "bodySections": body_sections,
         "interactions": interaction_cards,
+        "interactionTrace": trace_cards,
         "shellPanels": shell_panels,
         "shellTopology": {
             "primaryRegion": "workspace" if app_shell_mode else None,
@@ -4084,6 +4149,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
+    interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
     css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures, dict) else {}
 
     style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
@@ -4125,11 +4191,30 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
                 "rect": entry.get("rect"),
                 "baseStyles": entry.get("baseStyles") if isinstance(entry.get("baseStyles"), dict) else {},
                 "targetSummary": entry.get("targetSummary") if isinstance(entry.get("targetSummary"), dict) else {},
+                "rootContext": _interaction_root_context(entry.get("rootContext")),
                 "hoverDeltaKeys": sorted((entry.get("hoverDelta") or {}).keys()) if isinstance(entry.get("hoverDelta"), dict) else [],
                 "focusDeltaKeys": sorted((entry.get("focusDelta") or {}).keys()) if isinstance(entry.get("focusDelta"), dict) else [],
                 "clickStateDeltaKeys": sorted((((entry.get("clickState") or {}).get("stateDelta")) or {}).keys())
                 if isinstance(((entry.get("clickState") or {}).get("stateDelta")), dict)
                 else [],
+            }
+        )
+
+    interaction_trace = interaction_trace_capture.get("content", {}) if isinstance(interaction_trace_capture, dict) else {}
+    trace_steps = interaction_trace.get("steps", []) if isinstance(interaction_trace, dict) else []
+    interaction_trace_sample: list[dict[str, Any]] = []
+    for step in trace_steps[:12]:
+        if not isinstance(step, dict):
+            continue
+        interaction_trace_sample.append(
+            {
+                "kind": _clean_text(step.get("kind"), 32) or None,
+                "label": _clean_text(step.get("label"), 120) or None,
+                "selector": _clean_text(step.get("selector"), 160) or None,
+                "targetId": _clean_text(step.get("targetId"), 80) or None,
+                "scrollY": step.get("scrollY") if isinstance(step.get("scrollY"), int) else None,
+                "value": _clean_text(step.get("value"), 80) or None,
+                "rootContext": _interaction_root_context(step.get("rootContext")),
             }
         )
 
@@ -4264,6 +4349,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "interactions": {
             "count": len(interaction_entries) if isinstance(interaction_entries, list) else 0,
             "sample": interaction_sample,
+            "traceSample": interaction_trace_sample,
         },
         "renderer": {
             "kind": renderer_kind,

@@ -148,8 +148,8 @@ Current notable checkpoints:
 - `google.com`: `88 / 100`
 - `python.org`: `61 / 100`
 - current sample self-verify reruns:
-  - `google.com`: `85 / 100`
-  - `python.org`: `61 / 100`
+  - `google.com`: `90 / 100`
+  - `python.org`: `66 / 100`
 - exact-reuse cases are treated operationally as success paths instead of rebuild scores
 
 ### 2. Universal-engine completion

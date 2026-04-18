@@ -76,7 +76,7 @@ Current estimate: **88 / 100**
 ## Evidence behind the score
 
 - best bounded runtime benchmark: `88 / 100`
-- harder bounded rebuild sample: `61 / 100`
+- harder bounded rebuild sample: `66 / 100`
 - universal benchmark corpus: `4 / 4` sites classified successfully, with `2` exact-reuse and `2` bounded-rebuild outcomes
 - benchmark regression workflow now validates the committed corpus expectations on pull requests and pushes to `main`
 - exact-reuse succeeds on allowed surfaces such as `wikipedia.org` and platform-backed surfaces such as `artsupportservices.com`
@@ -87,6 +87,7 @@ Current estimate: **88 / 100**
 - HAR exports now carry richer request/response/query/cookie/timing context for replay-oriented inspection
 - frame + shadow structure capture exists
 - frame/shadow verification now scores `frame_url_overlap`, `surface_index_overlap`, `root_signature_overlap`, and `root_path_overlap`
+- interaction-trace verification now also scores root-aware frame/shadow replay parity, and rebuild scaffolds retain interaction `rootContext` plus a bounded trace sample
 - bounded app-shell / dashboard routing now exists, but richer panel/state reconstruction is still incomplete
 - bounded canvas/WebGL visual-fallback routing now exists with an explicit stage-first rendering model
 - sample comparison artifacts now exist for strong and weak public cases, including a generated `.webm` demo clip

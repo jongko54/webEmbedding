@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 CORE_ARTIFACTS = (
@@ -1007,13 +1008,13 @@ def _interaction_check(reference: dict[str, Any], candidate: dict[str, Any]) -> 
     cand_stats = _interaction_stats(candidate.get("content"))
     status = "present" if ref_present and cand_present else "missing"
     label_overlap = _set_overlap(ref_stats.get("labels", set()), cand_stats.get("labels", set()))
-    root_context_overlap = _set_overlap(ref_stats.get("root_contexts", set()), cand_stats.get("root_contexts", set()))
-    frame_src_overlap = _set_overlap(ref_stats.get("frame_sources", set()), cand_stats.get("frame_sources", set()))
-    frame_url_overlap = _set_overlap(ref_stats.get("frame_urls", set()), cand_stats.get("frame_urls", set()))
-    shadow_host_overlap = _set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set()))
-    surface_index_overlap = _set_overlap(ref_stats.get("surface_indices", set()), cand_stats.get("surface_indices", set()))
-    root_signature_overlap = _set_overlap(ref_stats.get("root_signatures", set()), cand_stats.get("root_signatures", set()))
-    root_path_overlap = _set_overlap(ref_stats.get("root_paths", set()), cand_stats.get("root_paths", set()))
+    root_context_overlap = _optional_set_overlap(ref_stats.get("root_contexts", set()), cand_stats.get("root_contexts", set()))
+    frame_src_overlap = _optional_set_overlap(ref_stats.get("frame_sources", set()), cand_stats.get("frame_sources", set()))
+    frame_url_overlap = _optional_set_overlap(ref_stats.get("frame_urls", set()), cand_stats.get("frame_urls", set()))
+    shadow_host_overlap = _optional_set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set()))
+    surface_index_overlap = _optional_set_overlap(ref_stats.get("surface_indices", set()), cand_stats.get("surface_indices", set()))
+    root_signature_overlap = _optional_set_overlap(ref_stats.get("root_signatures", set()), cand_stats.get("root_signatures", set()))
+    root_path_overlap = _optional_set_overlap(ref_stats.get("root_paths", set()), cand_stats.get("root_paths", set()))
     summary = (
         f"interaction states present; entries {ref_stats.get('entry_count', 0)} vs {cand_stats.get('entry_count', 0)}"
     )
@@ -1086,14 +1087,51 @@ def _interaction_trace_check(reference: dict[str, Any], candidate: dict[str, Any
     status = "present" if ref_present and cand_present else "missing"
     kind_overlap = _set_overlap(ref_stats.get("step_kinds", set()), cand_stats.get("step_kinds", set()))
     target_overlap = _set_overlap(ref_stats.get("targets", set()), cand_stats.get("targets", set()))
+    root_context_overlap = _optional_set_overlap(ref_stats.get("root_contexts", set()), cand_stats.get("root_contexts", set()))
+    frame_src_overlap = _optional_set_overlap(ref_stats.get("frame_sources", set()), cand_stats.get("frame_sources", set()))
+    frame_url_overlap = _optional_set_overlap(ref_stats.get("frame_urls", set()), cand_stats.get("frame_urls", set()))
+    shadow_host_overlap = _optional_set_overlap(ref_stats.get("shadow_host_tags", set()), cand_stats.get("shadow_host_tags", set()))
+    surface_index_overlap = _optional_set_overlap(ref_stats.get("surface_indices", set()), cand_stats.get("surface_indices", set()))
+    root_signature_overlap = _optional_set_overlap(ref_stats.get("root_signatures", set()), cand_stats.get("root_signatures", set()))
+    root_path_overlap = _optional_set_overlap(ref_stats.get("root_paths", set()), cand_stats.get("root_paths", set()))
     summary = (
         f"interaction trace present; steps {ref_stats.get('step_count', 0)} vs {cand_stats.get('step_count', 0)}"
     )
     if ref_stats.get("step_count") and cand_stats.get("step_count"):
         summary += f"; action overlap {kind_overlap:.2f}"
+    if ref_stats.get("root_contexts") or cand_stats.get("root_contexts"):
+        summary += f"; rootContext overlap {root_context_overlap:.2f}"
+    if ref_stats.get("frame_sources") or cand_stats.get("frame_sources"):
+        summary += f"; frame-source overlap {frame_src_overlap:.2f}"
+    if ref_stats.get("frame_urls") or cand_stats.get("frame_urls"):
+        summary += f"; frame-url overlap {frame_url_overlap:.2f}"
+    if ref_stats.get("shadow_host_tags") or cand_stats.get("shadow_host_tags"):
+        summary += f"; shadow-host overlap {shadow_host_overlap:.2f}"
+    if ref_stats.get("surface_indices") or cand_stats.get("surface_indices"):
+        summary += f"; surface-index overlap {surface_index_overlap:.2f}"
+    if ref_stats.get("root_signatures") or cand_stats.get("root_signatures"):
+        summary += f"; root-signature overlap {root_signature_overlap:.2f}"
+    if ref_stats.get("root_paths") or cand_stats.get("root_paths"):
+        summary += f"; root-path overlap {root_path_overlap:.2f}"
     step_score = _count_similarity(ref_stats.get("step_count"), cand_stats.get("step_count"))
     executed_score = _count_similarity(ref_stats.get("executed_count"), cand_stats.get("executed_count"))
-    similarity_parts = [score for score in [kind_overlap, target_overlap, step_score, executed_score] if score is not None]
+    similarity_parts = [
+        score
+        for score in [
+            kind_overlap,
+            target_overlap,
+            root_context_overlap,
+            frame_src_overlap,
+            frame_url_overlap,
+            shadow_host_overlap,
+            surface_index_overlap,
+            root_signature_overlap,
+            root_path_overlap,
+            step_score,
+            executed_score,
+        ]
+        if score is not None
+    ]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
     return {
         "name": "interaction trace",
@@ -1108,6 +1146,13 @@ def _interaction_trace_check(reference: dict[str, Any], candidate: dict[str, Any
             "executed_count_delta": _numeric_delta(ref_stats.get("executed_count"), cand_stats.get("executed_count")),
             "kind_overlap": kind_overlap,
             "target_overlap": target_overlap,
+            "root_context_overlap": root_context_overlap,
+            "frame_source_overlap": frame_src_overlap,
+            "frame_url_overlap": frame_url_overlap,
+            "shadow_host_overlap": shadow_host_overlap,
+            "surface_index_overlap": surface_index_overlap,
+            "root_signature_overlap": root_signature_overlap,
+            "root_path_overlap": root_path_overlap,
         },
     }
 
@@ -1359,6 +1404,8 @@ def _focus_hint(detail: dict[str, Any]) -> str:
             return "same-origin frame or shadow-root replay drift"
         return "hover/focus interaction coverage drift"
     if name == "interaction trace":
+        if (detail_payload.get("root_signature_overlap") or 0.0) < 0.5 or (detail_payload.get("root_path_overlap") or 0.0) < 0.5 or (detail_payload.get("surface_index_overlap") or 0.0) < 0.5 or (detail_payload.get("frame_url_overlap") or 0.0) < 0.5:
+            return "same-origin frame or shadow-root trace drift"
         return "scroll/type/click replay coverage drift"
     if name == "network manifest":
         return "runtime request graph drift"
@@ -1407,7 +1454,11 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
             else:
                 actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
         elif detail["name"] == "interaction trace":
-            actions.append("Extend replay capture to cover the scroll, type, and click sequence used by the reference.")
+            detail_bits = detail.get("details") or {}
+            if detail_bits.get("root_signature_overlap", 1.0) < 0.5 or detail_bits.get("root_path_overlap", 1.0) < 0.5 or detail_bits.get("surface_index_overlap", 1.0) < 0.5 or detail_bits.get("frame_url_overlap", 1.0) < 0.5:
+                actions.append("Extend root-aware trace replay into same-origin frame and shadow-root surfaces before tuning scroll/type/click parity.")
+            else:
+                actions.append("Extend replay capture to cover the scroll, type, and click sequence used by the reference.")
         elif detail["name"] == "network manifest":
             actions.append("Capture runtime request graph, frame-local requests, and failure paths before trusting app-shell parity.")
     deduped: list[str] = []
@@ -1686,31 +1737,22 @@ def _interaction_stats(content: Any) -> dict[str, Any]:
         label = "|".join(bit for bit in label_bits if bit)
         if label:
             labels.add(label)
-        root_context = entry.get("rootContext") if isinstance(entry.get("rootContext"), dict) else {}
-        root_kind = _clean_text(root_context.get("kind"))
-        frame_src = _clean_text(root_context.get("frameSrc"))
-        frame_url = _clean_text(root_context.get("frameUrl"))
-        shadow_host_tag = _clean_text(root_context.get("shadowHostTag"))
-        surface_index = root_context.get("surfaceIndex")
-        root_signature = _clean_text(root_context.get("rootSignature"))
-        root_path = root_context.get("rootPath")
-        context_bits = [bit for bit in [root_kind, frame_src, frame_url, shadow_host_tag] if bit]
+        root_stats = _normalized_root_context_stats(entry.get("rootContext"))
+        surface_index = root_stats.get("surface_index")
         if isinstance(surface_index, int):
             surface_indices.add(surface_index)
-        if root_signature:
-            root_signatures.add(root_signature)
-        if isinstance(root_path, list) and root_path:
-            normalized_path = " > ".join(_clean_text(part) for part in root_path if _clean_text(part))
-            if normalized_path:
-                root_paths.add(normalized_path)
-        if context_bits:
-            root_contexts.add("|".join(context_bits + ([str(surface_index)] if isinstance(surface_index, int) else [])))
-        if frame_src:
-            frame_sources.add(frame_src)
-        if frame_url:
-            frame_urls.add(frame_url)
-        if shadow_host_tag:
-            shadow_host_tags.add(shadow_host_tag)
+        if root_stats.get("root_signature"):
+            root_signatures.add(root_stats["root_signature"])
+        if root_stats.get("root_path"):
+            root_paths.add(root_stats["root_path"])
+        if root_stats.get("root_context"):
+            root_contexts.add(root_stats["root_context"])
+        if root_stats.get("frame_source"):
+            frame_sources.add(root_stats["frame_source"])
+        if root_stats.get("frame_url"):
+            frame_urls.add(root_stats["frame_url"])
+        if root_stats.get("shadow_host_tag"):
+            shadow_host_tags.add(root_stats["shadow_host_tag"])
         if isinstance(entry.get("hoverDelta"), dict) and entry["hoverDelta"]:
             hover_changed += 1
         if isinstance(entry.get("focusDelta"), dict) and entry["focusDelta"]:
@@ -1737,6 +1779,13 @@ def _interaction_trace_stats(content: Any) -> dict[str, Any]:
     executions = trace.get("executions") if isinstance(trace.get("executions"), list) else []
     step_kinds: set[str] = set()
     targets: set[str] = set()
+    root_contexts: set[str] = set()
+    frame_sources: set[str] = set()
+    frame_urls: set[str] = set()
+    shadow_host_tags: set[str] = set()
+    surface_indices: set[int] = set()
+    root_signatures: set[str] = set()
+    root_paths: set[str] = set()
     for step in steps[:48]:
         if not isinstance(step, dict):
             continue
@@ -1746,16 +1795,58 @@ def _interaction_trace_stats(content: Any) -> dict[str, Any]:
             step_kinds.add(kind)
         if target:
             targets.add(target)
+        root_stats = _normalized_root_context_stats(step.get("rootContext"))
+        surface_index = root_stats.get("surface_index")
+        if isinstance(surface_index, int):
+            surface_indices.add(surface_index)
+        if root_stats.get("root_signature"):
+            root_signatures.add(root_stats["root_signature"])
+        if root_stats.get("root_path"):
+            root_paths.add(root_stats["root_path"])
+        if root_stats.get("root_context"):
+            root_contexts.add(root_stats["root_context"])
+        if root_stats.get("frame_source"):
+            frame_sources.add(root_stats["frame_source"])
+        if root_stats.get("frame_url"):
+            frame_urls.add(root_stats["frame_url"])
+        if root_stats.get("shadow_host_tag"):
+            shadow_host_tags.add(root_stats["shadow_host_tag"])
     executed_count = sum(
         1
         for execution in executions[:64]
         if isinstance(execution, dict) and execution.get("status") in {"executed", "planned"}
     )
+    for execution in executions[:64]:
+        if not isinstance(execution, dict):
+            continue
+        root_stats = _normalized_root_context_stats(execution.get("rootContext"))
+        surface_index = root_stats.get("surface_index")
+        if isinstance(surface_index, int):
+            surface_indices.add(surface_index)
+        if root_stats.get("root_signature"):
+            root_signatures.add(root_stats["root_signature"])
+        if root_stats.get("root_path"):
+            root_paths.add(root_stats["root_path"])
+        if root_stats.get("root_context"):
+            root_contexts.add(root_stats["root_context"])
+        if root_stats.get("frame_source"):
+            frame_sources.add(root_stats["frame_source"])
+        if root_stats.get("frame_url"):
+            frame_urls.add(root_stats["frame_url"])
+        if root_stats.get("shadow_host_tag"):
+            shadow_host_tags.add(root_stats["shadow_host_tag"])
     return {
         "step_count": len(steps),
         "executed_count": executed_count,
         "step_kinds": sorted(step_kinds),
         "targets": sorted(targets),
+        "root_contexts": sorted(root_contexts),
+        "frame_sources": sorted(frame_sources),
+        "frame_urls": sorted(frame_urls),
+        "shadow_host_tags": sorted(shadow_host_tags),
+        "surface_indices": sorted(surface_indices),
+        "root_signatures": sorted(root_signatures),
+        "root_paths": sorted(root_paths),
         "step_sample": steps[:6],
     }
 
@@ -1770,6 +1861,85 @@ def _clean_text(value: Any) -> str:
     text = str(value).strip()
     text = re.sub(r"\s+", " ", text)
     return text.lower()
+
+
+def _optional_set_overlap(reference: Any, candidate: Any) -> float | None:
+    reference_set = set(reference or [])
+    candidate_set = set(candidate or [])
+    if not reference_set and not candidate_set:
+        return None
+    if not reference_set or not candidate_set:
+        return 0.0
+    intersection = len(reference_set & candidate_set)
+    union = len(reference_set | candidate_set)
+    return intersection / union if union else None
+
+
+def _normalize_root_locator(value: Any, *, kind: str = "") -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    parsed = urlsplit(text)
+    if not parsed.scheme and not parsed.netloc:
+        return text
+    path = parsed.path or "/"
+    if kind == "document":
+        return path
+    if parsed.hostname in {"127.0.0.1", "localhost"}:
+        return path
+    host = _clean_text(parsed.hostname)
+    return f"{host}{path}" if host else path
+
+
+def _normalize_root_path(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    normalized_parts: list[str] = []
+    for part in value:
+        cleaned = _clean_text(part)
+        if not cleaned:
+            continue
+        if ":" in cleaned:
+            prefix, suffix = cleaned.split(":", 1)
+            if suffix.startswith("http://") or suffix.startswith("https://"):
+                normalized_suffix = _normalize_root_locator(suffix, kind=prefix)
+                normalized_parts.append(f"{prefix}:{normalized_suffix}")
+                continue
+        normalized_parts.append(cleaned)
+    return " > ".join(normalized_parts)
+
+
+def _normalized_root_context_stats(root_context: Any) -> dict[str, Any]:
+    context = root_context if isinstance(root_context, dict) else {}
+    kind = _clean_text(context.get("kind")) or "document"
+    frame_source = _normalize_root_locator(context.get("frameSrc"), kind=kind)
+    frame_url = _normalize_root_locator(context.get("frameUrl"), kind=kind)
+    shadow_host_tag = _clean_text(context.get("shadowHostTag"))
+    surface_index = context.get("surfaceIndex")
+    root_path = _normalize_root_path(context.get("rootPath"))
+    root_signature = "|".join(
+        bit
+        for bit in [kind, frame_source, frame_url, shadow_host_tag, root_path]
+        if bit
+    )
+    root_context_key = "|".join(
+        bit
+        for bit in [
+            root_signature,
+            str(surface_index) if isinstance(surface_index, int) else "",
+        ]
+        if bit
+    )
+    return {
+        "kind": kind,
+        "frame_source": frame_source,
+        "frame_url": frame_url,
+        "shadow_host_tag": shadow_host_tag,
+        "surface_index": surface_index if isinstance(surface_index, int) else None,
+        "root_path": root_path,
+        "root_signature": root_signature,
+        "root_context": root_context_key,
+    }
 
 
 def _set_overlap(reference: Any, candidate: Any) -> float:
