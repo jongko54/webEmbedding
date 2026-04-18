@@ -1,90 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
+from html import escape
 from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / ".tmp" / "sample-demo-20260417"
-
-
-SAMPLES = [
-    {
-        "id": "google",
-        "label": "Google",
-        "source_capture": ROOT / ".tmp" / "demo-google-20260417" / "capture.json",
-        "clone_summary": ROOT / ".tmp" / "demo-google-20260417" / "reproduction" / "self-verify" / "summary.json",
-        "clone_verification": ROOT / ".tmp" / "demo-google-20260417" / "reproduction" / "self-verify" / "renderers" / "next-runtime-app" / "verification.json",
-    },
-    {
-        "id": "python",
-        "label": "Python.org",
-        "source_capture": ROOT / ".tmp" / "demo-python-20260417" / "capture.json",
-        "clone_summary": ROOT / ".tmp" / "demo-python-20260417" / "reproduction" / "self-verify" / "summary.json",
-        "clone_verification": ROOT / ".tmp" / "demo-python-20260417" / "reproduction" / "self-verify" / "renderers" / "next-runtime-app" / "verification.json",
-    },
-]
-
-
-def _load_json(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def _copy(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-
-
-def _metric_map(verification: dict) -> dict[str, float]:
-    metrics: dict[str, float] = {}
-    for check in verification.get("checks", []):
-        name = check.get("name")
-        score = check.get("score")
-        if isinstance(name, str) and isinstance(score, (int, float)):
-            metrics[name] = float(score)
-    return metrics
-
-
-def _build_manifest() -> dict:
-    manifest = {"samples": []}
-    assets_dir = OUT_DIR / "assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    for sample in SAMPLES:
-        capture = _load_json(sample["source_capture"])
-        summary = _load_json(sample["clone_summary"])
-        verification = _load_json(sample["clone_verification"])
-
-        source_image = Path(capture["bundle"]["captured_artifacts"]["screenshot"]["path"])
-        rendered_capture_manifest = Path(summary["rendered_capture_manifest"])
-        rendered_capture = _load_json(rendered_capture_manifest)
-        clone_image = Path(rendered_capture["bundle"]["captured_artifacts"]["screenshot"]["path"])
-
-        source_copy = assets_dir / f"{sample['id']}-source.png"
-        clone_copy = assets_dir / f"{sample['id']}-clone.png"
-        _copy(source_image, source_copy)
-        _copy(clone_image, clone_copy)
-
-        metrics = _metric_map(verification)
-        manifest["samples"].append(
-            {
-                "id": sample["id"],
-                "label": sample["label"],
-                "score": summary.get("score"),
-                "verdict": summary.get("root_report", {}).get("verdict"),
-                "source_image": f"./assets/{source_copy.name}",
-                "clone_image": f"./assets/{clone_copy.name}",
-                "metrics": {
-                    "screenshot": metrics.get("screenshot"),
-                    "dom snapshot": metrics.get("dom snapshot"),
-                    "computed styles": metrics.get("computed styles"),
-                    "interaction states": metrics.get("interaction states"),
-                    "interaction trace": metrics.get("interaction trace"),
-                },
-            }
-        )
-    return manifest
+from demo_artifacts import DemoCase, ROOT, load_demo_case
 
 
 HTML_TEMPLATE = """<!doctype html>
@@ -222,13 +145,13 @@ HTML_TEMPLATE = """<!doctype html>
     <header>
       <div>
         <h1>webEmbedding Sample Copy Demo</h1>
-        <div class="subtitle">Source screenshot vs generated bounded clone runtime. Slides rotate automatically to show both a strong sample and a weaker longform sample.</div>
+        <div class="subtitle">Source screenshot vs generated bounded clone runtime. The deck rotates across persisted cases so stronger and weaker public examples are visible in one clip.</div>
       </div>
-      <div class="score-pill">Universal engine: 87/100</div>
+      <div class="score-pill">__ENGINE_LABEL__</div>
     </header>
     <main id="samples"></main>
     <footer>
-      <div>April 17, 2026 benchmark snapshot</div>
+      <div>Generated from persisted source and clone captures</div>
       <div id="pager"></div>
     </footer>
   </div>
@@ -248,7 +171,7 @@ HTML_TEMPLATE = """<!doctype html>
         <div class="sample-head">
           <div>
             <div class="sample-title">${{sample.label}}</div>
-            <div class="subtitle">Self-verify score ${{sample.score}} · verdict ${{sample.verdict}}</div>
+            <div class="subtitle">Self-verify score ${{sample.score}} · verdict ${{sample.verdict}} · route ${{sample.renderer_route}}</div>
           </div>
           <div class="metrics">${{metrics}}</div>
         </div>
@@ -273,23 +196,121 @@ HTML_TEMPLATE = """<!doctype html>
       pager.textContent = `${{index + 1}} / ${{manifest.samples.length}}`;
     }}
     show(0);
-    setInterval(() => {{
-      active = (active + 1) % manifest.samples.length;
-      show(active);
-    }}, 3500);
+    if (manifest.samples.length > 1) {{
+      setInterval(() => {{
+        active = (active + 1) % manifest.samples.length;
+        show(active);
+      }}, __ROTATION_MS__);
+    }}
   </script>
 </body>
 </html>
 """
 
 
+def _copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+
+def _metric_value(case: DemoCase, name: str) -> float | None:
+    value = case.metrics_by_score.get(name)
+    if value is None:
+        value = case.metrics_by_similarity.get(name)
+    return value
+
+
+def _build_manifest(cases: list[DemoCase], output_dir: Path) -> dict:
+    manifest = {"samples": []}
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    for case in cases:
+        source_copy = assets_dir / f"{case.case_id}-source.png"
+        clone_copy = assets_dir / f"{case.case_id}-clone.png"
+        _copy(case.source_image, source_copy)
+        _copy(case.clone_image, clone_copy)
+
+        manifest["samples"].append(
+            {
+                "id": case.case_id,
+                "label": case.label,
+                "score": case.score,
+                "verdict": case.verdict,
+                "renderer_route": case.renderer_route,
+                "renderer_family": case.renderer_family,
+                "source_image": f"./assets/{source_copy.name}",
+                "clone_image": f"./assets/{clone_copy.name}",
+                "metrics": {
+                    "screenshot": _metric_value(case, "screenshot"),
+                    "dom snapshot": _metric_value(case, "dom snapshot"),
+                    "computed styles": _metric_value(case, "computed styles"),
+                    "interaction states": _metric_value(case, "interaction states"),
+                    "interaction trace": _metric_value(case, "interaction trace"),
+                },
+            }
+        )
+    return manifest
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build a rotating sample demo from persisted demo case directories.")
+    parser.add_argument(
+        "--case-dir",
+        action="append",
+        required=True,
+        help="Case directory containing capture.json and reproduction artifacts. Repeat for multiple samples.",
+    )
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="Optional label override for the matching --case-dir. Repeat in the same order as --case-dir.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(ROOT / ".tmp" / "sample-demo"),
+        help="Directory to write index.html, manifest.json, and copied assets into.",
+    )
+    parser.add_argument(
+        "--engine-label",
+        default="Universal engine: 88/100",
+        help="Top-right pill label rendered into the demo header.",
+    )
+    parser.add_argument(
+        "--rotation-ms",
+        type=int,
+        default=3500,
+        help="Slide rotation interval in milliseconds when multiple samples are present.",
+    )
+    parser.add_argument(
+        "--renderer-id",
+        help="Optional renderer directory to load from self-verify artifacts. Defaults to auto-detect.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    manifest = _build_manifest()
-    (OUT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    html = HTML_TEMPLATE.replace("__MANIFEST__", json.dumps(manifest))
-    (OUT_DIR / "index.html").write_text(html)
-    print(OUT_DIR / "index.html")
+    args = parse_args()
+    if args.label and len(args.label) != len(args.case_dir):
+        raise SystemExit("When provided, --label must be repeated the same number of times as --case-dir.")
+
+    labels = list(args.label) if args.label else [None] * len(args.case_dir)
+    cases = [
+        load_demo_case(case_dir, renderer_id=args.renderer_id, label=label)
+        for case_dir, label in zip(args.case_dir, labels)
+    ]
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _build_manifest(cases, output_dir)
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    html = (
+        HTML_TEMPLATE
+        .replace("__MANIFEST__", json.dumps(manifest))
+        .replace("__ENGINE_LABEL__", escape(args.engine_label))
+        .replace("__ROTATION_MS__", str(args.rotation_ms))
+    )
+    (output_dir / "index.html").write_text(html)
+    print(output_dir / "index.html")
 
 
 if __name__ == "__main__":

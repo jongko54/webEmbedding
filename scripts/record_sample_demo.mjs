@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 
 const rootDir = process.argv[2];
@@ -10,6 +11,8 @@ if (!rootDir || !outputDir) {
   console.error("usage: node scripts/record_sample_demo.mjs <rootDir> <outputDir> [durationMs]");
   process.exit(1);
 }
+
+fs.mkdirSync(outputDir, { recursive: true });
 
 const browserCandidates = [
   process.env.WEB_EMBEDDING_CHROME_PATH,
@@ -31,7 +34,7 @@ const context = await browser.newContext({
 });
 
 const page = await context.newPage();
-const url = `file://${path.join(rootDir, "index.html")}`;
+const url = pathToFileURL(path.resolve(rootDir, "index.html")).href;
 await page.goto(url, { waitUntil: "load" });
 await page.waitForTimeout(durationMs);
 await context.close();

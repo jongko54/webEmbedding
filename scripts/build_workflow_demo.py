@@ -1,65 +1,87 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import shutil
+from html import escape
 from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / ".tmp" / "workflow-demo-20260417"
+from demo_artifacts import ROOT, load_demo_case, relative_url
 
 
-def _load_json(path: Path) -> dict:
-    return json.loads(path.read_text())
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build a workflow demo page from one persisted demo case directory.")
+    parser.add_argument(
+        "--case-dir",
+        required=True,
+        help="Case directory containing capture.json and reproduction artifacts.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(ROOT / ".tmp" / "workflow-demo"),
+        help="Directory to write index.html, manifest.json, and copied assets into.",
+    )
+    parser.add_argument(
+        "--prompt-text",
+        default="이거 똑같이 만들어줘",
+        help="Prompt text animated into the workflow terminal.",
+    )
+    parser.add_argument(
+        "--renderer-id",
+        help="Optional renderer directory to load from self-verify artifacts. Defaults to auto-detect.",
+    )
+    return parser.parse_args()
+
+
+def _copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
 
 
 def main() -> None:
-    summary = _load_json(ROOT / ".tmp" / "demo-google-20260417" / "reproduction" / "self-verify" / "summary.json")
-    verification = _load_json(
-        ROOT
-        / ".tmp"
-        / "demo-google-20260417"
-        / "reproduction"
-        / "self-verify"
-        / "renderers"
-        / "next-runtime-app"
-        / "verification.json"
-    )
-    source_capture = _load_json(ROOT / ".tmp" / "demo-google-20260417" / "capture.json")
+    args = parse_args()
+    case = load_demo_case(args.case_dir, renderer_id=args.renderer_id)
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    assets_dir = output_dir / "assets"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    score = summary.get("score", 85)
-    verdict = summary.get("root_report", {}).get("verdict", "strong")
-    metrics = {}
-    for check in verification.get("checks", []):
-        name = check.get("name")
-        similarity = check.get("similarity")
-        if isinstance(name, str) and isinstance(similarity, (int, float)):
-            metrics[name] = similarity
+    source_image_copy = assets_dir / f"{case.case_id}-source.png"
+    clone_image_copy = assets_dir / f"{case.case_id}-clone.png"
+    _copy(case.source_image, source_image_copy)
+    _copy(case.clone_image, clone_image_copy)
 
-    source_image = "/.tmp/demo-google-20260417/screenshots/runtime.png"
-    clone_page = "/.tmp/demo-google-20260417/reproduction/rebuild/app-preview.html"
-    clone_capture_image = "/.tmp/demo-google-20260417/reproduction/self-verify/renderers/next-runtime-app/rendered-capture/screenshots/runtime.png"
-    source_url = source_capture.get("url", "https://www.google.com")
-
+    clone_page_url = relative_url(output_dir, case.clone_page)
+    score_label = "n/a" if case.score is None else str(case.score)
     manifest = {
-        "sourceUrl": source_url,
-        "promptText": f"{source_url}\n이거 똑같이 만들어줘",
-        "score": score,
-        "verdict": verdict,
+        "sourceUrl": case.source_url,
+        "promptText": f"{case.source_url}\n{args.prompt_text}",
+        "score": case.score,
+        "verdict": case.verdict,
+        "route": case.renderer_route,
+        "rendererFamily": case.renderer_family,
+        "policyMode": case.policy_mode,
+        "primarySurface": case.primary_surface,
         "metrics": {
-            "screenshot": round(metrics.get("screenshot", 0.94), 2),
-            "dom": round(metrics.get("dom snapshot", 0.91), 2),
-            "styles": round(metrics.get("computed styles", 0.69), 2),
-            "states": round(metrics.get("interaction states", 0.54), 2),
-            "trace": round(metrics.get("interaction trace", 1.0), 2),
+            "screenshot": round(case.metrics_by_similarity.get("screenshot", 0.0), 2),
+            "dom": round(case.metrics_by_similarity.get("dom snapshot", 0.0), 2),
+            "styles": round(case.metrics_by_similarity.get("computed styles", 0.0), 2),
+            "states": round(case.metrics_by_similarity.get("interaction states", 0.0), 2),
+            "trace": round(case.metrics_by_similarity.get("interaction trace", 0.0), 2),
         },
-        "sourceImage": source_image,
-        "clonePage": clone_page,
-        "cloneCaptureImage": clone_capture_image,
+        "sourceImage": f"./assets/{source_image_copy.name}",
+        "clonePage": clone_page_url,
+        "cloneCaptureImage": f"./assets/{clone_image_copy.name}",
     }
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    source_url = escape(case.source_url)
+    source_host = escape(case.source_host)
+    renderer_route = escape(case.renderer_route)
+    renderer_family = escape(case.renderer_family)
+    policy_mode = escape(case.policy_mode)
+    primary_surface = escape(case.primary_surface)
+    prompt_summary = escape(args.prompt_text)
 
     html = f"""<!doctype html>
 <html lang="ko">
@@ -311,21 +333,21 @@ def main() -> None:
     </div>
     <div class="title-row">
       <div class="title">
-        <h1>URL 붙여넣고 “이거 똑같이 만들어줘”</h1>
-        <p>원본 URL을 intake 하고, `inspect → capture → rebuild → verify` 흐름을 보여준 다음, 원본 웹뷰와 clone 웹뷰를 나란히 비교합니다. 샘플은 현재 가장 강한 public rebuild 케이스인 <strong>google.com</strong>입니다.</p>
+        <h1>URL 붙여넣고 “{prompt_summary}”</h1>
+        <p>원본 URL을 intake 하고, <code>inspect → capture → rebuild → verify</code> 흐름을 보여준 다음, 원본 웹뷰와 clone 웹뷰를 나란히 비교합니다. 현재 샘플은 <strong>{source_host}</strong> case입니다.</p>
       </div>
-      <div class="score">Google self-verify 85 / strong</div>
+      <div class="score">{escape(score_label)} / {escape(case.verdict)}</div>
     </div>
     <section class="prompt-shell">
       <div class="prompt-top">
         <div class="chips">
           <span class="chip accent">webEmbedding skill</span>
-          <span class="chip">route: bounded-rebuild</span>
-          <span class="chip">family: document-next-app</span>
-          <span class="chip">policy: rebuild</span>
+          <span class="chip">route: {renderer_route}</span>
+          <span class="chip">family: {renderer_family}</span>
+          <span class="chip">policy: {policy_mode}</span>
         </div>
         <div class="chips">
-          <span class="chip">source: google.com</span>
+          <span class="chip">source: {source_host}</span>
         </div>
       </div>
       <div class="terminal">
@@ -348,12 +370,12 @@ def main() -> None:
           <div class="window-label">Original</div>
         </div>
         <div class="viewport">
-          <img src="{source_image}" alt="original source capture" />
+          <img src="./assets/{source_image_copy.name}" alt="original source capture" />
         </div>
         <div class="window-footer">
           <span class="metric"><strong>source</strong> runtime capture</span>
-          <span class="metric"><strong>surface</strong> static-document</span>
-          <span class="metric"><strong>route</strong> bounded-rebuild</span>
+          <span class="metric"><strong>surface</strong> {primary_surface}</span>
+          <span class="metric"><strong>route</strong> {renderer_route}</span>
         </div>
       </section>
       <section class="window">
@@ -363,10 +385,10 @@ def main() -> None:
           <div class="window-label">Clone</div>
         </div>
         <div class="viewport">
-          <iframe src="{clone_page}" title="generated clone preview"></iframe>
+          <iframe src="{clone_page_url}" title="generated clone preview"></iframe>
         </div>
         <div class="window-footer">
-          <span class="metric"><strong>score</strong> {score}</span>
+          <span class="metric"><strong>score</strong> {escape(score_label)}</span>
           <span class="metric"><strong>screenshot</strong> {manifest["metrics"]["screenshot"]}</span>
           <span class="metric"><strong>dom</strong> {manifest["metrics"]["dom"]}</span>
           <span class="metric"><strong>styles</strong> {manifest["metrics"]["styles"]}</span>
@@ -382,14 +404,13 @@ def main() -> None:
     const copyLine = document.getElementById('copyLine');
     const promptLine = document.getElementById('promptLine');
     const logLine = document.getElementById('logLine');
-    const steps = Array.from(document.querySelectorAll('.status'));
-    const urlText = {json.dumps(source_url)};
-    const promptText = {json.dumps("이거 똑같이 만들어줘")};
+    const urlText = {json.dumps(case.source_url)};
+    const promptText = {json.dumps(args.prompt_text)};
     const logs = [
       'source-first intake 시작',
-      'site_profile: static-document',
-      'route: bounded-rebuild',
-      'self-verify: 85 / strong'
+      'site_profile: {escape(case.primary_surface)}',
+      'route: {escape(case.renderer_route)}',
+      'self-verify: {escape(score_label)} / {escape(case.verdict)}'
     ];
     function typeInto(node, text, delay, done) {{
       let i = 0;
@@ -410,7 +431,7 @@ def main() -> None:
     setTimeout(() => {{
       typeInto(promptLine, urlText + '\\n' + promptText, 26, () => {{
         let index = 0;
-        const stepNames = ['inspect','capture','rebuild','verify'];
+        const stepNames = ['inspect', 'capture', 'rebuild', 'verify'];
         const logTimer = setInterval(() => {{
           activate(stepNames[index]);
           logLine.textContent = logs[index];
@@ -427,8 +448,8 @@ def main() -> None:
 </html>
 """
 
-    (OUT_DIR / "index.html").write_text(html)
-    print(OUT_DIR / "index.html")
+    (output_dir / "index.html").write_text(html)
+    print(output_dir / "index.html")
 
 
 if __name__ == "__main__":

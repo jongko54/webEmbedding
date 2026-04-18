@@ -217,13 +217,30 @@ node ./bin/web-embedding.mjs clone \
   --output-dir ./.tmp/reproductions/python
 ```
 
+Workflow demo page and video:
+
+```bash
+python3 scripts/build_workflow_demo.py \
+  --case-dir ./.tmp/demo-google-20260417 \
+  --output-dir ./.tmp/workflow-demo
+
+node scripts/record_workflow_demo.mjs \
+  ./.tmp/workflow-demo \
+  ./.tmp/workflow-demo/video \
+  12000
+```
+
 Sample comparison demo:
 
 ```bash
-python3 scripts/build_sample_demo.py
+python3 scripts/build_sample_demo.py \
+  --case-dir ./.tmp/demo-google-20260417 \
+  --case-dir ./.tmp/demo-python-20260417 \
+  --output-dir ./.tmp/sample-demo
+
 node scripts/record_sample_demo.mjs \
-  /Users/jongho/workspace/webEmbedding/.tmp/sample-demo-20260417 \
-  /Users/jongho/workspace/webEmbedding/.tmp/sample-demo-20260417/video \
+  ./.tmp/sample-demo \
+  ./.tmp/sample-demo/video \
   9000
 ```
 
@@ -271,8 +288,12 @@ A GitHub Actions regression workflow now runs this corpus on pull requests and p
   Universal route and depth benchmark
 - `scripts/check_benchmark_report.py`
   Validates a benchmark report against the committed route expectations
+- `scripts/build_workflow_demo.py`
+  Builds a workflow demo page from one persisted case directory
+- `scripts/record_workflow_demo.mjs`
+  Records the workflow demo page to a Playwright `.webm` clip
 - `scripts/build_sample_demo.py`
-  Builds a side-by-side sample comparison page from persisted source/clone screenshots
+  Builds a rotating side-by-side sample comparison page from persisted case directories
 - `scripts/record_sample_demo.mjs`
   Records the sample comparison page to a Playwright `.webm` demo clip
 
