@@ -78,6 +78,7 @@ Current estimate: **88 / 100**
 - best bounded runtime benchmark: `88 / 100`
 - harder bounded rebuild sample: `61 / 100`
 - universal benchmark corpus: `4 / 4` sites classified successfully, with `2` exact-reuse and `2` bounded-rebuild outcomes
+- benchmark regression workflow now validates the committed corpus expectations on pull requests and pushes to `main`
 - exact-reuse succeeds on allowed surfaces such as `wikipedia.org` and platform-backed surfaces such as `artsupportservices.com`
 - universal routing baseline exists through `site_profile` and `route_hints`
 - `renderer_family` is now promoted into `site_profile.route_hints`, CLI output, and benchmark summaries
@@ -98,7 +99,7 @@ The remaining gaps are still generic, not cosmetic:
 - HAR export exists, but replay-grade network parity still needs work
 - app-shell / dashboard renderer family is present in bounded form, but it still needs richer panel/state reconstruction
 - canvas / WebGL visual fallback family is present in bounded form, but it still needs richer visual reconstruction
-- broader corpus benchmark CI and regression gates
+- broader corpus coverage beyond the current regression gate
 
 ## Practical reading
 

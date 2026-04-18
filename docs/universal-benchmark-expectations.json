@@ -1,0 +1,63 @@
+{
+  "summary": {
+    "exact": {
+      "total": 4,
+      "status_counts.ok": 4,
+      "surface_counts.static-document": 4,
+      "renderer_route_counts.exact-reuse": 2,
+      "renderer_route_counts.bounded-rebuild": 2,
+      "renderer_family_counts.document-next-app": 4,
+      "acquisition_profile_counts.static-first": 4,
+      "route_quality_counts.complete": 4
+    },
+    "absent_or_zero": [
+      "status_counts.error",
+      "profile_warning_counts.missing_primary_surface",
+      "profile_warning_counts.missing_acquisition_profile",
+      "profile_warning_counts.missing_renderer_route",
+      "profile_warning_counts.missing_critical_depths"
+    ]
+  },
+  "items": {
+    "https://www.example.com": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "document-next-app"
+      }
+    },
+    "https://www.wikipedia.org": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "document-next-app"
+      }
+    },
+    "https://www.python.org": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app"
+      }
+    },
+    "https://www.google.com": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app"
+      }
+    }
+  }
+}

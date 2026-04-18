@@ -236,6 +236,14 @@ python3 scripts/benchmark_routes.py \
   --capture
 ```
 
+Regression check for the committed corpus expectations:
+
+```bash
+python3 scripts/check_benchmark_report.py \
+  --report ./.tmp/universal-benchmark/universal-route-report.json \
+  --expectations docs/universal-benchmark-expectations.json
+```
+
 ## Benchmark Corpus
 
 This repo now includes a small generic benchmark list:
@@ -245,6 +253,7 @@ This repo now includes a small generic benchmark list:
 It is intentionally small, public, and generic so route/depth regressions are easy to spot.
 The benchmark report now also exposes `route_quality_counts` and `depth_presence_counts` so generic capture depth changes are easier to regression-test.
 It now also exposes `renderer_family_counts`.
+A GitHub Actions regression workflow now runs this corpus on pull requests and pushes to `main`, then validates the generated report against `docs/universal-benchmark-expectations.json`.
 
 ## Repo Layout
 
@@ -260,6 +269,8 @@ It now also exposes `renderer_family_counts`.
   Release artifact builder
 - `scripts/benchmark_routes.py`
   Universal route and depth benchmark
+- `scripts/check_benchmark_report.py`
+  Validates a benchmark report against the committed route expectations
 - `scripts/build_sample_demo.py`
   Builds a side-by-side sample comparison page from persisted source/clone screenshots
 - `scripts/record_sample_demo.mjs`
@@ -280,7 +291,7 @@ The most important remaining work is still generic, not platform-specific:
 - replay-grade HAR/network parity
 - `app-shell / dashboard` renderer family, now present in bounded form but still needing richer panel/state reconstruction
 - `canvas / WebGL` fallback renderer family, now present in bounded form but still needing richer visual reconstruction
-- broader corpus regression CI
+- broader corpus coverage beyond the current regression gate
 
 ## Product Positioning
 

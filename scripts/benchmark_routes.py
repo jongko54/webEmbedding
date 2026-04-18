@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 from collections import Counter
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "run": {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "tool": "webEmbedding universal route benchmark",
             "timeout_seconds": args.timeout_seconds,
             "capture": bool(args.capture),

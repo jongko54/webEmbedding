@@ -1,0 +1,46 @@
+name: Benchmark Regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+jobs:
+  universal-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run universal benchmark corpus
+        run: |
+          python scripts/benchmark_routes.py \
+            --urls-file docs/universal-benchmark-corpus.txt \
+            --out ./.tmp/universal-benchmark
+
+      - name: Validate benchmark expectations
+        run: |
+          python scripts/check_benchmark_report.py \
+            --report ./.tmp/universal-benchmark/universal-route-report.json \
+            --expectations docs/universal-benchmark-expectations.json
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-benchmark-report-py${{ matrix.python-version }}
+          path: ./.tmp/universal-benchmark/universal-route-report.json
+          if-no-files-found: ignore
