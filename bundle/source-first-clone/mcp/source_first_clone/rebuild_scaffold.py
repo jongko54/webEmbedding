@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -344,14 +345,58 @@ def _select_representative_blocks(
     )
 
     selected: list[dict[str, Any]] = []
+    selected_keys: set[tuple[int, int, int, int, str]] = set()
     occupied_bands: set[int] = set()
+
+    def selected_key(block: dict[str, Any]) -> tuple[int, int, int, int, str]:
+        rect = block.get("rect", {}) if isinstance(block.get("rect"), dict) else {}
+        return (
+            int(rect.get("x") or 0),
+            int(rect.get("y") or 0),
+            int(rect.get("width") or 0),
+            int(rect.get("height") or 0),
+            _clean_text(block.get("text"), 140) or str(block.get("tag") or "div").lower(),
+        )
+
+    def add_selected(block: dict[str, Any]) -> bool:
+        key = selected_key(block)
+        if key in selected_keys:
+            return False
+        selected.append(block)
+        selected_keys.add(key)
+        return True
+
+    def styles_for(block: dict[str, Any]) -> dict[str, Any]:
+        return block.get("styles", {}) if isinstance(block.get("styles", {}), dict) else {}
+
+    for field in ("display", "fontSize"):
+        values = [
+            str(styles_for(item["block"]).get(field) or "").strip()
+            for item in candidates
+            if isinstance(item.get("block"), dict)
+        ]
+        counts = Counter(value for value in values if value)
+        for value, _count in sorted(counts.items(), key=lambda pair: (pair[1], pair[0]))[:3]:
+            match = next(
+                (
+                    item["block"]
+                    for item in candidates
+                    if str(styles_for(item["block"]).get(field) or "").strip() == value
+                ),
+                None,
+            )
+            if isinstance(match, dict):
+                add_selected(match)
+            if len(selected) >= max(2, min(limit // 2, 6)):
+                break
+
     for item in candidates:
         block = item["block"]
         rect = block.get("rect", {}) if isinstance(block.get("rect"), dict) else {}
         band = int((int(rect.get("y") or 0) / max(viewport_height, 1)) * 8)
         if band in occupied_bands and len(selected) >= max(limit // 2, 4):
             continue
-        selected.append(block)
+        add_selected(block)
         occupied_bands.add(band)
         if len(selected) >= limit:
             break
@@ -498,6 +543,18 @@ def _collect_unique(values: list[str | None], limit: int = 4) -> list[str]:
         if len(unique) >= limit:
             break
     return unique
+
+
+def _collect_frequent(values: list[str | None], limit: int = 4) -> list[str]:
+    cleaned_values = [" ".join(str(value).split()) for value in values if value]
+    counts = Counter(value for value in cleaned_values if value)
+    return [
+        value
+        for value, _count in sorted(
+            counts.items(),
+            key=lambda pair: (-pair[1], cleaned_values.index(pair[0])),
+        )[:limit]
+    ]
 
 
 def _build_long_copy(values: list[Any], fallback: str, *, limit: int = 10, min_length: int = 112) -> str:
@@ -904,11 +961,11 @@ def _derive_typography(style_entries: list[dict[str, Any]]) -> dict[str, Any]:
         line_heights.append(styles.get("lineHeight"))
         letter_spacings.append(styles.get("letterSpacing"))
     return {
-        "fonts": _collect_unique(fonts, limit=3),
-        "sizes": _collect_unique(sizes, limit=4),
-        "weights": _collect_unique(weights, limit=4),
-        "line_heights": _collect_unique(line_heights, limit=4),
-        "letter_spacings": _collect_unique(letter_spacings, limit=4),
+        "fonts": _collect_frequent(fonts, limit=3),
+        "sizes": _collect_frequent(sizes, limit=4),
+        "weights": _collect_frequent(weights, limit=4),
+        "line_heights": _collect_frequent(line_heights, limit=4),
+        "letter_spacings": _collect_frequent(letter_spacings, limit=4),
     }
 
 
@@ -957,7 +1014,7 @@ def _derive_style_tokens(style_entries: list[dict[str, Any]]) -> dict[str, list[
         token_values["justify_contents"].append(styles.get("justifyContent"))
         token_values["align_items"].append(styles.get("alignItems"))
         token_values["flex_directions"].append(styles.get("flexDirection"))
-    return {key: _collect_unique(values, limit=4) for key, values in token_values.items()}
+    return {key: _collect_frequent(values, limit=4) for key, values in token_values.items()}
 
 
 def _collect_url_values(values: list[str | None], limit: int = 8) -> list[str]:
@@ -1537,6 +1594,20 @@ def _viewport_side(summary: dict[str, Any], key: str, fallback: int) -> int:
     return max(value, 1)
 
 
+def _document_height_from_blocks(blocks: list[dict[str, Any]], viewport_height: int) -> int:
+    max_bottom = viewport_height
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
+        try:
+            bottom = int(rect.get("y") or 0) + int(rect.get("height") or 0)
+        except (TypeError, ValueError):
+            continue
+        max_bottom = max(max_bottom, bottom)
+    return max(max_bottom, viewport_height)
+
+
 def _block_rect_value(block: dict[str, Any], key: str) -> int:
     rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
     try:
@@ -1557,6 +1628,8 @@ def _infer_section_role(
     height = _block_rect_value(block, "height")
     y = _block_rect_value(block, "y")
 
+    if tag == "footer":
+        return "footer"
     if tag in {"header", "nav"}:
         return "masthead"
     if y <= max(120, viewport_height // 8) and width >= int(viewport_width * 0.45) and height <= max(96, viewport_height // 8):
@@ -1663,6 +1736,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
     viewport_width = _viewport_side(summary, "width", 1440)
     viewport_height = _viewport_side(summary, "height", 1200)
+    document_height = max(int(summary.get("documentHeight") or viewport_height), viewport_height)
     interaction_labels = {
         _clean_text(entry.get("text"), 56).lower()
         for entry in interactions
@@ -1826,14 +1900,34 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     )
     surface_class = str(summary.get("surface_class") or "").lower()
     app_shell_mode = surface_class in {"js-app-shell-surface", "authenticated-app-surface", "frame-blocked-app-surface"}
-    hero_section = next(
-        (
-            section
-            for section in section_cards
-            if section.get("tag") == "form" and section.get("role") in {"hero", "band", "content"}
-        ),
-        next((section for section in section_cards if section.get("role") == "hero"), section_cards[0]),
-    )
+    long_document = document_height > int(viewport_height * 1.35)
+    if long_document:
+        hero_section = next(
+            (
+                section
+                for section in section_cards
+                if section.get("role") == "hero"
+                and str(section.get("tag") or "").lower() in {"main", "section", "article"}
+            ),
+            next(
+                (
+                    section
+                    for section in section_cards
+                    if section.get("role") == "hero"
+                    and _rect_dict(section.get("rect")).get("y", 0) >= int(viewport_height * 0.3)
+                ),
+                next((section for section in section_cards if section.get("role") == "hero"), section_cards[0]),
+            ),
+        )
+    else:
+        hero_section = next(
+            (
+                section
+                for section in section_cards
+                if section.get("tag") == "form" and section.get("role") in {"hero", "band", "content"}
+            ),
+            next((section for section in section_cards if section.get("role") == "hero"), section_cards[0]),
+        )
     masthead_section = next((section for section in section_cards if section.get("role") == "masthead"), None)
     hero_title = hero_section.get("title") or str(summary.get("title") or "Captured reference")
     if _generic_section_title(str(hero_title)):
@@ -1841,7 +1935,8 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     hero_copy = hero_section.get("copy") or str(subtitle)
     if hero_copy == "Captured layout block derived from the source page structure.":
         hero_copy = str(subtitle)
-    layout_mode = "app-shell" if app_shell_mode else ("centered-focus" if str(hero_section.get("tag") or "").lower() in {"form", "main"} else "structured-grid")
+    centered_focus_candidate = str(hero_section.get("tag") or "").lower() in {"form", "main"} and not long_document
+    layout_mode = "app-shell" if app_shell_mode else ("centered-focus" if centered_focus_candidate else "structured-grid")
     if layout_mode == "centered-focus":
         hero_title = str(summary.get("title") or hero_title)
         hero_copy = ""
@@ -1981,20 +2076,25 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         if card.get("href")
     ][:2]
     action_items = (focus_actions or linked_action_items) if layout_mode == "centered-focus" else (linked_action_items or focus_actions)
-    footer_threshold = int(viewport_height * 0.86)
+    footer_threshold = int(max(viewport_height * 0.86, document_height * 0.72))
     footer_section = next(
-        (
-            section
-            for section in section_cards
-            if _rect_dict(section.get("rect")).get("y", 0) >= footer_threshold
-            and _rect_dict(section.get("rect")).get("width", 0) >= int(viewport_width * 0.8)
+        (section for section in section_cards if str(section.get("tag") or "").lower() == "footer" or section.get("role") == "footer"),
+        next(
+            (
+                section
+                for section in section_cards
+                if _rect_dict(section.get("rect")).get("y", 0) >= footer_threshold
+                and _rect_dict(section.get("rect")).get("width", 0) >= int(viewport_width * 0.8)
+            ),
+            None,
         ),
-        None,
     )
+    footer_top = _rect_dict(footer_section.get("rect")).get("y", 0) if isinstance(footer_section, dict) else footer_threshold
+    body_start_y = _rect_dict(hero_section.get("rect")).get("y", 0)
     footer_interactions = [
         card
         for card in interaction_cards
-        if _rect_dict(card.get("rect")).get("y", 0) >= footer_threshold
+        if _rect_dict(card.get("rect")).get("y", 0) >= footer_top
     ]
     footer_links = [
         {
@@ -2022,14 +2122,15 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         section
         for section in section_cards
         if section["id"] != hero_section["id"]
-        and section.get("role") in {"content", "band"}
-        and _rect_dict(section.get("rect")).get("y", 0) < footer_threshold
+        and section.get("role") not in {"masthead", "footer"}
+        and _rect_dict(section.get("rect")).get("y", 0) >= body_start_y
+        and _rect_dict(section.get("rect")).get("y", 0) < footer_top
     ]
     if not body_sections:
         body_sections = [
             section
             for section in section_cards
-            if section["id"] != hero_section["id"] and section.get("role") != "masthead" and _rect_dict(section.get("rect")).get("y", 0) < footer_threshold
+            if section["id"] != hero_section["id"] and section.get("role") not in {"masthead", "footer"} and _rect_dict(section.get("rect")).get("y", 0) >= body_start_y and _rect_dict(section.get("rect")).get("y", 0) < footer_top
         ] or (section_cards[1:] or section_cards[:1])
     rhythm = [
         {
@@ -2128,6 +2229,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "metaBits": meta_bits,
         "signalBits": signal_bits[:6],
         "viewport": summary.get("viewport"),
+        "documentHeight": document_height,
         "palette": {
             "text": palette.get("text"),
             "accent": palette.get("accent"),
@@ -2636,7 +2738,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    return <div {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</div>;",
             "  };",
             "  return (",
-            '    <div className="bounded-shell">',
+            '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}`}>',
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
             '        {!centeredFocus ? (',
             '          <div className="bounded-brand-block">',
@@ -2775,17 +2877,17 @@ def _render_bounded_reference_page_tsx() -> str:
             '        <div className="bounded-main">',
             '          <div className="bounded-section-grid">',
             "                {data.bodySections.map((section) => (",
-            '                  <div className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot)}>',
+            '                  <div className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot, true)}>',
             '                    <div className="bounded-card-head">',
-            '                      <p className="bounded-kicker" style={styleFromSnapshot(section.styleSnapshot)}>{section.role}</p>',
-            '                      <span className="bounded-chip bounded-chip--muted" style={styleFromSnapshot(section.styleSnapshot)}>{section.tag}</span>',
+            '                      <p className="bounded-kicker" style={styleFromSnapshot(section.styleSnapshot, true)}>{section.role}</p>',
+            '                      <span className="bounded-chip bounded-chip--muted" style={styleFromSnapshot(section.styleSnapshot, true)}>{section.tag}</span>',
             "                    </div>",
-            '                    <h2 style={styleFromSnapshot(section.styleSnapshot)}>{section.title}</h2>',
-            '                    <p className="bounded-copy" style={styleFromSnapshot(section.styleSnapshot)}>{section.copy}</p>',
+            '                    <h2 style={styleFromSnapshot(section.styleSnapshot, true)}>{section.title}</h2>',
+            '                    <p className="bounded-copy" style={styleFromSnapshot(section.styleSnapshot, true)}>{section.copy}</p>',
             '                    <div className="bounded-meta bounded-meta--inline">',
-            '                      <span className="bounded-chip" style={styleFromSnapshot(section.styleSnapshot)}>{section.meta}</span>',
+            '                      <span className="bounded-chip" style={styleFromSnapshot(section.styleSnapshot, true)}>{section.meta}</span>',
             "                      {section.details.slice(0, 3).map((detail) => (",
-            '                        <span className="bounded-chip bounded-chip--muted" key={detail} style={styleFromSnapshot(section.styleSnapshot)}>',
+            '                        <span className="bounded-chip bounded-chip--muted" key={detail} style={styleFromSnapshot(section.styleSnapshot, true)}>',
             "                          {detail}",
             "                        </span>",
             "                      ))}",
@@ -3262,13 +3364,13 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         section_cards.append(
             "\n".join(
                 [
-                    f'              <div class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>',
+                    f'              <div class="bounded-card bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{_style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)}>',
                     '                <div class="bounded-card-head">',
-                    f'                  <p class="bounded-kicker"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("role") or "content"))}</p>',
-                    f'                  <span class="bounded-chip bounded-chip--muted"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("tag") or "div"))}</span>',
+                    f'                  <p class="bounded-kicker"{_style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)}>{escape(str(section.get("role") or "content"))}</p>',
+                    f'                  <span class="bounded-chip bounded-chip--muted"{_style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)}>{escape(str(section.get("tag") or "div"))}</span>',
                     "                </div>",
-                    f'                <h2{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("title") or "Captured section"))}</h2>',
-                    f'                <p class="bounded-copy"{_style_attr_from_snapshot(section.get("styleSnapshot"))}>{escape(str(section.get("copy") or ""))}</p>',
+                    f'                <h2{_style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)}>{escape(str(section.get("title") or "Captured section"))}</h2>',
+                    f'                <p class="bounded-copy"{_style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)}>{escape(str(section.get("copy") or ""))}</p>',
                     '                <div class="bounded-meta bounded-meta--inline">',
                     *detail_bits,
                     "                </div>",
@@ -3473,7 +3575,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             '<html lang="en">',
             head_markup,
             "<body>",
-            f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else ""}">',
+            f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else (" bounded-shell--app" if app_shell_mode else " bounded-shell--document")}">',
             f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
             *(
                 []
@@ -3706,6 +3808,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
     layout_tokens = summary.get("layoutTokens", {}) if isinstance(summary, dict) else {}
     css_analysis = summary.get("cssAnalysis", {}) if isinstance(summary, dict) else {}
     body_computed = css_analysis.get("bodyComputedStyle", {}) if isinstance(css_analysis, dict) else {}
+    document_height = max(int(summary.get("documentHeight") or 0), int((summary.get("viewport") or {}).get("height") or 1200))
     base_font = (typography.get("fonts") or ["Inter, system-ui, sans-serif"])[0]
     text_color = body_computed.get("color") or palette.get("text") or "#e5e7eb"
     surface_color = body_computed.get("backgroundColor") or palette.get("surface") or "#0f172a"
@@ -3745,6 +3848,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             f"  --bounded-control-padding-inline: {control_padding_inline};",
             f"  --bounded-control-padding-block: {control_padding_block};",
             f"  --bounded-focus-shell-min-height: {focus_shell_min_height};",
+            f"  --bounded-document-min-height: {document_height}px;",
             "}",
             "",
             "* { box-sizing: border-box; }",
@@ -3762,15 +3866,23 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  max-width: 1280px;",
             "  margin: 0 auto;",
             "  padding: 40px 20px 0;",
-            "  min-height: 100vh;",
+            "  min-height: max(100vh, var(--bounded-document-min-height));",
             "  display: flex;",
             "  flex-direction: column;",
-            "  height: 100vh;",
-            "  overflow: hidden;",
+            "  overflow-x: hidden;",
+            "  overflow-y: visible;",
             "}",
             ".bounded-shell--focus {",
             "  display: grid;",
             "  grid-template-rows: auto minmax(0, 1fr) auto;",
+            "  min-height: 100vh;",
+            "  height: 100vh;",
+            "  overflow: hidden;",
+            "}",
+            ".bounded-shell--document {",
+            "  min-height: var(--bounded-document-min-height);",
+            "  height: var(--bounded-document-min-height);",
+            "  overflow: hidden;",
             "}",
             ".bounded-shell--focus .bounded-panel {",
             "  border: 0;",
@@ -3859,10 +3971,14 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             ".bounded-main {",
             "  min-width: 0;",
             "  min-height: 0;",
-            "  max-height: 100%;",
-            "  overflow: auto;",
+            "  overflow: visible;",
             "  padding-right: 4px;",
             "}",
+            ".bounded-shell--document .bounded-section-grid { display: block; }",
+            ".bounded-shell--document .bounded-card { margin-bottom: 18px; }",
+            ".bounded-shell--document .bounded-card, .bounded-shell--document .bounded-mini-card { height: auto !important; min-height: 0 !important; max-height: none !important; }",
+            ".bounded-shell--document .bounded-nav, .bounded-shell--document .bounded-meta, .bounded-shell--document .bounded-hero-actions { display: block; }",
+            ".bounded-shell--document .bounded-chip, .bounded-shell--document .bounded-cta { display: inline-block; }",
             ".bounded-telemetry {",
             "  position: absolute !important;",
             "  width: 1px;",
@@ -4320,8 +4436,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         style_entries = []
     viewport_width = int(session_request.get("viewport_width") or 1440)
     viewport_height = int(session_request.get("viewport_height") or 1200)
+    style_blocks = _collect_style_blocks(style_entries)
+    document_height = _document_height_from_blocks(style_blocks, viewport_height)
     blocks = _select_representative_blocks(
-        _collect_style_blocks(style_entries),
+        style_blocks,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
     )
@@ -4469,6 +4587,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "width": viewport_width,
             "height": viewport_height,
         },
+        "documentHeight": document_height,
         "signals": {
             "dom_available": bool(dom_capture.get("available")),
             "styles_available": bool(styles_capture.get("available")),

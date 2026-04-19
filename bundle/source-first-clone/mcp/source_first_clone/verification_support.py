@@ -1539,6 +1539,20 @@ def _build_message(
     return " ".join(parts)
 
 
+def _dom_node_is_verification_chrome(node: dict[str, Any]) -> bool:
+    class_name = _clean_text(node.get("className"))
+    if "bounded-runtime-materialization" in class_name or "bounded-telemetry" in class_name:
+        return True
+    attributes = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+    attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+    merged = {**attributes, **attrs}
+    return any(
+        str(key).lower() == "data-web-embedding-ignore-interactions"
+        or str(key).lower() == "data-web-embedding-diagnostic"
+        for key in merged
+    )
+
+
 def _dom_stats(content: Any) -> dict[str, Any]:
     if not isinstance(content, dict):
         return {
@@ -1578,6 +1592,8 @@ def _dom_stats(content: Any) -> dict[str, Any]:
                     sample_texts.append(text[:80])
             return
         if node_type == "element":
+            if _dom_node_is_verification_chrome(node):
+                return
             node_count += 1
             tag = str(node.get("tag") or "").lower()
             if tag:

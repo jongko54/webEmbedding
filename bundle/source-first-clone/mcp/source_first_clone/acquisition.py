@@ -2505,6 +2505,33 @@ function isSafeToggleCandidate(candidate) {
   return false;
 }
 
+async function captureAccessibilitySnapshot(context, page) {
+  if (page.accessibility && typeof page.accessibility.snapshot === "function") {
+    const tree = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+    if (tree) {
+      return tree;
+    }
+  }
+  if (!context || typeof context.newCDPSession !== "function") {
+    return null;
+  }
+  try {
+    const session = await context.newCDPSession(page);
+    const result = await session.send("Accessibility.getFullAXTree");
+    await session.detach().catch(() => {});
+    if (result && Array.isArray(result.nodes)) {
+      return {
+        role: "AXTree",
+        name: "Chrome DevTools Protocol full accessibility tree",
+        nodes: result.nodes,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 (async () => {
   let browser = null;
   let context = null;
@@ -3059,9 +3086,7 @@ function isSafeToggleCandidate(candidate) {
 
     const html = captureHtml ? await page.content() : null;
     const screenshotBytes = captureScreenshot ? await page.screenshot({ fullPage: true, type: "png" }) : null;
-    const accessibilityTree = page.accessibility && typeof page.accessibility.snapshot === "function"
-      ? await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null)
-      : null;
+    const accessibilityTree = await captureAccessibilitySnapshot(context, page);
     const domSnapshotPayload = await page.evaluate(() => {
       function safeFrameDocument(element) {
         if (!element || !element.tagName || element.tagName.toLowerCase() !== "iframe") {
