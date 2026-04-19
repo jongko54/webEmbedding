@@ -23,6 +23,7 @@
     "bundle",
     "python",
     "scripts/bootstrap.sh",
+    "scripts/check_demo_root_interaction_parity.py",
     "scripts/release_bundle.py",
     "README.md",
     "LICENSE"
@@ -31,7 +32,8 @@
     "install:local": "node ./bin/web-embedding.mjs install",
     "doctor": "node ./bin/web-embedding.mjs doctor",
     "uninstall:local": "node ./bin/web-embedding.mjs uninstall",
-    "pack:release": "python3 ./scripts/release_bundle.py"
+    "pack:release": "python3 ./scripts/release_bundle.py",
+    "check:root-parity:local": "python3 ./scripts/check_demo_root_interaction_parity.py"
   },
   "dependencies": {
     "playwright-core": "^1.59.1"

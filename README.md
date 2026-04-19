@@ -133,6 +133,7 @@ Current frame/shadow status:
 - structure discovery works
 - local mixed-surface replay works across document, frame, and open shadow roots
 - root-aware interaction verification now scores `frame_url_overlap` and `surface_index_overlap`
+- local fixture parity can be checked with `npm run check:root-parity:local` when `.tmp/frame-shadow-fixture-smoke*` artifacts exist
 - arbitrary real-site frame/shadow parity is improved but not fully closed yet
 
 ## Scores

@@ -115,6 +115,39 @@ def should_reuse_direct_iframe(final_url: str, platform: str | None) -> bool:
     return True
 
 
+def _prompt_clean_text(value: Any, limit: int = 120) -> str:
+    text = " ".join(str(value or "").replace("\n", " ").split())
+    return text[:limit]
+
+
+def _prompt_root_surface(root_context: Any) -> str:
+    if not isinstance(root_context, dict):
+        return ""
+    kind = _prompt_clean_text(root_context.get("kind"), 40) or "document"
+    frame_src = _prompt_clean_text(root_context.get("frameSrc"), 120)
+    frame_url = _prompt_clean_text(root_context.get("frameUrl"), 120)
+    shadow_host = _prompt_clean_text(root_context.get("shadowHostTag"), 48)
+    surface_index = root_context.get("surfaceIndex")
+    root_path = root_context.get("rootPath") if isinstance(root_context.get("rootPath"), list) else []
+    parts = [kind]
+    if shadow_host:
+        parts.append(f"shadow host {shadow_host}")
+    elif frame_src:
+        parts.append(f"frame {frame_src}")
+    elif frame_url and kind != "document":
+        parts.append(f"frame {frame_url}")
+    if isinstance(surface_index, int):
+        parts.append(f"surface {surface_index}")
+    path_label = " > ".join(
+        part
+        for part in (_prompt_clean_text(item, 56) for item in root_path[:4])
+        if part
+    )
+    if path_label and path_label != "document":
+        parts.append(f"path {path_label}")
+    return " / ".join(parts)
+
+
 def collect_reuse_candidates(capture_bundle: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -458,6 +491,9 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                 ]
                 if value
             ).strip()
+            surface = _prompt_root_surface(entry.get("rootContext"))
+            if surface:
+                descriptor = f"{descriptor} [{surface}]" if descriptor else f"[{surface}]"
             if changed_states:
                 prompt_lines.append(f"- {descriptor}: {'; '.join(changed_states)}")
             elif descriptor:
@@ -476,6 +512,9 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                 f"scrollY={step.get('scrollY')}" if step.get("kind") == "scroll" and step.get("scrollY") is not None else "",
                 f"value=\"{step.get('value')}\"" if step.get("kind") == "type" and step.get("value") else "",
             ]
+            surface = _prompt_root_surface(step.get("rootContext"))
+            if surface:
+                parts.append(f"surface={surface}")
             descriptor = " ".join(part for part in parts if part)
             if descriptor:
                 prompt_lines.append(f"- {descriptor}")

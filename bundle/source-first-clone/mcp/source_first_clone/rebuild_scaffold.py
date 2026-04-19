@@ -1328,6 +1328,34 @@ def _render_tsx(summary: dict[str, Any]) -> str:
     )
 
 
+def _prompt_root_surface(root_context: Any) -> str:
+    if not isinstance(root_context, dict):
+        return ""
+    kind = _clean_text(root_context.get("kind"), 40) or "document"
+    frame_src = _clean_text(root_context.get("frameSrc"), 120)
+    frame_url = _clean_text(root_context.get("frameUrl"), 120)
+    shadow_host = _clean_text(root_context.get("shadowHostTag"), 48)
+    surface_index = root_context.get("surfaceIndex")
+    root_path = root_context.get("rootPath") if isinstance(root_context.get("rootPath"), list) else []
+    parts = [kind]
+    if shadow_host:
+        parts.append(f"shadow host {shadow_host}")
+    elif frame_src:
+        parts.append(f"frame {frame_src}")
+    elif frame_url and kind != "document":
+        parts.append(f"frame {frame_url}")
+    if isinstance(surface_index, int):
+        parts.append(f"surface {surface_index}")
+    path_label = " > ".join(
+        part
+        for part in (_clean_text(item, 56) for item in root_path[:4])
+        if part
+    )
+    if path_label and path_label != "document":
+        parts.append(f"path {path_label}")
+    return " / ".join(parts)
+
+
 def _render_prompt(summary: dict[str, Any]) -> str:
     visual_fallback = summary.get("visual_fallback", {}) if isinstance(summary, dict) else {}
     lines = [
@@ -1359,6 +1387,40 @@ def _render_prompt(summary: dict[str, Any]) -> str:
             text = block.get("text") or ""
             size = block.get("rect", {})
             lines.append(f"- {label} {size.get('width', 0)}x{size.get('height', 0)} {text}".strip())
+    interaction_summary = summary.get("interactions", {}) if isinstance(summary, dict) else {}
+    interaction_sample = interaction_summary.get("sample", []) if isinstance(interaction_summary, dict) else []
+    if interaction_sample:
+        lines.append("Interaction root/surface sample:")
+        for entry in interaction_sample[:6]:
+            if not isinstance(entry, dict):
+                continue
+            descriptor = " ".join(
+                part
+                for part in [
+                    _clean_text(entry.get("tag"), 24),
+                    _clean_text(entry.get("role"), 40),
+                    _clean_text(entry.get("text") or entry.get("label"), 80),
+                ]
+                if part
+            )
+            surface = _prompt_root_surface(entry.get("rootContext"))
+            lines.append(f"- {descriptor or 'interactive element'} [{surface or 'document'}]")
+    trace_sample = interaction_summary.get("traceSample", []) if isinstance(interaction_summary, dict) else []
+    if trace_sample:
+        lines.append("Replay trace root/surface sample:")
+        for step in trace_sample[:6]:
+            if not isinstance(step, dict):
+                continue
+            descriptor = " ".join(
+                part
+                for part in [
+                    _clean_text(step.get("kind"), 24),
+                    _clean_text(step.get("label") or step.get("targetId") or step.get("selector"), 80),
+                ]
+                if part
+            )
+            surface = _prompt_root_surface(step.get("rootContext"))
+            lines.append(f"- {descriptor or 'trace step'} [{surface or 'document'}]")
     return "\n".join(lines)
 
 
@@ -2180,6 +2242,8 @@ def _build_runtime_materialization(summary: dict[str, Any], app_model: dict[str,
     reconstruction = app_model.get("reconstruction", {}) if isinstance(app_model, dict) else {}
     meta_bits = app_model.get("metaBits", []) if isinstance(app_model.get("metaBits", []), list) else []
     signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
+    interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
+    interaction_trace = app_model.get("interactionTrace", []) if isinstance(app_model.get("interactionTrace", []), list) else []
 
     stylesheet_urls = list(asset_manifest.get("stylesheets", [])[:3]) if isinstance(asset_manifest.get("stylesheets", []), list) else []
     while len(stylesheet_urls) < 3:
@@ -2225,6 +2289,22 @@ def _build_runtime_materialization(summary: dict[str, Any], app_model: dict[str,
         ],
         "Runtime dialog placeholder carrying verification and repair metadata for bounded reconstruction",
     )
+    trace_text = _build_long_copy(
+        [
+            *(
+                f"{entry.get('label')} {entry.get('surface')}"
+                for entry in interaction_trace
+                if isinstance(entry, dict)
+            ),
+            *(
+                f"{entry.get('label')} {_prompt_root_surface(entry.get('rootContext'))}"
+                for entry in interactions
+                if isinstance(entry, dict)
+            ),
+        ],
+        "interaction replay trace rootContext document frame-document shadow-root surface sample",
+        min_length=64,
+    )
     popup_text = _build_long_copy(
         [
             next(
@@ -2263,6 +2343,7 @@ def _build_runtime_materialization(summary: dict[str, Any], app_model: dict[str,
         {"slot": "body-runtime-1", "content": json.dumps({"kind": "search", "text": search_text}, ensure_ascii=False)},
         {"slot": "body-runtime-2", "content": json.dumps({"kind": "footer", "text": footer_text}, ensure_ascii=False)},
         {"slot": "body-runtime-3", "content": json.dumps({"kind": "dialog", "text": dialog_text}, ensure_ascii=False)},
+        {"slot": "body-runtime-4", "content": json.dumps({"kind": "interaction-trace", "text": trace_text}, ensure_ascii=False)},
     ]
     body_styles = [
         ".bounded-runtime-copy{display:block;color:inherit;font:inherit;line-height:inherit;letter-spacing:inherit;text-align:inherit;text-transform:inherit;white-space:normal;}",
@@ -2287,6 +2368,7 @@ def _build_runtime_materialization(summary: dict[str, Any], app_model: dict[str,
         "searchText": search_text,
         "footerText": footer_text,
         "dialogText": dialog_text,
+        "traceText": trace_text,
         "popupText": popup_text,
         "surfaceColor": surface_color,
         "focusSurface": focus_surface,
@@ -2728,6 +2810,12 @@ def _render_bounded_reference_page_tsx() -> str:
             "                          </span>",
             "                        ))}",
             "                      </div>",
+            '                      <div className="bounded-meta bounded-meta--inline">',
+            '                        {entry.rootContext?.kind ? <span className="bounded-chip bounded-chip--muted">{entry.rootContext.kind}</span> : null}',
+            '                        {typeof entry.rootContext?.surfaceIndex === "number" ? <span className="bounded-chip bounded-chip--muted">surface {entry.rootContext.surfaceIndex}</span> : null}',
+            '                        {entry.rootContext?.shadowHostTag ? <span className="bounded-chip bounded-chip--muted">shadow {entry.rootContext.shadowHostTag}</span> : null}',
+            '                        {entry.rootContext?.frameUrl ? <span className="bounded-chip bounded-chip--muted">frame</span> : null}',
+            "                      </div>",
             "                    </div>",
             "                  ))",
             "                ) : (",
@@ -2736,6 +2824,25 @@ def _render_bounded_reference_page_tsx() -> str:
             "                    <p>Interaction data was not available in the capture bundle.</p>",
             "                  </div>",
             "                )}",
+            "              </div>",
+            "            </div>",
+            "          ) : null}",
+            "          {!centeredFocus && data.interactionTrace?.length ? (",
+            '            <div className="bounded-panel bounded-stack bounded-visible-interactions">',
+            '              <p className="bounded-kicker">Replay trace surfaces</p>',
+            '              <div className="bounded-stack bounded-control-grid">',
+            "                {data.interactionTrace.slice(0, 8).map((entry) => (",
+            '                  <div className="bounded-mini-card" key={entry.id}>',
+            '                    <strong>{entry.label}</strong>',
+            '                    <p>{entry.surface}</p>',
+            '                    <div className="bounded-meta bounded-meta--inline">',
+            '                      {entry.rootContext?.kind ? <span className="bounded-chip bounded-chip--muted">{entry.rootContext.kind}</span> : null}',
+            '                      {typeof entry.rootContext?.surfaceIndex === "number" ? <span className="bounded-chip bounded-chip--muted">surface {entry.rootContext.surfaceIndex}</span> : null}',
+            '                      {entry.rootContext?.shadowHostTag ? <span className="bounded-chip bounded-chip--muted">shadow {entry.rootContext.shadowHostTag}</span> : null}',
+            '                      {entry.rootContext?.rootPath?.length ? <span className="bounded-chip bounded-chip--muted">{entry.rootContext.rootPath.slice(0, 2).join(" > ")}</span> : null}',
+            "                    </div>",
+            "                  </div>",
+            "                ))}",
             "              </div>",
             "            </div>",
             "          ) : null}",
@@ -3208,6 +3315,16 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         state_bits = []
         for state in (entry.get("states", [])[:3] if isinstance(entry.get("states", []), list) else []):
             state_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">{escape(str(state))}</span>')
+        root_context = entry.get("rootContext") if isinstance(entry.get("rootContext"), dict) else {}
+        root_bits = []
+        if root_context.get("kind"):
+            root_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">{escape(str(root_context.get("kind")))}</span>')
+        if isinstance(root_context.get("surfaceIndex"), int):
+            root_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">surface {escape(str(root_context.get("surfaceIndex")))}</span>')
+        if root_context.get("shadowHostTag"):
+            root_bits.append(f'                      <span class="bounded-chip bounded-chip--muted">shadow {escape(str(root_context.get("shadowHostTag")))}</span>')
+        if root_context.get("frameUrl"):
+            root_bits.append('                      <span class="bounded-chip bounded-chip--muted">frame</span>')
         interaction_cards.append(
             "\n".join(
                 [
@@ -3217,6 +3334,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     render_interaction_control(entry),
                     '                  <div class="bounded-meta bounded-meta--inline">',
                     *(state_bits or ['                      <span class="bounded-chip bounded-chip--muted">interaction detected</span>']),
+                    "                  </div>",
+                    '                  <div class="bounded-meta bounded-meta--inline">',
+                    *root_bits,
                     "                  </div>",
                     "                </div>",
                 ]
@@ -3230,6 +3350,37 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     "                  <strong>No sampled interactions</strong>",
                     "                  <p>Interaction data was not available in the capture bundle.</p>",
                     "                </div>",
+                ]
+            )
+        )
+
+    trace_cards = []
+    interaction_trace = app_model.get("interactionTrace", []) if isinstance(app_model.get("interactionTrace", []), list) else []
+    for entry in interaction_trace[:8]:
+        if not isinstance(entry, dict):
+            continue
+        root_context = entry.get("rootContext") if isinstance(entry.get("rootContext"), dict) else {}
+        root_bits = []
+        if root_context.get("kind"):
+            root_bits.append(f'                    <span class="bounded-chip bounded-chip--muted">{escape(str(root_context.get("kind")))}</span>')
+        if isinstance(root_context.get("surfaceIndex"), int):
+            root_bits.append(f'                    <span class="bounded-chip bounded-chip--muted">surface {escape(str(root_context.get("surfaceIndex")))}</span>')
+        if root_context.get("shadowHostTag"):
+            root_bits.append(f'                    <span class="bounded-chip bounded-chip--muted">shadow {escape(str(root_context.get("shadowHostTag")))}</span>')
+        root_path = root_context.get("rootPath") if isinstance(root_context.get("rootPath"), list) else []
+        path_label = " > ".join(str(part) for part in root_path[:2] if part)
+        if path_label:
+            root_bits.append(f'                    <span class="bounded-chip bounded-chip--muted">{escape(path_label)}</span>')
+        trace_cards.append(
+            "\n".join(
+                [
+                    '              <div class="bounded-mini-card">',
+                    f'                <strong>{escape(str(entry.get("label") or "Trace step"))}</strong>',
+                    f'                <p>{escape(str(entry.get("surface") or "document"))}</p>',
+                    '                <div class="bounded-meta bounded-meta--inline">',
+                    *root_bits,
+                    "                </div>",
+                    "              </div>",
                 ]
             )
         )
@@ -3411,6 +3562,18 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                     '          <p class="bounded-kicker">Interaction samples</p>',
                     '          <div class="bounded-stack bounded-control-grid">',
                     *interaction_cards,
+                    "          </div>",
+                    "        </div>",
+                ]
+            ),
+            *(
+                []
+                if centered_focus or not trace_cards
+                else [
+                    '        <div class="bounded-panel bounded-stack bounded-visible-interactions">',
+                    '          <p class="bounded-kicker">Replay trace surfaces</p>',
+                    '          <div class="bounded-stack bounded-control-grid">',
+                    *trace_cards,
                     "          </div>",
                     "        </div>",
                 ]
