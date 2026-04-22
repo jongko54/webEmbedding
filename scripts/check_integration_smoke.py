@@ -714,6 +714,11 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
     missing = [str(path) for path in expected_files if not path.exists()]
     if missing:
         raise AssertionError(f"clone smoke is missing expected artifacts: {missing}")
+    embed_html = (output_dir / "reproduction" / "embed.html").read_text()
+    if '<meta charset="utf-8"' not in embed_html:
+        raise AssertionError("exact embed HTML is missing an explicit UTF-8 charset")
+    if "margin:0" not in embed_html or "<iframe" not in embed_html:
+        raise AssertionError("exact embed HTML should render a full-viewport iframe without default body margin")
     persisted_verification = load_json(output_dir / "reproduction" / "exact-reuse-verification.json")
     if persisted_verification.get("status") != verification.get("status"):
         raise AssertionError("persisted exact-reuse verification status did not match CLI payload")

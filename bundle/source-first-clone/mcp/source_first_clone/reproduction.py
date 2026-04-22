@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -241,21 +242,44 @@ def choose_exact_reuse_candidate(candidates: list[dict[str, Any]]) -> dict[str, 
 
 
 def build_embed_snippets(url: str, title: str) -> dict[str, str]:
+    html_url = escape(url, quote=True)
+    html_title = escape(title, quote=True)
     html = (
-        f'<iframe src="{url}" title="{title}" '
+        f'<iframe src="{html_url}" title="{html_title}" '
         'style="display:block;width:100%;height:100vh;border:0" allow="fullscreen"></iframe>'
     )
     nextjs = "\n".join(
         [
             "<iframe",
-            f'  src="{url}"',
-            f'  title="{title}"',
+            f'  src="{html_url}"',
+            f'  title="{html_title}"',
             '  allow="fullscreen"',
             '  style={{ display: "block", width: "100%", height: "100vh", border: 0 }}',
             "/>",
         ]
     )
     return {"html": html, "nextjs": nextjs}
+
+
+def build_embed_html_document(url: str, title: str) -> str:
+    iframe = build_embed_snippets(url, title)["html"]
+    html_title = escape(title or "Embedded reference", quote=False)
+    return "\n".join(
+        [
+            "<!doctype html>",
+            '<html lang="en">',
+            "<head>",
+            '  <meta charset="utf-8" />',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
+            f"  <title>{html_title}</title>",
+            "  <style>html,body{margin:0;width:100%;height:100%;overflow:hidden;}</style>",
+            "</head>",
+            "<body>",
+            f"  {iframe}",
+            "</body>",
+            "</html>",
+        ]
+    )
 
 
 def _compare_exact_reuse_candidate(
@@ -837,6 +861,7 @@ def build_reproduction_bundle(
             "kind": exact_candidate["kind"],
             "source": exact_candidate["source"],
             "url": exact_candidate["url"],
+            "title": title,
             "snippets": snippets,
             "verification": build_exact_reuse_verification(capture_bundle, exact_candidate),
         }
@@ -936,7 +961,10 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
     if isinstance(exact_reuse, dict):
         snippets = exact_reuse.get("snippets", {})
         html_path = reproduction_dir / "embed.html"
-        html_path.write_text(snippets.get("html", "") + "\n")
+        embed_url = str(exact_reuse.get("url") or "")
+        embed_title = str((exact_reuse.get("title") or result.get("title") or "Embedded reference"))
+        html_document = build_embed_html_document(embed_url, embed_title) if embed_url else snippets.get("html", "")
+        html_path.write_text(html_document.rstrip() + "\n")
         persisted["embed_html"] = str(html_path)
 
         nextjs_path = reproduction_dir / "embed.tsx"
