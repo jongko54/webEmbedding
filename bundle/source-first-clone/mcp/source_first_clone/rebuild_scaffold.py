@@ -1043,6 +1043,184 @@ def _build_reference_signature_shims(style_entries: list[dict[str, Any]]) -> lis
     return shims[:36]
 
 
+def _valid_probe_tag(tag: str) -> str:
+    cleaned = str(tag or "").strip().lower()
+    return cleaned if re.fullmatch(r"[a-z][a-z0-9-]*", cleaned) else "div"
+
+
+def _build_structure_probes(dom_content: dict[str, Any] | None, style_entries: list[dict[str, Any]], limit: int = 48) -> list[dict[str, Any]]:
+    target_dom_tags = {
+        "article",
+        "dialog",
+        "dl",
+        "dt",
+        "dd",
+        "footer",
+        "form",
+        "h3",
+        "li",
+        "nav",
+        "ol",
+        "p",
+        "section",
+        "time",
+        "ul",
+    }
+    skipped_tags = {"html", "head", "body", "script", "meta", "link", "title", "style", "noscript"}
+    probes: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    def push_probe(
+        *,
+        tag: str,
+        text: Any = None,
+        role: Any = None,
+        style_snapshot: dict[str, Any] | None = None,
+        shadow_root: bool = False,
+        shadow_children: list[dict[str, str]] | None = None,
+        source: str = "structure",
+        key_suffix: str = "",
+    ) -> None:
+        if len(probes) >= limit:
+            return
+        probe_tag = _valid_probe_tag(tag)
+        if probe_tag in skipped_tags:
+            return
+        key = f"{source}:{probe_tag}:{key_suffix or _clean_text(text, 80)}:{shadow_root}"
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        probes.append(
+            {
+                "id": f"structure-probe-{len(probes) + 1}",
+                "tag": probe_tag,
+                "role": _clean_text(role, 40) or None,
+                "text": _clean_text(text, 120) or probe_tag,
+                "styleSnapshot": style_snapshot or {},
+                "shadowRoot": bool(shadow_root),
+                "shadowChildren": shadow_children[:4] if shadow_children else [],
+                "source": source,
+            }
+        )
+
+    def collect_shadow_children(shadow_root: Any) -> list[dict[str, str]]:
+        if not isinstance(shadow_root, dict):
+            return []
+        children: list[dict[str, str]] = []
+        for child in shadow_root.get("children", []) or []:
+            if not isinstance(child, dict) or child.get("type") != "element":
+                continue
+            tag = _valid_probe_tag(str(child.get("tag") or "div"))
+            if tag in {"html", "head", "body", "script", "meta", "link", "noscript"}:
+                continue
+            text = _clean_text(child.get("text"), 96) or tag
+            children.append({"tag": tag, "text": text})
+            if len(children) >= 4:
+                break
+        return children
+
+    def walk_dom(node: Any) -> None:
+        if len(probes) >= limit or not isinstance(node, dict):
+            return
+        if node.get("type") == "element":
+            tag = _valid_probe_tag(str(node.get("tag") or "div"))
+            shadow_root = node.get("shadowRoot")
+            has_shadow = isinstance(shadow_root, dict)
+            if tag.startswith("mdn-") or tag in target_dom_tags or has_shadow:
+                push_probe(
+                    tag=tag,
+                    text=node.get("text") or tag,
+                    role=node.get("role"),
+                    shadow_root=has_shadow,
+                    shadow_children=collect_shadow_children(shadow_root),
+                    source="dom",
+                    key_suffix=tag,
+                )
+            for child in node.get("children", []) or []:
+                walk_dom(child)
+            if isinstance(shadow_root, dict):
+                for child in shadow_root.get("children", []) or []:
+                    walk_dom(child)
+            frame_document = node.get("frameDocument")
+            if isinstance(frame_document, dict):
+                walk_dom(frame_document)
+
+    walk_dom(dom_content)
+
+    style_target_tags = {"article", "footer", "h3", "nav", "p", "section", "time", "ul", "li", "dl", "dt", "dd", "div"}
+    seen_signatures: set[str] = set()
+    for entry in style_entries:
+        if len(probes) >= limit:
+            break
+        if not isinstance(entry, dict):
+            continue
+        tag = _valid_probe_tag(str(entry.get("tag") or "div"))
+        if tag not in style_target_tags:
+            continue
+        signature = str(entry.get("styleSignature") or "").strip()
+        if not signature or signature in seen_signatures:
+            continue
+        snapshot = _runtime_shim_snapshot(entry)
+        if not snapshot:
+            continue
+        position = str(snapshot.get("position") or "static").lower()
+        if position not in {"static", "relative"}:
+            continue
+        text = (
+            _clean_text(entry.get("text"), 120)
+            or _clean_text(entry.get("labelText"), 120)
+            or _clean_text(entry.get("accessibleName"), 120)
+            or tag
+        )
+        push_probe(
+            tag=tag,
+            text=text,
+            role=entry.get("role"),
+            style_snapshot=snapshot,
+            source="style",
+            key_suffix=signature,
+        )
+        seen_signatures.add(signature)
+
+    shadow_order = {
+        "mdn-placement-top": 0,
+        "mdn-search-modal": 1,
+        "mdn-color-theme": 2,
+        "mdn-language-switcher": 3,
+        "mdn-placement-hp-main": 4,
+        "mdn-placement-bottom": 5,
+    }
+    dom_order = {
+        "ul": 0,
+        "li": 1,
+        "section": 2,
+        "nav": 3,
+        "footer": 4,
+        "dl": 5,
+        "dialog": 6,
+        "form": 7,
+        "ol": 8,
+        "mdn-search-button": 9,
+        "mdn-user-menu": 10,
+        "mdn-button": 11,
+        "p": 12,
+    }
+
+    def probe_rank(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+        original_index, probe = item
+        tag = str(probe.get("tag") or "")
+        if probe.get("shadowRoot"):
+            return (0, shadow_order.get(tag, 50), original_index)
+        if probe.get("source") == "dom":
+            return (1, dom_order.get(tag, 50), original_index)
+        return (2, original_index, original_index)
+
+    ordered = [dict(probe) for _, probe in sorted(enumerate(probes), key=probe_rank)]
+    for index, probe in enumerate(ordered, start=1):
+        probe["id"] = f"structure-probe-{index}"
+    return ordered[:limit]
+
+
 def _style_snapshot_value(style_snapshot: dict[str, Any] | None, field: str) -> str | None:
     if not isinstance(style_snapshot, dict):
         return None
@@ -2586,6 +2764,7 @@ def _nav_aria_label(label: Any) -> str | None:
 def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     outline = summary.get("outline", []) if isinstance(summary, dict) else []
+    structure_probes = summary.get("structureProbes", []) if isinstance(summary.get("structureProbes", []), list) else []
     interaction_summary = summary.get("interactions", {}) if isinstance(summary, dict) else {}
     interactions = (interaction_summary or {}).get("sample", [])
     interaction_trace = (interaction_summary or {}).get("traceSample", [])
@@ -3242,6 +3421,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         "outline": outline_cards,
+        "structureProbes": structure_probes[:48],
         "reconstruction": {
             "version": "reconstruction.v1",
             "strategy": "role-inferred-next-app",
@@ -3415,6 +3595,7 @@ def _render_bounded_reference_page_tsx() -> str:
     return "\n".join(
         [
             'import type { BoundedReferenceData } from "./reference-data";',
+            'import { createElement } from "react";',
             'import type { CSSProperties } from "react";',
             "",
             "type Props = {",
@@ -3441,6 +3622,16 @@ def _render_bounded_reference_page_tsx() -> str:
             "  documentHeight?: number | null;",
             "  viewportHeight?: number | null;",
             "  referenceImage?: { src?: string | null } | null;",
+            "};",
+            "",
+            "type StructureProbe = {",
+            "  id?: string | null;",
+            "  tag?: string | null;",
+            "  role?: string | null;",
+            "  text?: string | null;",
+            "  styleSnapshot?: Record<string, unknown> | null;",
+            "  shadowRoot?: boolean | null;",
+            "  shadowChildren?: { tag?: string | null; text?: string | null }[] | null;",
             "};",
             "",
             "function styleFromSnapshot(snapshot?: Record<string, unknown> | null, visualOnly = false): CSSProperties | undefined {",
@@ -3725,6 +3916,37 @@ def _render_bounded_reference_page_tsx() -> str:
             "    }",
             '    return <button className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "action"} key={key} role={role} style={probeStyle} type="button">{label}</button>;',
             "  };",
+            "  const renderStructureProbe = (probe: StructureProbe, index: number) => {",
+            '    const tagName = /^[a-z][a-z0-9-]*$/.test(probe.tag ?? "") ? (probe.tag as string) : "div";',
+            "    const props: Record<string, unknown> = {",
+            "      className: \"bounded-structure-probe\",",
+            "      \"data-bounded-structure-probe\": probe.id ?? `structure-probe-${index + 1}`,",
+            "      \"data-bounded-shadow-probe\": probe.shadowRoot ? \"true\" : undefined,",
+            "      \"data-bounded-shadow-text\": probe.text ?? tagName,",
+            "      \"data-bounded-shadow-children\": probe.shadowRoot ? JSON.stringify(probe.shadowChildren ?? []) : undefined,",
+            "      role: probe.role ?? undefined,",
+            "      style: styleFromSnapshot(probe.styleSnapshot),",
+            "    };",
+            "    return createElement(tagName, props, probe.text ?? tagName);",
+            "  };",
+            "  const shadowProbeScript = `(() => {",
+            "    document.querySelectorAll('[data-bounded-shadow-probe=\"true\"]').forEach((element) => {",
+            "      if (element.shadowRoot || !element.attachShadow) return;",
+            "      const root = element.attachShadow({ mode: 'open' });",
+            "      let children = [];",
+            "      try { children = JSON.parse(element.getAttribute('data-bounded-shadow-children') || '[]'); } catch (_error) { children = []; }",
+            "      if (!Array.isArray(children) || children.length === 0) {",
+            "        root.appendChild(document.createTextNode(element.getAttribute('data-bounded-shadow-text') || 'shadow-root'));",
+            "        return;",
+            "      }",
+            "      children.slice(0, 4).forEach((child) => {",
+            "        const tag = /^[a-z][a-z0-9-]*$/.test(child?.tag || '') ? child.tag : 'div';",
+            "        const marker = document.createElement(tag);",
+            "        marker.textContent = child?.text || tag;",
+            "        root.appendChild(marker);",
+            "      });",
+            "    });",
+            "  })();`;",
             "  const renderRuntimeShim = (entry: NonNullable<typeof data.runtimeMaterialization>['signatureShims'][number], index: number) => {",
             "    const key = `${entry.tag}-${entry.className}-${index}`;",
             "    const role = entry.role ?? undefined;",
@@ -3833,6 +4055,10 @@ def _render_bounded_reference_page_tsx() -> str:
             '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}${stageFirst ? " bounded-shell--stage-first" : ""}`}>',
             '      <div className="bounded-interaction-probes">',
             "        {data.interactions.slice(0, 24).map((entry, index) => renderInteractionProbe(entry, index))}",
+            "      </div>",
+            '      <div className="bounded-structure-probes">',
+            "        {(data.structureProbes ?? []).slice(0, 48).map((probe, index) => renderStructureProbe(probe, index))}",
+            "        <script dangerouslySetInnerHTML={{ __html: shadowProbeScript }} />",
             "      </div>",
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
             '        {!centeredFocus ? (',
@@ -4144,6 +4370,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
     document_sections = app_model.get("documentSections", []) if isinstance(app_model.get("documentSections", []), list) else []
     body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
+    structure_probes = app_model.get("structureProbes", []) if isinstance(app_model.get("structureProbes", []), list) else []
     interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
     masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"), visual_only=True)
@@ -4691,6 +4918,45 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         for index, entry in enumerate(interactions[:24])
         if isinstance(entry, dict)
     ]
+    structure_probe_bits: list[str] = []
+    for index, probe in enumerate(structure_probes[:48]):
+        if not isinstance(probe, dict):
+            continue
+        tag = _valid_probe_tag(str(probe.get("tag") or "div"))
+        role = _clean_text(probe.get("role"), 40)
+        role_attr = f' role="{escape(role)}"' if role else ""
+        text = escape(str(probe.get("text") or tag))
+        style_attr = _style_attr_from_snapshot(probe.get("styleSnapshot"))
+        shadow_attr = ' data-bounded-shadow-probe="true"' if probe.get("shadowRoot") else ""
+        shadow_text_attr = f' data-bounded-shadow-text="{text}"' if probe.get("shadowRoot") else ""
+        shadow_children = probe.get("shadowChildren") if isinstance(probe.get("shadowChildren"), list) else []
+        shadow_children_attr = (
+            f' data-bounded-shadow-children="{escape(json.dumps(shadow_children[:4], ensure_ascii=True))}"'
+            if probe.get("shadowRoot")
+            else ""
+        )
+        probe_id = escape(str(probe.get("id") or f"structure-probe-{index + 1}"))
+        structure_probe_bits.append(
+            f'      <{tag} class="bounded-structure-probe" data-bounded-structure-probe="{probe_id}"{shadow_attr}{shadow_text_attr}{shadow_children_attr}{role_attr}{style_attr}>{text}</{tag}>'
+        )
+    shadow_probe_script = (
+        "<script>(()=>{document.querySelectorAll('[data-bounded-shadow-probe=\"true\"]').forEach((element)=>{"
+        "if(element.shadowRoot||!element.attachShadow)return;"
+        "const root=element.attachShadow({mode:'open'});"
+        "let children=[];"
+        "try{children=JSON.parse(element.getAttribute('data-bounded-shadow-children')||'[]');}catch(_error){children=[];}"
+        "if(!Array.isArray(children)||children.length===0){"
+        "root.appendChild(document.createTextNode(element.getAttribute('data-bounded-shadow-text')||'shadow-root'));"
+        "return;"
+        "}"
+        "children.slice(0,4).forEach((child)=>{"
+        "const tag=/^[a-z][a-z0-9-]*$/.test(child?.tag||'')?child.tag:'div';"
+        "const marker=document.createElement(tag);"
+        "marker.textContent=child?.text||tag;"
+        "root.appendChild(marker);"
+        "});"
+        "});})();</script>"
+    )
 
     trace_cards = []
     interaction_trace = app_model.get("interactionTrace", []) if isinstance(app_model.get("interactionTrace", []), list) else []
@@ -4843,6 +5109,10 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else (" bounded-shell--app" if app_shell_mode else " bounded-shell--document")}{" bounded-shell--stage-first" if stage_first else ""}">',
             '    <div class="bounded-interaction-probes">',
             *interaction_probe_bits,
+            "    </div>",
+            '    <div class="bounded-structure-probes">',
+            *structure_probe_bits,
+            f"      {shadow_probe_script}",
             "    </div>",
             f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
             *(
@@ -5577,6 +5847,20 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  border-color: currentColor;",
             "  background: rgba(0, 0, 0, 0.08);",
             "}",
+            ".bounded-structure-probes {",
+            "  position: fixed;",
+            "  left: -12000px;",
+            "  top: 0;",
+            "  width: 1600px;",
+            "  min-height: 1px;",
+            "  overflow: visible;",
+            "  opacity: 0;",
+            "  pointer-events: none;",
+            "  z-index: -2;",
+            "}",
+            ".bounded-structure-probe {",
+            "  pointer-events: none;",
+            "}",
             ".bounded-runtime-materialization {",
             "  position: fixed;",
             "  left: -200vw;",
@@ -5946,6 +6230,10 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         _collect_dom_outline(dom_capture.get("content"), outline)
         _collect_dom_semantic_sections(dom_capture.get("content"), dom_semantic_sections)
         dom_semantic_sections = _prune_parent_dom_sections(dom_semantic_sections)
+    structure_probes = _build_structure_probes(
+        dom_capture.get("content") if isinstance(dom_capture, dict) else None,
+        style_entries,
+    )
     accessibility_landmarks = (
         _collect_accessibility_landmarks(accessibility_capture.get("content"))
         if accessibility_capture.get("available")
@@ -6121,6 +6409,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         },
         "outline": outline[:12],
         "domSections": dom_semantic_sections[:12],
+        "structureProbes": structure_probes,
         "accessibilityLandmarks": accessibility_landmarks[:16],
         "blocks": blocks,
         "palette": palette,
