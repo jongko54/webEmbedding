@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
 import re
 import shutil
 import subprocess
-import os
+import zlib
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -110,11 +112,30 @@ console.log(JSON.stringify(out));
     return report
 
 
+def _decode_response_body(raw_body: bytes, headers: dict[str, str]) -> str:
+    encoding = str(headers.get("content-encoding") or "").lower()
+    body = raw_body
+    if "gzip" in encoding:
+        try:
+            body = gzip.decompress(raw_body)
+        except OSError:
+            body = raw_body
+    elif "deflate" in encoding:
+        try:
+            body = zlib.decompress(raw_body)
+        except zlib.error:
+            try:
+                body = zlib.decompress(raw_body, -zlib.MAX_WBITS)
+            except zlib.error:
+                body = raw_body
+    return body.decode("utf-8", "ignore")
+
+
 def fetch_url(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
-    request = Request(url, headers={"User-Agent": USER_AGENT})
+    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
     with urlopen(request, timeout=timeout_seconds) as response:
-        html = response.read().decode("utf-8", "ignore")
         headers = {key.lower(): value for key, value in response.headers.items()}
+        html = _decode_response_body(response.read(), headers)
         return {
             "status": getattr(response, "status", 200),
             "final_url": response.geturl(),

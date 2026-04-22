@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -12,7 +13,7 @@ import tarfile
 import tempfile
 import threading
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -293,6 +294,33 @@ def assert_site_profile_routing_semantics() -> None:
                 raise AssertionError(
                     f"{name}: expected visual model {expected_visual_model}, got {visual_fallback.get('rendering_model')}"
                 )
+
+
+def assert_fetch_url_decodes_compressed_html() -> None:
+    from source_first_clone.acquisition import fetch_url  # noqa: PLC0415
+
+    class GzipHtmlHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            body = gzip.compress(b"<!doctype html><html><body><h1>Compressed HTML</h1></body></html>")
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-encoding", "gzip")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GzipHtmlHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = fetch_url(f"http://127.0.0.1:{server.server_port}/index.html", timeout_seconds=5)
+        if "Compressed HTML" not in payload.get("html", ""):
+            raise AssertionError("fetch_url did not decode gzip-compressed HTML")
+    finally:
+        server.shutdown()
 
 
 def assert_rebuild_scaffold_visual_semantics() -> None:
@@ -1078,6 +1106,7 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
 def main() -> int:
     root = repo_root()
     assert_exact_ready_semantics(root)
+    assert_fetch_url_decodes_compressed_html()
     assert_site_profile_routing_semantics()
     assert_rebuild_scaffold_visual_semantics()
     temp_root = root / ".tmp" / "integration-smoke"
