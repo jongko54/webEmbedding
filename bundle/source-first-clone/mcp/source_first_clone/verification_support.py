@@ -1400,11 +1400,11 @@ def _focus_hint(detail: dict[str, Any]) -> str:
     if name == "computed styles":
         return "typography, spacing, or palette token drift"
     if name == "interaction states":
-        if (detail_payload.get("root_signature_overlap") or 0.0) < 0.5 or (detail_payload.get("root_path_overlap") or 0.0) < 0.5 or (detail_payload.get("surface_index_overlap") or 0.0) < 0.5 or (detail_payload.get("frame_url_overlap") or 0.0) < 0.5:
+        if _has_root_surface_drift(detail_payload):
             return "same-origin frame or shadow-root replay drift"
         return "hover/focus interaction coverage drift"
     if name == "interaction trace":
-        if (detail_payload.get("root_signature_overlap") or 0.0) < 0.5 or (detail_payload.get("root_path_overlap") or 0.0) < 0.5 or (detail_payload.get("surface_index_overlap") or 0.0) < 0.5 or (detail_payload.get("frame_url_overlap") or 0.0) < 0.5:
+        if _has_root_surface_drift(detail_payload):
             return "same-origin frame or shadow-root trace drift"
         return "scroll/type/click replay coverage drift"
     if name == "network manifest":
@@ -1449,13 +1449,13 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
             actions.append("Audit font, spacing, and color tokens against the reference before polishing micro-detail.")
         elif detail["name"] == "interaction states":
             detail_bits = detail.get("details") or {}
-            if detail_bits.get("root_signature_overlap", 1.0) < 0.5 or detail_bits.get("root_path_overlap", 1.0) < 0.5 or detail_bits.get("surface_index_overlap", 1.0) < 0.5 or detail_bits.get("frame_url_overlap", 1.0) < 0.5:
+            if _has_root_surface_drift(detail_bits):
                 actions.append("Extend root-aware replay into same-origin frame and shadow-root surfaces before retuning top-level hover/focus states.")
             else:
                 actions.append("Replay hover/focus states on primary controls and compare visible state deltas.")
         elif detail["name"] == "interaction trace":
             detail_bits = detail.get("details") or {}
-            if detail_bits.get("root_signature_overlap", 1.0) < 0.5 or detail_bits.get("root_path_overlap", 1.0) < 0.5 or detail_bits.get("surface_index_overlap", 1.0) < 0.5 or detail_bits.get("frame_url_overlap", 1.0) < 0.5:
+            if _has_root_surface_drift(detail_bits):
                 actions.append("Extend root-aware trace replay into same-origin frame and shadow-root surfaces before tuning scroll/type/click parity.")
             else:
                 actions.append("Extend replay capture to cover the scroll, type, and click sequence used by the reference.")
@@ -1466,6 +1466,24 @@ def _recommended_actions(check_details: list[dict[str, Any]], core_blockers: lis
         if action not in deduped:
             deduped.append(action)
     return deduped[:4]
+
+
+def _has_root_surface_drift(details: dict[str, Any]) -> bool:
+    return any(
+        _optional_metric_below(details.get(key), 0.5)
+        for key in (
+            "root_signature_overlap",
+            "root_path_overlap",
+            "surface_index_overlap",
+            "frame_url_overlap",
+        )
+    )
+
+
+def _optional_metric_below(value: Any, threshold: float) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return float(value) < threshold
 
 
 def _missing_artifacts(artifacts: dict[str, dict[str, Any]]) -> list[str]:
