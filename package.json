@@ -30,6 +30,7 @@
     "scripts/bootstrap.sh",
     "scripts/check_demo_root_interaction_parity.py",
     "scripts/check_integration_smoke.py",
+    "scripts/check_clone_quality_bench.py",
     "scripts/release_bundle.py",
     "!scripts/**/__pycache__",
     "!scripts/**/*.pyc",
@@ -42,7 +43,8 @@
     "uninstall:local": "node ./bin/web-embedding.mjs uninstall",
     "pack:release": "python3 ./scripts/release_bundle.py",
     "check:root-parity:local": "python3 ./scripts/check_demo_root_interaction_parity.py",
-    "check:integration:local": "python3 ./scripts/check_integration_smoke.py"
+    "check:integration:local": "python3 ./scripts/check_integration_smoke.py",
+    "check:clone-bench:local": "python3 ./scripts/check_clone_quality_bench.py"
   },
   "dependencies": {
     "playwright-core": "^1.59.1"
