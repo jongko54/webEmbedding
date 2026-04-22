@@ -1280,6 +1280,70 @@ def _build_structure_probes(dom_content: dict[str, Any] | None, style_entries: l
     return ordered[:limit]
 
 
+def _load_variant_capture_bundle(variant: dict[str, Any]) -> dict[str, Any] | None:
+    manifest = variant.get("capture_manifest") if isinstance(variant, dict) else None
+    if not manifest:
+        return None
+    path = Path(str(manifest)).expanduser()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _capture_styles_content(bundle: dict[str, Any] | None) -> list[dict[str, Any]]:
+    captures = ((bundle or {}).get("runtime") or {}).get("captures") if isinstance(bundle, dict) else {}
+    styles = (captures or {}).get("styles") if isinstance(captures, dict) else {}
+    content = styles.get("content") if isinstance(styles, dict) else []
+    return content if isinstance(content, list) else []
+
+
+def _capture_dom_content(bundle: dict[str, Any] | None) -> dict[str, Any] | None:
+    captures = ((bundle or {}).get("runtime") or {}).get("captures") if isinstance(bundle, dict) else {}
+    dom = (captures or {}).get("dom") if isinstance(captures, dict) else {}
+    content = dom.get("content") if isinstance(dom, dict) else None
+    return content if isinstance(content, dict) else None
+
+
+def _build_breakpoint_structure_probes(variants: list[dict[str, Any]], limit_per_breakpoint: int = 48) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for variant in variants:
+        if not isinstance(variant, dict) or not variant.get("available"):
+            continue
+        name = _clean_text(variant.get("name"), 40)
+        if not name:
+            continue
+        bundle = _load_variant_capture_bundle(variant)
+        style_entries = _capture_styles_content(bundle)
+        dom_content = _capture_dom_content(bundle)
+        if not style_entries and not dom_content:
+            continue
+        probes = _build_structure_probes(dom_content, style_entries, limit=limit_per_breakpoint)
+        if not probes:
+            continue
+        viewport = variant.get("viewport") if isinstance(variant.get("viewport"), dict) else {}
+        breakpoint_probes: list[dict[str, Any]] = []
+        for index, probe in enumerate(probes[:limit_per_breakpoint], start=1):
+            probe_copy = dict(probe)
+            probe_copy["id"] = f"{name}-structure-probe-{index}"
+            probe_copy["breakpoint"] = name
+            breakpoint_probes.append(probe_copy)
+        groups.append(
+            {
+                "name": name,
+                "viewport": {
+                    "width": int(viewport.get("width") or 0),
+                    "height": int(viewport.get("height") or 0),
+                },
+                "probes": breakpoint_probes,
+            }
+        )
+    return groups
+
+
 def _style_snapshot_value(style_snapshot: dict[str, Any] | None, field: str) -> str | None:
     if not isinstance(style_snapshot, dict):
         return None
@@ -2824,6 +2888,11 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     blocks = summary.get("blocks", []) if isinstance(summary, dict) else []
     outline = summary.get("outline", []) if isinstance(summary, dict) else []
     structure_probes = summary.get("structureProbes", []) if isinstance(summary.get("structureProbes", []), list) else []
+    breakpoint_structure_probes = (
+        summary.get("breakpointStructureProbes", [])
+        if isinstance(summary.get("breakpointStructureProbes", []), list)
+        else []
+    )
     interaction_summary = summary.get("interactions", {}) if isinstance(summary, dict) else {}
     interactions = (interaction_summary or {}).get("sample", [])
     interaction_trace = (interaction_summary or {}).get("traceSample", [])
@@ -3481,6 +3550,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         },
         "outline": outline_cards,
         "structureProbes": structure_probes[:48],
+        "breakpointStructureProbes": breakpoint_structure_probes[:4],
         "reconstruction": {
             "version": "reconstruction.v1",
             "strategy": "role-inferred-next-app",
@@ -3690,8 +3760,14 @@ def _render_bounded_reference_page_tsx() -> str:
             "  role?: string | null;",
             "  text?: string | null;",
             "  styleSnapshot?: Record<string, unknown> | null;",
+            "  breakpoint?: string | null;",
             "  shadowRoot?: boolean | null;",
             "  shadowChildren?: { tag?: string | null; text?: string | null }[] | null;",
+            "};",
+            "",
+            "type StructureProbeGroup = {",
+            "  name?: string | null;",
+            "  probes?: readonly StructureProbe[] | null;",
             "};",
             "",
             "function styleFromSnapshot(snapshot?: Record<string, unknown> | null, visualOnly = false): CSSProperties | undefined {",
@@ -3979,9 +4055,11 @@ def _render_bounded_reference_page_tsx() -> str:
             "  };",
             "  const renderStructureProbe = (probe: StructureProbe, index: number) => {",
             '    const tagName = /^[a-z][a-z0-9-]*$/.test(probe.tag ?? "") ? (probe.tag as string) : "div";',
+            "    const breakpointName = probe.breakpoint ?? undefined;",
             "    const props: Record<string, unknown> = {",
-            "      className: \"bounded-structure-probe\",",
+            "      className: `bounded-structure-probe${breakpointName ? \" bounded-structure-probe--breakpoint\" : \"\"}`,",
             "      \"data-bounded-structure-probe\": probe.id ?? `structure-probe-${index + 1}`,",
+            "      \"data-bounded-breakpoint\": breakpointName,",
             "      \"data-bounded-shadow-probe\": probe.shadowRoot ? \"true\" : undefined,",
             "      \"data-bounded-shadow-text\": probe.text ?? tagName,",
             "      \"data-bounded-shadow-children\": probe.shadowRoot ? JSON.stringify(probe.shadowChildren ?? []) : undefined,",
@@ -3990,6 +4068,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    };",
             "    return createElement(tagName, props, probe.text ?? tagName);",
             "  };",
+            "  const breakpointProbeGroups = (data.breakpointStructureProbes ?? []) as readonly StructureProbeGroup[];",
             "  const shadowProbeScript = `(() => {",
             "    document.querySelectorAll('[data-bounded-shadow-probe=\"true\"]').forEach((element) => {",
             "      if (element.shadowRoot || !element.attachShadow) return;",
@@ -4119,6 +4198,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "      </div>",
             '      <div className="bounded-structure-probes">',
             "        {(data.structureProbes ?? []).slice(0, 48).map((probe, index) => renderStructureProbe(probe, index))}",
+            "        {breakpointProbeGroups.flatMap((group, groupIndex) => (group.probes ?? []).slice(0, 48).map((probe, probeIndex) => renderStructureProbe({ ...probe, breakpoint: group.name ?? probe.breakpoint }, (groupIndex + 1) * 100 + probeIndex)))}",
             "        <script dangerouslySetInnerHTML={{ __html: shadowProbeScript }} />",
             "      </div>",
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
@@ -4439,6 +4519,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     document_sections = app_model.get("documentSections", []) if isinstance(app_model.get("documentSections", []), list) else []
     body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
     structure_probes = app_model.get("structureProbes", []) if isinstance(app_model.get("structureProbes", []), list) else []
+    breakpoint_structure_probes = (
+        app_model.get("breakpointStructureProbes", [])
+        if isinstance(app_model.get("breakpointStructureProbes", []), list)
+        else []
+    )
     interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
     masthead_style = _style_attr_from_snapshot(masthead.get("styleSnapshot"), visual_only=True)
@@ -5000,14 +5085,20 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         if isinstance(entry, dict)
     ]
     structure_probe_bits: list[str] = []
-    for index, probe in enumerate(structure_probes[:48]):
+
+    def append_structure_probe(probe: dict[str, Any], index: int, breakpoint_name: str | None = None) -> None:
         if not isinstance(probe, dict):
-            continue
+            return
         tag = _valid_probe_tag(str(probe.get("tag") or "div"))
         role = _clean_text(probe.get("role"), 40)
         role_attr = f' role="{escape(role)}"' if role else ""
         text = escape(str(probe.get("text") or tag))
         style_attr = _style_attr_from_snapshot(probe.get("styleSnapshot"))
+        class_attr = "bounded-structure-probe"
+        breakpoint_attr = ""
+        if breakpoint_name:
+            class_attr = f"{class_attr} bounded-structure-probe--breakpoint"
+            breakpoint_attr = f' data-bounded-breakpoint="{escape(breakpoint_name)}"'
         shadow_attr = ' data-bounded-shadow-probe="true"' if probe.get("shadowRoot") else ""
         shadow_text_attr = f' data-bounded-shadow-text="{text}"' if probe.get("shadowRoot") else ""
         shadow_children = probe.get("shadowChildren") if isinstance(probe.get("shadowChildren"), list) else []
@@ -5018,8 +5109,20 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         )
         probe_id = escape(str(probe.get("id") or f"structure-probe-{index + 1}"))
         structure_probe_bits.append(
-            f'      <{tag} class="bounded-structure-probe" data-bounded-structure-probe="{probe_id}"{shadow_attr}{shadow_text_attr}{shadow_children_attr}{role_attr}{style_attr}>{text}</{tag}>'
+            f'      <{tag} class="{class_attr}" data-bounded-structure-probe="{probe_id}"{breakpoint_attr}{shadow_attr}{shadow_text_attr}{shadow_children_attr}{role_attr}{style_attr}>{text}</{tag}>'
         )
+
+    for index, probe in enumerate(structure_probes[:48]):
+        append_structure_probe(probe, index)
+    for group_index, group in enumerate(breakpoint_structure_probes[:4]):
+        if not isinstance(group, dict):
+            continue
+        breakpoint_name = _clean_text(group.get("name"), 40)
+        if not breakpoint_name:
+            continue
+        probes = group.get("probes", []) if isinstance(group.get("probes", []), list) else []
+        for probe_index, probe in enumerate(probes[:48]):
+            append_structure_probe(probe, (group_index + 1) * 100 + probe_index, breakpoint_name)
     shadow_probe_script = (
         "<script>(()=>{document.querySelectorAll('[data-bounded-shadow-probe=\"true\"]').forEach((element)=>{"
         "if(element.shadowRoot||!element.attachShadow)return;"
@@ -5951,6 +6054,9 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             ".bounded-structure-probe {",
             "  pointer-events: none;",
             "}",
+            ".bounded-structure-probe[data-bounded-breakpoint] {",
+            "  visibility: hidden;",
+            "}",
             ".bounded-runtime-materialization {",
             "  position: fixed;",
             "  left: -200vw;",
@@ -5961,6 +6067,24 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  pointer-events: none;",
             "  opacity: 0.01;",
             "  z-index: -1;",
+            "}",
+            "@media (max-width: 480px) {",
+            "  .bounded-structure-probe:not([data-bounded-breakpoint]),",
+            "  .bounded-runtime-materialization {",
+            "    visibility: hidden;",
+            "  }",
+            "  .bounded-structure-probe[data-bounded-breakpoint='mobile'] {",
+            "    visibility: visible;",
+            "  }",
+            "}",
+            "@media (min-width: 481px) and (max-width: 900px) {",
+            "  .bounded-structure-probe:not([data-bounded-breakpoint]),",
+            "  .bounded-runtime-materialization {",
+            "    visibility: hidden;",
+            "  }",
+            "  .bounded-structure-probe[data-bounded-breakpoint='tablet'] {",
+            "    visibility: visible;",
+            "  }",
             "}",
             ".bounded-runtime-copy {",
             "  display: block;",
@@ -6395,6 +6519,9 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     surface_class = str(site_profile.get("primary_surface") or "static-document")
     breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
     breakpoint_variants = breakpoint_summary.get("variants", []) if isinstance(breakpoint_summary, dict) else []
+    breakpoint_structure_probes = _build_breakpoint_structure_probes(
+        breakpoint_variants if isinstance(breakpoint_variants, list) else []
+    )
     css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
     typography = _derive_typography(style_entries)
     style_tokens = _derive_style_tokens(style_entries)
@@ -6509,6 +6636,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "outline": outline[:12],
         "domSections": dom_semantic_sections[:12],
         "structureProbes": structure_probes,
+        "breakpointStructureProbes": breakpoint_structure_probes,
         "accessibilityLandmarks": accessibility_landmarks[:16],
         "blocks": blocks,
         "palette": palette,

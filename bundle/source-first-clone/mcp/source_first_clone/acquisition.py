@@ -378,16 +378,17 @@ def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, 
 
 def _runtime_trace_script() -> str:
     return r"""
-const pageUrl = process.argv[1];
-const waitSeconds = Number(process.argv[2] || "8");
-const rawPattern = process.argv[3] || "spline|preview|embed|viewer|scene|iframe";
-const userDataDir = process.argv[4] || "";
-const storageStatePath = process.argv[5] || "";
-const captureHtml = String(process.argv[6] || "false") === "true";
-const captureScreenshot = String(process.argv[7] || "false") === "true";
-const viewportWidth = Number(process.argv[8] || "1440");
-const viewportHeight = Number(process.argv[9] || "1200");
-const storageStateOutputPath = process.argv[10] || "";
+const runtimeArgs = process.argv[1] === "-" ? process.argv.slice(2) : process.argv.slice(1);
+const pageUrl = runtimeArgs[0];
+const waitSeconds = Number(runtimeArgs[1] || "8");
+const rawPattern = runtimeArgs[2] || "spline|preview|embed|viewer|scene|iframe";
+const userDataDir = runtimeArgs[3] || "";
+const storageStatePath = runtimeArgs[4] || "";
+const captureHtml = String(runtimeArgs[5] || "false") === "true";
+const captureScreenshot = String(runtimeArgs[6] || "false") === "true";
+const viewportWidth = Number(runtimeArgs[7] || "1440");
+const viewportHeight = Number(runtimeArgs[8] || "1200");
+const storageStateOutputPath = runtimeArgs[9] || "";
 const fs = require("fs");
 const path = require("path");
 let playwright;
@@ -5514,8 +5515,7 @@ def trace_runtime_sources(
     completed = subprocess.run(
         [
             "node",
-            "-e",
-            _runtime_trace_script(),
+            "-",
             url,
             str(wait_seconds),
             pattern,
@@ -5528,6 +5528,7 @@ def trace_runtime_sources(
             storage_state_output_path or "",
         ],
         capture_output=True,
+        input=_runtime_trace_script(),
         text=True,
         check=False,
         env=env,
