@@ -1,0 +1,58 @@
+name: Integration Smoke
+
+on:
+  pull_request:
+    paths:
+      - "bin/**"
+      - "bundle/**"
+      - "fixtures/frame-shadow-parity/**"
+      - "python/**"
+      - "scripts/check_integration_smoke.py"
+      - "scripts/release_bundle.py"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/integration-smoke.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/publish.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "bin/**"
+      - "bundle/**"
+      - "fixtures/frame-shadow-parity/**"
+      - "python/**"
+      - "scripts/check_integration_smoke.py"
+      - "scripts/release_bundle.py"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/integration-smoke.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/publish.yml"
+  workflow_dispatch:
+
+jobs:
+  integration-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run integration smoke
+        run: python3 scripts/check_integration_smoke.py

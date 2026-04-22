@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .capture_bundle import capture_reference_bundle
 from .planning import plan_reproduction_path
 from .repair_scaffold import build_repair_scaffold
 from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
@@ -15,6 +16,7 @@ from .self_verify import (
     _self_verify_summary,
     run_rebuild_self_verify,
 )
+from .verification import build_exact_reuse_verification, verify_fidelity_report
 
 
 ANALYTICS_HOST_HINTS = (
@@ -256,6 +258,84 @@ def build_embed_snippets(url: str, title: str) -> dict[str, str]:
     return {"html": html, "nextjs": nextjs}
 
 
+def _compare_exact_reuse_candidate(
+    capture_bundle: dict[str, Any],
+    exact_candidate: dict[str, Any],
+    verification: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    if verification.get("status") == "source-equivalent":
+        return verification
+
+    candidate_url = str(exact_candidate.get("url") or "")
+    if not candidate_url:
+        return verification
+
+    updated = json.loads(json.dumps(verification))
+    reproduction_dir = output_root / "reproduction"
+    candidate_dir = reproduction_dir / "exact-reuse-candidate-capture"
+    session_request = capture_bundle.get("session_request", {}) if isinstance(capture_bundle.get("session_request"), dict) else {}
+    try:
+        candidate_bundle = capture_reference_bundle(
+            url=candidate_url,
+            timeout_seconds=20,
+            wait_seconds=2,
+            include_runtime_trace=True,
+            capture_html=True,
+            capture_screenshot=True,
+            viewport_width=int(session_request.get("viewport_width") or 1440),
+            viewport_height=int(session_request.get("viewport_height") or 1200),
+            output_dir=str(candidate_dir),
+            exact_requested=False,
+        )
+        report = verify_fidelity_report(
+            reference_bundle=capture_bundle,
+            candidate_bundle=candidate_bundle,
+            reference_url=capture_bundle.get("url"),
+            candidate_url=candidate_url,
+        )
+        reproduction_dir.mkdir(parents=True, exist_ok=True)
+        report_path = reproduction_dir / "exact-reuse-verification-report.json"
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
+        guidance = report.get("downstream_guidance", {}) if isinstance(report.get("downstream_guidance"), dict) else {}
+        comparison_summary = report.get("comparison_summary", {}) if isinstance(report.get("comparison_summary"), dict) else {}
+        ready = bool(guidance.get("ready_for_exact_clone"))
+        candidate_persisted = (candidate_bundle.get("bundle") or {}).get("persisted") or {}
+        candidate_files = candidate_persisted.get("files", {}) if isinstance(candidate_persisted.get("files"), dict) else {}
+        updated["comparison"] = {
+            "available": True,
+            "verdict": report.get("verdict"),
+            "score": comparison_summary.get("score"),
+            "ready_for_exact_clone": ready,
+            "report_path": str(report_path),
+        }
+        updated["candidate_capture"] = {
+            "available": True,
+            "root": str(candidate_dir),
+            "capture_manifest": candidate_files.get("capture_manifest"),
+        }
+        if ready:
+            updated["status"] = "verified-candidate"
+            updated["confidence"] = "high"
+            updated["ready_for_exact_clone"] = True
+            updated["ready_for_exact_reuse"] = True
+            updated.setdefault("notes", []).append("Exact reuse candidate was captured and passed bounded fidelity verification.")
+        else:
+            updated["status"] = "candidate-mismatch"
+            updated["confidence"] = "medium"
+            updated["ready_for_exact_clone"] = False
+            updated["ready_for_exact_reuse"] = False
+            updated.setdefault("notes", []).append("Exact reuse candidate was captured, but bounded fidelity verification did not pass.")
+    except Exception as exc:  # noqa: BLE001
+        updated["comparison"] = {
+            "available": False,
+            "reason": str(exc),
+        }
+        updated.setdefault("notes", []).append("Exact reuse candidate comparison could not be completed.")
+
+    return updated
+
+
 def _collect_dom_texts(node: dict[str, Any] | None, bucket: list[str], limit: int = 12) -> None:
     if not isinstance(node, dict) or len(bucket) >= limit:
         return
@@ -276,6 +356,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     dom_capture = captures.get("dom", {}) if isinstance(captures, dict) else {}
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
     css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures, dict) else {}
+    screenshot_capture = captures.get("screenshot", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
     interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
@@ -327,6 +408,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- Prefer dashboard-style composition with stable sidebars and content panes before hero-style compression.",
                         "- Keep shell topology legible in the rebuild prompt: navigation, workspace, inspector, and auxiliary regions should remain separable.",
                         "- Preserve region order and primary panel emphasis when available; do not flatten the shell into one generic content column.",
+                        "- Preserve shellRegions geometry in downstream scaffolds so repair passes stay anchored to the captured source layout.",
                     ]
                 )
             if str(site_profile.get("primary_surface") or "").lower() == "canvas-or-webgl-surface" or str(route_hints.get("renderer_route") or "").lower() == "visual-fallback-rebuild":
@@ -336,6 +418,7 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- Treat this as a visual-first rebuild, not a DOM-perfect source clone.",
                         "- Preserve stage geometry, dominant palette, hierarchy, and stable controls before trying to mirror implementation details.",
                         "- Prefer screenshot-led composition checks, then layer DOM and CSS fidelity on top.",
+                        "- Keep visualStage and visualLayers as first-class scaffold data; do not replace the source composition with a generic centered card, synthetic hero, or marketing layout.",
                     ]
                 )
                 prompt_lines.append("Visual fallback rendering constraints:")
@@ -347,6 +430,14 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
                         "- Keep responsive behavior aligned to the captured viewport geometry.",
                     ]
                 )
+                if isinstance(screenshot_capture, dict) and screenshot_capture.get("available"):
+                    prompt_lines.append("Visual fallback screenshot anchor:")
+                    prompt_lines.extend(
+                        [
+                            "- Carry the captured screenshot into the bounded-stage-reference layer before adding overlays.",
+                            "- Use overlay geometry to explain the screenshot; do not hide or crop away the primary stage.",
+                        ]
+                    )
                 prompt_lines.append("Visual fallback scaffold hints:")
                 prompt_lines.extend(
                     [
@@ -720,7 +811,7 @@ def build_reproduction_bundle(
     exact_candidate = choose_exact_reuse_candidate(candidates)
     title = static.get("title") or "Embedded reference"
     plan = plan_reproduction_path(
-        candidates=static.get("candidate_urls"),
+        candidates=candidates,
         site_profile=static.get("site_profile"),
         capture_bundle=capture_bundle,
     )
@@ -747,6 +838,7 @@ def build_reproduction_bundle(
             "source": exact_candidate["source"],
             "url": exact_candidate["url"],
             "snippets": snippets,
+            "verification": build_exact_reuse_verification(capture_bundle, exact_candidate),
         }
         result["coverage"] = "exact-reuse"
         result["next_action"] = "embed"
@@ -760,6 +852,16 @@ def build_reproduction_bundle(
 
     if output_dir:
         output_root = Path(output_dir).expanduser().resolve()
+        exact_reuse = result.get("exact_reuse")
+        if isinstance(exact_reuse, dict) and exact_candidate:
+            verification = exact_reuse.get("verification")
+            if isinstance(verification, dict):
+                exact_reuse["verification"] = _compare_exact_reuse_candidate(
+                    capture_bundle=capture_bundle,
+                    exact_candidate=exact_candidate,
+                    verification=verification,
+                    output_root=output_root,
+                )
         persisted = persist_reproduction_bundle(output_root, result)
         result["persisted"] = persisted
         rebuild_artifacts = persisted.get("rebuild_scaffold")
@@ -849,11 +951,18 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
                     f"Platform: {exact_reuse.get('platform')}",
                     f"Kind: {exact_reuse.get('kind')}",
                     f"URL: {exact_reuse.get('url')}",
+                    f"Verification: {((exact_reuse.get('verification') or {}).get('status'))}",
                 ]
             )
             + "\n"
         )
         persisted["prompt"] = str(prompt_path)
+
+        verification = exact_reuse.get("verification")
+        if isinstance(verification, dict):
+            verification_path = reproduction_dir / "exact-reuse-verification.json"
+            verification_path.write_text(json.dumps(verification, indent=2) + "\n")
+            persisted["exact_reuse_verification"] = str(verification_path)
 
     return persisted
 

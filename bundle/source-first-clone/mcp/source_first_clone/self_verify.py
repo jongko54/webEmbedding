@@ -39,10 +39,6 @@ def _serve_directory(directory: Path) -> Iterator[str]:
         thread.join(timeout=2)
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[5]
-
-
 def _runtime_package_json() -> dict[str, Any]:
     return {
         "name": "web-embedding-next-runtime",
@@ -226,6 +222,115 @@ def _load_json_file(path: str | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_text_file(path: str | None) -> str:
+    if not path:
+        return ""
+    candidate = Path(path)
+    if not candidate.exists():
+        return ""
+    return candidate.read_text()
+
+
+def _artifact_quality_signals(rebuild_artifacts: dict[str, str]) -> dict[str, Any]:
+    app_model = _load_json_file(rebuild_artifacts.get("app-model.json")) or {}
+    layout_summary = _load_json_file(rebuild_artifacts.get("layout-summary.json")) or {}
+    tsx = _load_text_file(rebuild_artifacts.get("next-app/components/BoundedReferencePage.tsx"))
+    preview = _load_text_file(rebuild_artifacts.get("app-preview.html"))
+    renderer = layout_summary.get("renderer", {}) if isinstance(layout_summary.get("renderer"), dict) else {}
+    renderer_kind = str(renderer.get("kind") or app_model.get("rendererKind") or "").strip()
+    visual_stage = app_model.get("visualStage")
+    if not isinstance(visual_stage, dict):
+        visual_stage = layout_summary.get("visualStage") if isinstance(layout_summary.get("visualStage"), dict) else {}
+    reference_image = visual_stage.get("referenceImage", {}) if isinstance(visual_stage, dict) else {}
+    if not isinstance(reference_image, dict):
+        reference_image = {}
+    reference_src = str(reference_image.get("src") or "")
+    visual_layers = app_model.get("visualLayers") if isinstance(app_model.get("visualLayers"), list) else []
+    shell_regions = app_model.get("shellRegions") if isinstance(app_model.get("shellRegions"), list) else []
+    expects_visual_stage = (
+        renderer_kind == "visual-fallback-next-app"
+        or bool((visual_stage or {}).get("available"))
+        or bool(reference_src)
+        or bool(visual_layers)
+    )
+    expects_shell_regions = renderer_kind == "app-shell-dashboard-next-app" or bool(shell_regions)
+    checks = [
+        {
+            "name": "visual-stage-reference",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or bool(reference_src),
+            "detail": "captured screenshot reference image is present in app-model/layout-summary",
+        },
+        {
+            "name": "visual-layers-model",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or bool(visual_layers),
+            "detail": "captured visual geometry is present in app-model.visualLayers",
+        },
+        {
+            "name": "visual-stage-tsx",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or "bounded-stage-reference" in tsx,
+            "detail": "Next renderer renders the captured screenshot stage",
+        },
+        {
+            "name": "visual-layers-tsx",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or ("visualLayers.slice" in tsx and "bounded-visual-layer" in tsx),
+            "detail": "Next renderer overlays captured visual layer geometry",
+        },
+        {
+            "name": "visual-stage-preview",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or "bounded-stage-reference" in preview,
+            "detail": "static app preview renders the captured screenshot stage",
+        },
+        {
+            "name": "visual-layers-preview",
+            "required": expects_visual_stage,
+            "passed": (not expects_visual_stage) or "bounded-visual-layer" in preview,
+            "detail": "static app preview overlays captured visual layer geometry",
+        },
+        {
+            "name": "shell-regions-model",
+            "required": expects_shell_regions,
+            "passed": (not expects_shell_regions) or bool(shell_regions),
+            "detail": "captured shell panel geometry is present in app-model.shellRegions",
+        },
+        {
+            "name": "shell-regions-tsx",
+            "required": expects_shell_regions,
+            "passed": (not expects_shell_regions) or "bounded-shell-region" in tsx,
+            "detail": "Next renderer renders captured shell panel regions",
+        },
+        {
+            "name": "shell-regions-preview",
+            "required": expects_shell_regions,
+            "passed": (not expects_shell_regions)
+            or ("bounded-shell-region" in preview and "bounded-shell-panel-grid" in preview),
+            "detail": "static app preview renders captured shell panel regions and panel grid",
+        },
+    ]
+    missing_required = [
+        str(check.get("name"))
+        for check in checks
+        if check.get("required") and not check.get("passed")
+    ]
+    return {
+        "available": bool(app_model or layout_summary or tsx or preview),
+        "ready": not missing_required,
+        "required": expects_visual_stage or expects_shell_regions,
+        "renderer_kind": renderer_kind,
+        "expects_visual_stage": expects_visual_stage,
+        "expects_shell_regions": expects_shell_regions,
+        "visual_layer_count": len(visual_layers),
+        "shell_region_count": len(shell_regions),
+        "reference_image_present": bool(reference_src),
+        "checks": checks,
+        "missing_required": missing_required,
+    }
+
+
 def _breakpoint_variant_map(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
     breakpoints = bundle.get("breakpoints", {}) if isinstance(bundle, dict) else {}
     variants = breakpoints.get("variants", []) if isinstance(breakpoints, dict) else []
@@ -355,6 +460,9 @@ def _renderer_summary(renderer: dict[str, Any] | None) -> dict[str, Any]:
     root_report = renderer.get("root_report") if isinstance(renderer, dict) else {}
     breakpoints = renderer.get("breakpoints") if isinstance(renderer, dict) else {}
     reports = (breakpoints or {}).get("reports") or []
+    artifact_quality = renderer.get("artifact_quality") if isinstance(renderer, dict) else {}
+    if not isinstance(artifact_quality, dict):
+        artifact_quality = {}
     return {
         "name": renderer.get("name"),
         "kind": renderer.get("kind"),
@@ -366,6 +474,8 @@ def _renderer_summary(renderer: dict[str, Any] | None) -> dict[str, Any]:
         "rendered_capture_manifest": renderer.get("rendered_capture_manifest"),
         "breakpoint_count": (breakpoints or {}).get("compared"),
         "breakpoint_ready_count": sum(1 for report in reports if isinstance(report, dict) and report.get("available") and report.get("ready_for_exact_clone")),
+        "artifact_quality_ready": artifact_quality.get("ready"),
+        "artifact_quality_missing": artifact_quality.get("missing_required") or [],
     }
 
 
@@ -401,6 +511,9 @@ def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
     if breakpoint_scores:
         score = int(round((score * 0.8) + ((sum(breakpoint_scores) / len(breakpoint_scores)) * 0.2)))
     score = max(score, root_score)
+    preferred_artifact_quality = preferred_renderer.get("artifact_quality")
+    if not isinstance(preferred_artifact_quality, dict):
+        preferred_artifact_quality = {}
     return {
         "score": score,
         "root_score": root_score,
@@ -415,6 +528,7 @@ def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
             "score": preferred_renderer.get("score"),
             "ready_for_exact_clone": preferred_renderer.get("ready_for_exact_clone"),
             "report_path": preferred_renderer.get("report_path"),
+            "artifact_quality_ready": preferred_artifact_quality.get("ready"),
         },
         "renderers": [_renderer_summary(item) for item in renderers if isinstance(item, dict)],
         "root_ready_for_exact_clone": bool((root_report or {}).get("ready_for_exact_clone")),
@@ -441,6 +555,7 @@ def _renderer_ready(report: dict[str, Any]) -> bool:
 def _build_repair_plan(
     preferred_renderer: dict[str, Any] | None,
     breakpoint_reports: list[dict[str, Any]],
+    artifact_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     renderer = preferred_renderer or {}
     root_report = renderer.get("report", {}) if isinstance(renderer, dict) else {}
@@ -470,6 +585,47 @@ def _build_repair_plan(
         score = 0
     priority_findings = [item for item in (guidance.get("priority_findings") or []) if item]
     recommended_actions = [str(item) for item in (guidance.get("recommended_actions") or []) if item]
+    artifact_quality = artifact_quality if isinstance(artifact_quality, dict) else {}
+    missing_quality = [
+        str(item)
+        for item in (artifact_quality.get("missing_required") or [])
+        if item
+    ]
+    if missing_quality:
+        priority_findings.insert(
+            0,
+            {
+                "check": "capture-backed renderer anchors",
+                "summary": "Generated rebuild artifacts are missing required capture anchors: "
+                + ", ".join(missing_quality[:6]),
+                "focus": "preserve visual stage references, overlay geometry, and shell region topology",
+            },
+        )
+        quality_focus_map = {
+            "visual-stage-reference": "screenshot",
+            "visual-layers-model": "stage geometry",
+            "visual-stage-tsx": "stage geometry",
+            "visual-layers-tsx": "overlay chrome",
+            "visual-stage-preview": "screenshot",
+            "visual-layers-preview": "overlay chrome",
+            "shell-regions-model": "shell regions",
+            "shell-regions-tsx": "shell regions",
+            "shell-regions-preview": "shell regions",
+        }
+        for item in missing_quality:
+            focus = quality_focus_map.get(item)
+            if focus and focus not in normalized_focus_checks:
+                normalized_focus_checks.append(focus)
+        quality_actions = []
+        if any(str(item).startswith("visual-stage") for item in missing_quality):
+            quality_actions.append("Keep the captured screenshot as the bounded-stage-reference image before adding synthesized overlays.")
+        if any("visual-layers" in str(item) for item in missing_quality):
+            quality_actions.append("Render captured visualLayers geometry as bounded-visual-layer overlays in both Next and static previews.")
+        if any("shell-regions" in str(item) for item in missing_quality):
+            quality_actions.append("Render captured shellRegions geometry and bounded-shell-panel-grid so app-shell topology stays anchored to the source capture.")
+        for action in quality_actions:
+            if action not in recommended_actions:
+                recommended_actions.insert(0, action)
     priority_text = [
         item.get("summary") or item.get("focus") or item.get("check")
         if isinstance(item, dict)
@@ -500,6 +656,7 @@ def _build_repair_plan(
         "target_renderer": renderer_name,
         "score": renderer_score,
         "focus_checks": normalized_focus_checks[:6],
+        "artifact_quality": artifact_quality,
         "priority_findings": priority_findings[:6],
         "recommended_actions": recommended_actions,
         "breakpoint_focus": breakpoint_focus,
@@ -556,6 +713,8 @@ def run_rebuild_self_verify(
     persisted: dict[str, Any] = {"renderers": {}}
     renderer_results: list[dict[str, Any]] = []
     runtime_cache_root = output_dir / "reproduction" / "_next-runtime-cache"
+    artifact_quality = _artifact_quality_signals(rebuild_artifacts)
+    persisted["artifact_quality"] = _persist_report(self_verify_dir / "artifact-quality.json", artifact_quality)
     preferred_renderer_name = ""
     preferred_renderer = rebuild_artifacts.get("preferred_renderer", {}) if isinstance(rebuild_artifacts, dict) else {}
     if isinstance(preferred_renderer, dict):
@@ -622,6 +781,7 @@ def run_rebuild_self_verify(
                         "error": runtime_error,
                     },
                     "breakpoints": {"compared": 0, "reports": []},
+                    "artifact_quality": artifact_quality,
                     "runtime_error": runtime_error,
                 }
                 renderer_results.append(renderer_result)
@@ -643,8 +803,18 @@ def run_rebuild_self_verify(
             reference_variants = _breakpoint_variant_map(reference_bundle)
             rendered_variants = _breakpoint_variant_map(rendered_bundle)
             breakpoint_reports: list[dict[str, Any]] = []
-            if reference_variants and rendered_variants:
-                for variant_name in sorted(set(reference_variants) & set(rendered_variants)):
+            if reference_variants:
+                for variant_name in sorted(reference_variants):
+                    if variant_name not in rendered_variants:
+                        breakpoint_reports.append(
+                            {
+                                "name": variant_name,
+                                "available": False,
+                                "reason": "Rendered breakpoint variant was missing.",
+                                "ready_for_exact_clone": False,
+                            }
+                        )
+                        continue
                     reference_variant_bundle = _load_json_file(reference_variants[variant_name].get("capture_manifest"))
                     rendered_variant_bundle = _load_json_file(rendered_variants[variant_name].get("capture_manifest"))
                     if not reference_variant_bundle or not rendered_variant_bundle:
@@ -653,6 +823,7 @@ def run_rebuild_self_verify(
                                 "name": variant_name,
                                 "available": False,
                                 "reason": "Variant capture bundle was missing.",
+                                "ready_for_exact_clone": False,
                             }
                         )
                         continue
@@ -675,8 +846,12 @@ def run_rebuild_self_verify(
                         }
                     )
             overall_ready = _renderer_ready(root_report)
+            quality_required = bool(artifact_quality.get("required"))
+            quality_ready = bool(artifact_quality.get("ready"))
+            if quality_required and not quality_ready:
+                overall_ready = False
             if breakpoint_reports:
-                overall_ready = overall_ready and all(bool(report.get("ready_for_exact_clone")) for report in breakpoint_reports if report.get("available"))
+                overall_ready = overall_ready and all(bool(report.get("ready_for_exact_clone")) for report in breakpoint_reports)
             score = _comparison_score(root_report)
             renderer_result = {
                 "name": name,
@@ -687,6 +862,9 @@ def run_rebuild_self_verify(
                 "report": root_report,
                 "score": score,
                 "ready_for_exact_clone": overall_ready,
+                "artifact_quality": artifact_quality,
+                "artifact_quality_ready": quality_ready,
+                "artifact_quality_required": quality_required,
                 "rendered_capture_manifest": ((rendered_bundle.get("bundle") or {}).get("persisted") or {}).get("files", {}).get("capture_manifest"),
                 "root_report": {
                     "verdict": root_report.get("verdict"),
@@ -721,7 +899,7 @@ def run_rebuild_self_verify(
     ) if renderer_results else None
     preferred_breakpoints = ((preferred_renderer or {}).get("breakpoints") or {}).get("reports") or []
     overall_ready = any(bool(item.get("ready_for_exact_clone")) for item in renderer_results)
-    repair_plan = _build_repair_plan(preferred_renderer, preferred_breakpoints)
+    repair_plan = _build_repair_plan(preferred_renderer, preferred_breakpoints, artifact_quality)
     persisted["repair_plan"] = _persist_report(self_verify_dir / "repair-plan.json", repair_plan)
     repair_prompt_path = self_verify_dir / "repair-prompt.txt"
     repair_prompt_path.write_text(str(repair_plan.get("prompt") or "").rstrip() + "\n")
@@ -749,6 +927,7 @@ def run_rebuild_self_verify(
             "score": (preferred_renderer or {}).get("score"),
             "ready_for_exact_clone": (preferred_renderer or {}).get("ready_for_exact_clone"),
             "report_path": (((preferred_renderer or {}).get("root_report") or {}).get("report_path")),
+            "artifact_quality_ready": ((preferred_renderer or {}).get("artifact_quality") or {}).get("ready"),
         },
         "preferred_renderer_summary": preferred_renderer_summary,
         "renderers": [
@@ -759,9 +938,12 @@ def run_rebuild_self_verify(
                 "ready_for_exact_clone": item.get("ready_for_exact_clone"),
                 "entrypoint": item.get("entrypoint"),
                 "report_path": ((item.get("root_report") or {}).get("report_path")),
+                "artifact_quality_ready": ((item.get("artifact_quality") or {}).get("ready")),
+                "artifact_quality_missing": ((item.get("artifact_quality") or {}).get("missing_required") or []),
             }
             for item in renderer_results
         ],
+        "artifact_quality": artifact_quality,
         "rendered_capture_manifest": (preferred_renderer or {}).get("rendered_capture_manifest"),
         "root_report": (preferred_renderer or {}).get("root_report"),
         "breakpoints": (preferred_renderer or {}).get("breakpoints") or {"compared": 0, "reports": []},
@@ -776,6 +958,7 @@ def run_rebuild_self_verify(
             "breakpoint_focus": repair_plan.get("breakpoint_focus"),
             "priority_findings": repair_plan.get("priority_findings"),
             "recommended_actions": repair_plan.get("recommended_actions"),
+            "artifact_quality": repair_plan.get("artifact_quality"),
             "path": persisted["repair_plan"],
             "prompt_path": persisted["repair_prompt"],
         },

@@ -312,9 +312,17 @@ def compact_capture_depth(captures: dict[str, Any] | None) -> dict[str, Any] | N
     screenshot_capture = captures.get("screenshot", {}) if isinstance(captures.get("screenshot"), dict) else {}
     network_capture = captures.get("network", {}) if isinstance(captures.get("network"), dict) else {}
     asset_summary = assets_capture.get("summary") if isinstance(assets_capture.get("summary"), dict) else None
-    network_summary = None
+    network_summary: dict[str, Any] | None = None
     if isinstance(network_capture.get("content"), dict):
-        network_summary = network_capture["content"].get("summary")
+        content_summary = network_capture["content"].get("summary")
+        if isinstance(content_summary, dict):
+            network_summary = dict(content_summary)
+    if network_capture.get("available"):
+        network_summary = dict(network_summary or {})
+        network_summary.setdefault("requestCount", network_capture.get("requestCount"))
+        network_summary.setdefault("responseCount", network_capture.get("responseCount"))
+        network_summary.setdefault("failureCount", network_capture.get("failureCount"))
+        network_summary.setdefault("frameUrlCount", network_capture.get("frameUrlCount"))
     if not any([html_capture, accessibility_capture, dom_capture, css_capture, asset_summary, interactions_capture, interaction_trace_capture, screenshot_capture, network_summary]):
         return None
     network_depth = None
@@ -472,13 +480,37 @@ def compact_capture_result(result: dict[str, Any]) -> dict[str, Any]:
         capture_depth = summary.get("capture_depth")
         if isinstance(capture_depth, dict):
             network_depth = capture_depth.get("network")
-            if isinstance(network_depth, dict):
-                network_depth["har_export_path"] = network_artifact.get("har_export_path")
-                network_depth["har_like_path"] = network_artifact.get("har_like_path")
-                network_depth["har_page_count"] = network_artifact.get("har_page_count")
-                network_depth["har_entry_count"] = network_artifact.get("har_entry_count")
-                network_depth["har_like_page_count"] = network_artifact.get("har_like_page_count")
-                network_depth["har_like_entry_count"] = network_artifact.get("har_like_entry_count")
+            if not isinstance(network_depth, dict):
+                network_depth = {}
+                capture_depth["network"] = network_depth
+            for key in (
+                "request_count",
+                "response_count",
+                "failure_count",
+                "redirect_count",
+                "frame_url_count",
+                "timing_bucket_counts",
+                "request_header_presence_summary",
+                "response_header_presence_summary",
+                "response_body_availability",
+                "page_timings",
+                "query_parameter_count",
+                "request_cookie_count",
+                "response_cookie_count",
+                "request_header_bytes",
+                "response_header_bytes",
+                "request_body_bytes",
+                "response_body_bytes",
+                "response_redirect_count",
+                "har_export_path",
+                "har_like_path",
+                "har_page_count",
+                "har_entry_count",
+                "har_like_page_count",
+                "har_like_entry_count",
+            ):
+                if network_artifact.get(key) is not None:
+                    network_depth[key] = network_artifact.get(key)
     breakpoint_summary = summary.get("breakpoints")
     if isinstance(breakpoint_summary, dict):
         variants = breakpoint_summary.get("variants")

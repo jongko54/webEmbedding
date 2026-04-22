@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Frame Shadow Parity Smoke Fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+      }
+
+      body {
+        margin: 24px;
+      }
+
+      main {
+        display: grid;
+        gap: 16px;
+        max-width: 520px;
+      }
+
+      button {
+        width: fit-content;
+        border: 1px solid #1f5d7a;
+        border-radius: 4px;
+        background: #e8f6fb;
+        color: #11384a;
+        cursor: pointer;
+        font: inherit;
+        padding: 8px 12px;
+      }
+
+      button:hover,
+      button:focus-visible {
+        background: #ccebf5;
+        outline: 2px solid #1f5d7a;
+        outline-offset: 2px;
+      }
+
+      iframe {
+        width: 320px;
+        height: 96px;
+        border: 1px solid #9aaeb7;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <button id="document-action" type="button" data-testid="document-action">
+        Document action
+      </button>
+
+      <iframe
+        id="fixture-frame"
+        title="Frame parity fixture"
+        src="./frame.html"
+      ></iframe>
+
+      <div id="shadow-host" data-testid="shadow-host"></div>
+    </main>
+
+    <script>
+      const host = document.querySelector("#shadow-host");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <style>
+          button {
+            border: 1px solid #725c1f;
+            border-radius: 4px;
+            background: #fff5cf;
+            color: #3d3215;
+            cursor: pointer;
+            font: inherit;
+            padding: 8px 12px;
+          }
+
+          button:hover,
+          button:focus-visible {
+            background: #ffeaa3;
+            outline: 2px solid #725c1f;
+            outline-offset: 2px;
+          }
+        </style>
+        <button id="shadow-action" type="button" data-testid="shadow-action">
+          Shadow action
+        </button>
+      `;
+    </script>
+  </body>
+</html>

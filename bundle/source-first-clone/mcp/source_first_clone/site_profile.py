@@ -88,12 +88,18 @@ def classify_site_profile(
 
     runtime_frameworks = _runtime_frameworks(html)
     auth_detected = _bool_patterns(AUTH_PATTERNS, html)
-    canvas_detected = canvas_count > 0 or _bool_patterns(CANVAS_LIBRARY_PATTERNS, html)
+    canvas_library_detected = _bool_patterns(CANVAS_LIBRARY_PATTERNS, html)
+    canvas_detected = canvas_count > 0 or canvas_library_detected
     shadow_dom_detected = _bool_patterns(SHADOW_PATTERNS, html)
     frame_blocked = frame_policy.get("embeddable") is False
     multi_frame = iframe_count > 1
     longform = section_count >= 6 or (paragraph_count >= 12 and heading_count >= 3)
     app_shell = bool(runtime_frameworks) or script_count >= 15
+    canvas_dominant = canvas_detected and (
+        canvas_library_detected
+        or canvas_count >= 2
+        or (canvas_count >= 1 and not app_shell and section_count <= 2)
+    )
     platform_managed = platform != "generic"
 
     surface = "static-document"
@@ -104,7 +110,7 @@ def classify_site_profile(
         surface = "platform-managed-surface"
         confidence = "high"
         notes.append(f"Platform adapter matched `{platform}`.")
-    elif canvas_detected:
+    elif canvas_dominant:
         surface = "canvas-or-webgl-surface"
         confidence = "high"
         notes.append("Canvas/WebGL-style runtime was detected.")
@@ -185,9 +191,9 @@ def classify_site_profile(
 
     renderer_family = "document-next-app"
     if surface in {"js-app-shell-surface", "frame-blocked-app-surface", "authenticated-app-surface"}:
-        renderer_family = "app-shell-next-app"
+        renderer_family = "app-shell-dashboard-next-app"
     elif surface == "canvas-or-webgl-surface":
-        renderer_family = "visual-stage-next-app"
+        renderer_family = "visual-fallback-next-app"
     elif surface == "multi-frame-document-surface":
         renderer_family = "frame-aware-document-next-app"
 
@@ -203,6 +209,7 @@ def classify_site_profile(
             "app_shell": app_shell,
             "auth_detected": auth_detected,
             "canvas_detected": canvas_detected,
+            "canvas_dominant": canvas_dominant,
             "shadow_dom_detected": shadow_dom_detected,
             "multi_frame": multi_frame,
             "longform": longform,

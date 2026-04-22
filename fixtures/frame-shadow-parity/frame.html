@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Frame Parity Fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+      }
+
+      body {
+        margin: 16px;
+      }
+
+      button {
+        border: 1px solid #4f6b2a;
+        border-radius: 4px;
+        background: #edf7df;
+        color: #263915;
+        cursor: pointer;
+        font: inherit;
+        padding: 8px 12px;
+      }
+
+      button:hover,
+      button:focus-visible {
+        background: #d8edbb;
+        outline: 2px solid #4f6b2a;
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="frame-action" type="button" data-testid="frame-action">
+      Frame action
+    </button>
+  </body>
+</html>

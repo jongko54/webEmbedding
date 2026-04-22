@@ -48,6 +48,18 @@ def compact_capture_bundle(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _exact_reuse_ready(exact_reuse: Any) -> bool:
+    if not isinstance(exact_reuse, dict):
+        return False
+    verification = exact_reuse.get("verification")
+    if isinstance(verification, dict):
+        return bool(
+            verification.get("ready_for_exact_reuse")
+            or verification.get("ready_for_exact_clone")
+        )
+    return False
+
+
 def clone_reference_url(
     url: str,
     timeout_seconds: int = 20,
@@ -94,7 +106,7 @@ def clone_reference_url(
         "policy_mode": capture_bundle.get("policy", {}).get("mode"),
         "next_action": reproduction.get("next_action"),
         "coverage": reproduction.get("coverage"),
-        "exact_ready": bool(exact_reuse),
+        "exact_ready": _exact_reuse_ready(exact_reuse),
         "exact_reuse": exact_reuse,
         "capture_bundle": compact_capture_bundle(capture_bundle),
         "reproduction": reproduction,

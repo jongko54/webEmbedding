@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import base64
 from collections import Counter
 from html import escape
 from pathlib import Path
@@ -151,6 +152,50 @@ def _get_capture_sections(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "captures": captures if isinstance(captures, dict) else {},
         "session_request": session_request if isinstance(session_request, dict) else {},
     }
+
+
+def _extract_visual_stage_reference(capture_bundle: dict[str, Any], captures: dict[str, Any]) -> dict[str, Any]:
+    screenshot = captures.get("screenshot", {}) if isinstance(captures, dict) else {}
+    if isinstance(screenshot, dict) and screenshot.get("available") and screenshot.get("base64"):
+        mime_type = str(screenshot.get("mimeType") or "image/png")
+        return {
+            "available": True,
+            "source": "runtime.captures.screenshot.base64",
+            "referenceImage": {
+                "src": f"data:{mime_type};base64,{screenshot.get('base64')}",
+                "mimeType": mime_type,
+                "byteLength": screenshot.get("byteLength"),
+            },
+        }
+
+    bundle = capture_bundle.get("bundle", {}) if isinstance(capture_bundle, dict) else {}
+    captured = bundle.get("captured_artifacts", {}) if isinstance(bundle.get("captured_artifacts"), dict) else {}
+    persisted = bundle.get("persisted", {}) if isinstance(bundle.get("persisted"), dict) else {}
+    persisted_files = persisted.get("files", {}) if isinstance(persisted.get("files"), dict) else {}
+    path_candidates = [
+        (captured.get("screenshot") or {}).get("path") if isinstance(captured.get("screenshot"), dict) else None,
+        persisted_files.get("screenshot"),
+    ]
+    for candidate in path_candidates:
+        if not candidate:
+            continue
+        path = Path(str(candidate)).expanduser()
+        if not path.exists() or not path.is_file():
+            continue
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        mime_type = "image/png" if path.suffix.lower() != ".jpg" else "image/jpeg"
+        return {
+            "available": True,
+            "source": "persisted.screenshot",
+            "referenceImage": {
+                "src": f"data:{mime_type};base64,{encoded}",
+                "mimeType": mime_type,
+                "byteLength": path.stat().st_size,
+                "path": str(path),
+            },
+        }
+
+    return {"available": False, "referenceImage": None}
 
 
 def _collect_dom_outline(node: dict[str, Any] | None, bucket: list[dict[str, Any]], depth: int = 0, limit: int = 12) -> None:
@@ -1645,6 +1690,106 @@ def _infer_section_role(
     return "content"
 
 
+def _visual_layer_kind(rect: dict[str, int], viewport_width: int, viewport_height: int, role: str) -> str:
+    if rect["y"] <= max(80, int(viewport_height * 0.10)) and rect["width"] >= int(viewport_width * 0.45):
+        return "topbar"
+    if rect["x"] <= max(96, int(viewport_width * 0.08)) and rect["height"] >= int(viewport_height * 0.45):
+        return "left-rail"
+    if rect["x"] + rect["width"] >= int(viewport_width * 0.88) and rect["height"] >= int(viewport_height * 0.35):
+        return "right-rail"
+    if rect["y"] + rect["height"] >= int(viewport_height * 0.86) and rect["width"] >= int(viewport_width * 0.45):
+        return "footer"
+    if role in {"action", "masthead"}:
+        return role
+    if rect["width"] >= int(viewport_width * 0.5) and rect["height"] >= int(viewport_height * 0.22):
+        return "workspace"
+    return "content"
+
+
+def _visual_layer_score(layer: dict[str, Any]) -> tuple[int, int, int]:
+    rect = _rect_dict(layer.get("rect"))
+    area = rect["width"] * rect["height"]
+    return (-area, rect["y"], rect["x"])
+
+
+def _build_visual_layers(
+    blocks: list[dict[str, Any]],
+    viewport_width: int,
+    viewport_height: int,
+    document_height: int,
+    interaction_labels: set[str],
+    limit: int = 28,
+) -> list[dict[str, Any]]:
+    layers: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, int, int, str]] = set()
+    max_y = max(document_height, viewport_height)
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        tag = str(block.get("tag") or "div").lower()
+        if tag in NOISY_TAGS or tag in {"html", "body"}:
+            continue
+        rect = _rect_dict(block.get("rect"))
+        if rect["width"] < 8 or rect["height"] < 8 or rect["y"] > max_y:
+            continue
+        title = _block_title(block, index)
+        copy = _block_copy(block)
+        role = _infer_section_role(block, viewport_width, viewport_height, interaction_labels)
+        style_snapshot = _style_snapshot_from_block(block)
+        if not (title or copy or _has_visible_surface(style_snapshot) or role in {"action", "masthead"}):
+            continue
+        key = (rect["x"], rect["y"], rect["width"], rect["height"], _clean_text(title, 48))
+        if key in seen:
+            continue
+        seen.add(key)
+        layers.append(
+            {
+                "id": f"visual-layer-{len(layers) + 1}",
+                "tag": tag,
+                "role": role,
+                "kind": _visual_layer_kind(rect, viewport_width, viewport_height, role),
+                "title": title,
+                "copy": copy,
+                "rect": rect,
+                "styleSnapshot": style_snapshot,
+            }
+        )
+        if len(layers) >= limit:
+            break
+    layers.sort(key=_visual_layer_score)
+    for z_index, layer in enumerate(layers, start=1):
+        layer["zIndex"] = z_index
+    return layers
+
+
+def _build_shell_regions(visual_layers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    preferred_order = ("topbar", "left-rail", "workspace", "right-rail", "footer", "masthead", "action", "content")
+    regions: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for kind in preferred_order:
+        candidates = [
+            layer
+            for layer in visual_layers
+            if isinstance(layer, dict) and layer.get("kind") == kind and layer.get("id") not in used
+        ]
+        candidates.sort(key=lambda layer: _rect_dict(layer.get("rect"))["width"] * _rect_dict(layer.get("rect"))["height"], reverse=True)
+        for layer in candidates[:2 if kind in {"workspace", "content"} else 1]:
+            used.add(str(layer.get("id")))
+            regions.append(
+                {
+                    "id": f"shell-region-{len(regions) + 1}",
+                    "sourceLayerId": layer.get("id"),
+                    "role": kind,
+                    "title": layer.get("title"),
+                    "copy": layer.get("copy"),
+                    "rect": layer.get("rect") or {},
+                    "styleSnapshot": layer.get("styleSnapshot") or {},
+                    "zIndex": layer.get("zIndex"),
+                }
+            )
+    return regions[:8]
+
+
 def _renderer_confidence(summary: dict[str, Any]) -> str:
     signals = summary.get("signals", {}) if isinstance(summary, dict) else {}
     if all(bool(signals.get(label)) for label in ("dom_available", "styles_available", "interactions_available")):
@@ -1734,6 +1879,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     interaction_trace = (interaction_summary or {}).get("traceSample", [])
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    visual_stage = summary.get("visualStage", {}) if isinstance(summary.get("visualStage"), dict) else {}
     viewport_width = _viewport_side(summary, "width", 1440)
     viewport_height = _viewport_side(summary, "height", 1200)
     document_height = max(int(summary.get("documentHeight") or viewport_height), viewport_height)
@@ -1787,6 +1933,14 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
             }
         )
+
+    visual_layers = _build_visual_layers(
+        blocks=blocks if isinstance(blocks, list) else [],
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        document_height=document_height,
+        interaction_labels=interaction_labels,
+    )
 
     interaction_cards: list[dict[str, Any]] = []
     for index, entry in enumerate(interactions[:24] if isinstance(interactions, list) else []):
@@ -2142,6 +2296,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         for section in section_cards
     ]
     shell_panels: list[dict[str, Any]] = []
+    shell_regions = _build_shell_regions(visual_layers) if app_shell_mode else []
     if app_shell_mode:
         shell_panels = [
             {
@@ -2219,7 +2374,10 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     shell_state = {
         "emphasis": "workspace" if any(panel.get("role") == "workspace" for panel in shell_panels if isinstance(panel, dict)) else "navigation",
         "focusRegion": "workspace" if app_shell_mode else None,
-        "activeRegions": [panel.get("role") for panel in shell_panels if isinstance(panel, dict) and panel.get("items")],
+        "activeRegions": [
+            *(region.get("role") for region in shell_regions if isinstance(region, dict)),
+            *(panel.get("role") for panel in shell_panels if isinstance(panel, dict) and panel.get("items")),
+        ],
     }
     layout_tokens = _build_layout_tokens(style_tokens=summary.get("styleTokens") or {}, masthead_links=masthead_links, focus_shell_style=focus_shell_style, focus_input=focus_input if isinstance(focus_input, dict) else {}, focus_actions=action_items)
 
@@ -2230,6 +2388,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "signalBits": signal_bits[:6],
         "viewport": summary.get("viewport"),
         "documentHeight": document_height,
+        "visualStage": visual_stage,
         "palette": {
             "text": palette.get("text"),
             "accent": palette.get("accent"),
@@ -2289,13 +2448,27 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "controls": footer_controls,
         },
         "bodySections": body_sections,
+        "visualLayers": visual_layers,
         "interactions": interaction_cards,
         "interactionTrace": trace_cards,
+        "shellRegions": shell_regions,
         "shellPanels": shell_panels,
         "shellTopology": {
             "primaryRegion": "workspace" if app_shell_mode else None,
-            "regionOrder": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+            "regionOrder": [
+                *(region.get("role") for region in shell_regions if isinstance(region, dict)),
+                *(panel.get("role") for panel in shell_panels if isinstance(panel, dict)),
+            ],
             "regions": [
+                {
+                    "id": region.get("id"),
+                    "role": region.get("role"),
+                    "title": region.get("title"),
+                    "itemCount": 1,
+                }
+                for region in shell_regions
+                if isinstance(region, dict)
+            ] + [
                 {
                     "id": panel.get("id"),
                     "role": panel.get("role"),
@@ -2310,8 +2483,12 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "shellSummary": {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
+            "regionCount": len(shell_regions),
             "panelTitles": [panel.get("title") for panel in shell_panels if isinstance(panel, dict)],
-            "panelRoles": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+            "panelRoles": [
+                *(region.get("role") for region in shell_regions if isinstance(region, dict)),
+                *(panel.get("role") for panel in shell_panels if isinstance(panel, dict)),
+            ],
             "panelItemCounts": [
                 len(panel.get("items", []) if isinstance(panel.get("items", []), list) else [])
                 for panel in shell_panels
@@ -2498,6 +2675,22 @@ def _render_bounded_reference_page_tsx() -> str:
             "  data: BoundedReferenceData;",
             "};",
             "",
+            "type BoundedLayer = {",
+            "  id?: string | null;",
+            "  role?: string | null;",
+            "  kind?: string | null;",
+            "  title?: string | null;",
+            "  copy?: string | null;",
+            "  rect?: { x?: number | null; y?: number | null; width?: number | null; height?: number | null } | null;",
+            "  styleSnapshot?: Record<string, unknown> | null;",
+            "  zIndex?: number | null;",
+            "};",
+            "",
+            "type VisualStage = {",
+            "  height?: number | null;",
+            "  referenceImage?: { src?: string | null } | null;",
+            "};",
+            "",
             "function styleFromSnapshot(snapshot?: Record<string, unknown> | null, visualOnly = false): CSSProperties | undefined {",
             "  if (!snapshot || typeof snapshot !== \"object\") {",
             "    return undefined;",
@@ -2605,7 +2798,8 @@ def _render_bounded_reference_page_tsx() -> str:
             "    left: `${((Number(rect.x) || 0) / width) * 100}%`,",
             "    top: `${((Number(rect.y) || 0) / height) * 100}%`,",
             "    width: `${((Number(rect.width) || 0) / width) * 100}%`,",
-            "    minHeight: `${Math.max(((Number(rect.height) || 0) / height) * 100, 3)}%`,",
+            "    height: `${Math.max(((Number(rect.height) || 0) / height) * 100, 2)}%`,",
+            "    minHeight: `${Math.max(((Number(rect.height) || 0) / height) * 100, 2)}%`,",
             "  };",
             "}",
             "",
@@ -2620,6 +2814,12 @@ def _render_bounded_reference_page_tsx() -> str:
             '  const shellSummary = data.shellSummary ?? {};',
             '  const shellTopology = data.shellTopology ?? {};',
             '  const shellState = data.shellState ?? {};',
+            "  const visualLayers = ((data.visualLayers?.length ? data.visualLayers : data.sections) ?? []) as readonly BoundedLayer[];",
+            "  const shellRegions = ((data.shellRegions ?? []) as readonly BoundedLayer[]);",
+            "  const visualStage = data.visualStage as VisualStage | undefined;",
+            "  const stageReferenceSrc = visualStage?.referenceImage?.src;",
+            "  const stageHeight = visualStage?.height ?? data.viewport?.height;",
+            "  const stageCanvasStyle: CSSProperties | undefined = stageHeight ? { minHeight: `${stageHeight}px` } : undefined;",
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
             '    const inputType = data.hero.focusInput?.inputType ?? "text";',
@@ -2737,6 +2937,28 @@ def _render_bounded_reference_page_tsx() -> str:
             "    }",
             "    return <div {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</div>;",
             "  };",
+            "  const renderVisualLayer = (layer: BoundedLayer) => {",
+            "    const rectStyle = stageRectStyle(layer.rect, data.viewport) ?? {};",
+            "    const style = { ...rectStyle, ...styleFromSnapshot(layer.styleSnapshot, true), zIndex: layer.zIndex ?? undefined };",
+            "    return (",
+            '      <div className="bounded-visual-layer" data-kind={layer.kind ?? layer.role ?? "content"} data-role={layer.role ?? "content"} key={layer.id ?? `${layer.title}-${layer.kind}`} style={style}>',
+            "        {layer.kind ? <span className=\"bounded-layer-role\">{layer.kind}</span> : null}",
+            "        {layer.title ? <strong>{layer.title}</strong> : null}",
+            "        {layer.copy ? <p>{layer.copy}</p> : null}",
+            "      </div>",
+            "    );",
+            "  };",
+            "  const renderShellRegion = (region: BoundedLayer) => {",
+            "    const rectStyle = stageRectStyle(region.rect, data.viewport) ?? {};",
+            "    const style = { ...rectStyle, ...styleFromSnapshot(region.styleSnapshot, true), zIndex: region.zIndex ?? undefined };",
+            "    return (",
+            '      <div className="bounded-shell-region" data-region={region.role ?? region.kind ?? "content"} key={region.id ?? `${region.title}-${region.role}`} style={style}>',
+            "        {region.role ? <span className=\"bounded-layer-role\">{region.role}</span> : null}",
+            "        {region.title ? <strong>{region.title}</strong> : null}",
+            "        {region.copy ? <p>{region.copy}</p> : null}",
+            "      </div>",
+            "    );",
+            "  };",
             "  return (",
             '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}`}>',
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
@@ -2830,7 +3052,14 @@ def _render_bounded_reference_page_tsx() -> str:
             "            ))}",
             "          </div>",
             '          {shellState.emphasis ? <div className="bounded-meta bounded-meta--inline"><span className="bounded-chip bounded-chip--muted">state: {shellState.emphasis}</span>{(shellState.activeRegions ?? []).slice(0, 3).map((role) => (<span className="bounded-chip" key={role}>{role}</span>))}</div> : null}',
-            '          <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px)" }}>',
+            "          {shellRegions.length ? (",
+            '            <div className="bounded-app-composition">',
+            '              <div className="bounded-stage-canvas" style={stageCanvasStyle}>',
+            "                {shellRegions.map((region) => renderShellRegion(region))}",
+            "              </div>",
+            "            </div>",
+            "          ) : null}",
+            '          <div className="bounded-shell-panel-grid">',
             "            {shellPanels.map((panel) => (",
             '              <div className="bounded-panel bounded-stack" key={panel.id}>',
             '                <p className="bounded-kicker">{panel.title}</p>',
@@ -2856,20 +3085,10 @@ def _render_bounded_reference_page_tsx() -> str:
             "        </div>",
             "      ) : null}",
             "",
-            '      <div className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}`}>',
-            '            <div className="bounded-stage-canvas">',
-            "              {data.sections.slice(0, 8).map((section) => (",
-            '                <div',
-            '                  className="bounded-stage-block bounded-panel"',
-            "                  data-role={section.role}",
-            "                  key={`stage-${section.id}`}",
-            "                  style={{ ...stageRectStyle(section.rect, data.viewport), ...styleFromSnapshot(section.styleSnapshot) }}",
-            "                >",
-            '                  <p className="bounded-kicker">{section.role}</p>',
-            "                  <strong>{section.title}</strong>",
-            "                  <p className=\"bounded-copy\">{section.copy}</p>",
-            "                </div>",
-            "              ))}",
+            '      <div className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}${stageReferenceSrc ? " bounded-stage--reference" : ""}`}>',
+            '            {stageReferenceSrc ? <img alt="" aria-hidden="true" className="bounded-stage-reference" src={stageReferenceSrc} /> : null}',
+            '            <div className={`bounded-stage-canvas${stageReferenceSrc ? " bounded-stage-canvas--overlay" : ""}`} style={stageCanvasStyle}>',
+            "              {visualLayers.slice(0, 28).map((layer) => renderVisualLayer(layer))}",
             "        </div>",
             "      </div>",
             "",
@@ -3058,9 +3277,14 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     centered_focus = layout_mode == "centered-focus"
     app_shell_mode = layout_mode == "app-shell"
     shell_panels = app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []
+    shell_regions = app_model.get("shellRegions", []) if isinstance(app_model.get("shellRegions", []), list) else []
+    visual_stage = app_model.get("visualStage", {}) if isinstance(app_model.get("visualStage", {}), dict) else {}
+    reference_image = visual_stage.get("referenceImage", {}) if isinstance(visual_stage.get("referenceImage"), dict) else {}
+    reference_image_src = str(reference_image.get("src") or "")
+    visual_layers = app_model.get("visualLayers", []) if isinstance(app_model.get("visualLayers", []), list) else []
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
-    viewport_height = max(int(viewport.get("height") or 1200), 1)
+    viewport_height = max(int(visual_stage.get("height") or viewport.get("height") or 1200), 1)
     nav_shadow_text = escape(str(runtime_materialization.get("navText") or ""))
     search_shadow_text = escape(str(runtime_materialization.get("searchText") or ""))
     footer_shadow_text = escape(str(runtime_materialization.get("footerText") or ""))
@@ -3182,7 +3406,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             f"left:{(x / viewport_width) * 100:.2f}%",
             f"top:{(y / viewport_height) * 100:.2f}%",
             f"width:{(width / viewport_width) * 100:.2f}%",
-            f"min-height:{max((height / viewport_height) * 100, 3):.2f}%",
+            f"height:{max((height / viewport_height) * 100, 2):.2f}%",
+            f"min-height:{max((height / viewport_height) * 100, 2):.2f}%",
         ]
         attr = _style_attr_from_snapshot(section.get("styleSnapshot"))
         if attr:
@@ -3395,14 +3620,14 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         )
 
     stage_cards = []
-    for section in app_model.get("sections", [])[:8] if isinstance(app_model.get("sections", []), list) else []:
+    for section in (visual_layers or app_model.get("sections", []))[:28] if isinstance((visual_layers or app_model.get("sections", [])), list) else []:
         if not isinstance(section, dict):
             continue
         stage_cards.append(
             "\n".join(
                 [
-                    f'        <div class="bounded-stage-block bounded-panel" data-role="{escape(str(section.get("role") or "content"))}"{render_stage_style(section)}>',
-                    f'          <p class="bounded-kicker">{escape(str(section.get("role") or "content"))}</p>',
+                    f'        <div class="bounded-visual-layer" data-kind="{escape(str(section.get("kind") or section.get("role") or "content"))}" data-role="{escape(str(section.get("role") or "content"))}"{render_stage_style(section)}>',
+                    f'          <span class="bounded-layer-role">{escape(str(section.get("kind") or section.get("role") or "content"))}</span>',
                     f'          <strong>{escape(str(section.get("title") or "Captured section"))}</strong>',
                     f'          <p class="bounded-copy">{escape(str(section.get("copy") or ""))}</p>',
                     "        </div>",
@@ -3507,13 +3732,30 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     if app_shell_mode:
         shell_topology = {
             "primaryRegion": "workspace",
-            "regionOrder": [panel.get("role") for panel in shell_panels if isinstance(panel, dict)],
+            "regionOrder": [
+                *(region.get("role") for region in shell_regions if isinstance(region, dict)),
+                *(panel.get("role") for panel in shell_panels if isinstance(panel, dict)),
+            ],
         }
         shell_summary = {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
+            "regionCount": len(shell_regions),
             "panelTitles": [panel.get("title") for panel in shell_panels if isinstance(panel, dict)],
         }
+        shell_region_bits: list[str] = []
+        for region in shell_regions:
+            if not isinstance(region, dict):
+                continue
+            shell_region_bits.extend(
+                [
+                    f'          <div class="bounded-shell-region" data-region="{escape(str(region.get("role") or region.get("kind") or "content"))}"{render_stage_style(region)}>',
+                    f'            <span class="bounded-layer-role">{escape(str(region.get("role") or region.get("kind") or "content"))}</span>',
+                    f'            <strong>{escape(str(region.get("title") or "Captured region"))}</strong>',
+                    f'            <p>{escape(str(region.get("copy") or ""))}</p>',
+                    "          </div>",
+                ]
+            )
         app_shell_panel_bits.extend(
             [
                 '    <div class="bounded-panel bounded-stack bounded-app-shell">',
@@ -3521,11 +3763,23 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 '      <div class="bounded-meta bounded-meta--inline">',
                 f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["kind"]}</span>',
                 f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["panelCount"]} panels</span>',
+                f'        <span class="bounded-chip bounded-chip--muted">{shell_summary["regionCount"]} regions</span>',
                 f'        <span class="bounded-chip">primary: {escape(str(shell_topology["primaryRegion"]))}</span>',
                 *[f'        <span class="bounded-chip bounded-chip--muted">{escape(str(role))}</span>' for role in shell_topology["regionOrder"][:4] if role],
                 *[f'        <span class="bounded-chip">{escape(str(title))}</span>' for title in shell_summary["panelTitles"][:3] if title],
                 "      </div>",
-                '      <div style="display:grid; gap:16px; grid-template-columns:minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);">',
+                *(
+                    [
+                        '      <div class="bounded-app-composition">',
+                        f'        <div class="bounded-stage-canvas" style="min-height:{viewport_height}px">',
+                        *shell_region_bits,
+                        "        </div>",
+                        "      </div>",
+                    ]
+                    if shell_region_bits
+                    else []
+                ),
+                '      <div class="bounded-shell-panel-grid">',
             ]
         )
         for panel in shell_panels[:3]:
@@ -3646,8 +3900,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             ),
             "    </div>",
             *app_shell_panel_bits,
-            f'    <div class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}">',
-            '      <div class="bounded-stage-canvas">',
+            f'    <div class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}{" bounded-stage--reference" if reference_image_src else ""}">',
+            *( [f'      <img alt="" aria-hidden="true" class="bounded-stage-reference" src="{escape(reference_image_src)}" />'] if reference_image_src else [] ),
+            f'      <div class="bounded-stage-canvas{" bounded-stage-canvas--overlay" if reference_image_src else ""}" style="min-height:{viewport_height}px">',
             *stage_cards,
             "      </div>",
             "    </div>",
@@ -4217,6 +4472,19 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  font: inherit;",
             "  appearance: none;",
             "}",
+            ".bounded-app-composition {",
+            "  position: relative;",
+            "  min-height: 360px;",
+            "  overflow: hidden;",
+            "  border-radius: var(--bounded-panel-radius);",
+            "  border: 1px solid var(--bounded-border);",
+            "  background: rgba(255, 255, 255, 0.03);",
+            "}",
+            ".bounded-shell-panel-grid {",
+            "  display: grid;",
+            "  gap: 16px;",
+            "  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);",
+            "}",
             ".bounded-stage {",
             "  position: relative;",
             "  min-height: 280px;",
@@ -4228,15 +4496,55 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  position: relative;",
             "  min-height: 280px;",
             "}",
+            ".bounded-stage-reference {",
+            "  display: block;",
+            "  width: 100%;",
+            "  height: auto;",
+            "  object-fit: contain;",
+            "}",
+            ".bounded-stage-canvas--overlay {",
+            "  position: absolute;",
+            "  inset: 0;",
+            "  width: 100%;",
+            "  height: 100%;",
+            "  pointer-events: none;",
+            "}",
             ".bounded-stage--compact .bounded-stage-canvas { min-height: 240px; }",
-            ".bounded-stage-block {",
+            ".bounded-visual-layer, .bounded-shell-region {",
             "  position: absolute;",
             "  padding: 12px 14px;",
             "  overflow: hidden;",
+            "  min-width: 20px;",
+            "  min-height: 20px;",
+            "  color: inherit;",
+            "  background-clip: padding-box;",
             "}",
-            ".bounded-stage-block strong {",
+            ".bounded-visual-layer strong, .bounded-shell-region strong {",
             "  display: block;",
             "  margin-bottom: 6px;",
+            "}",
+            ".bounded-visual-layer p, .bounded-shell-region p {",
+            "  margin: 0;",
+            "  max-height: 4.5em;",
+            "  overflow: hidden;",
+            "}",
+            ".bounded-layer-role {",
+            "  display: inline-block;",
+            "  margin-bottom: 6px;",
+            "  font-size: 11px;",
+            "  line-height: 1.2;",
+            "  opacity: 0.68;",
+            "}",
+            ".bounded-shell-region[data-region=\"workspace\"] { min-height: 120px; }",
+            ".bounded-shell-region[data-region=\"left-rail\"], .bounded-shell-region[data-region=\"right-rail\"] { min-width: 120px; }",
+            ".bounded-stage--reference .bounded-visual-layer {",
+            "  opacity: 0.24;",
+            "  background: transparent !important;",
+            "  box-shadow: none !important;",
+            "  border: 1px solid rgba(255, 255, 255, 0.24);",
+            "}",
+            ".bounded-stage--reference .bounded-visual-layer strong, .bounded-stage--reference .bounded-visual-layer p, .bounded-stage--reference .bounded-layer-role {",
+            "  display: none;",
             "}",
             ".bounded-eyebrow, .bounded-kicker {",
             "  margin: 0 0 10px;",
@@ -4409,6 +4717,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "    align-items: flex-start;",
             "  }",
             "  .bounded-nav { justify-content: flex-start; }",
+            "  .bounded-shell-panel-grid { grid-template-columns: minmax(0, 1fr); }",
             "  .bounded-footer { flex-direction: column; align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }",
             "  .bounded-footer--frame { margin-left: -20px; margin-right: -20px; }",
             "  .bounded-footer-cluster--end { justify-content: flex-start; }",
@@ -4566,6 +4875,12 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         renderer_kind = "frame-aware-next-app"
         renderer_strategy = "capture-bundle-to-frame-aware-app"
 
+    visual_stage = _extract_visual_stage_reference(capture_bundle, captures)
+    visual_stage["width"] = viewport_width
+    visual_stage["height"] = viewport_height
+    visual_stage["documentHeight"] = document_height
+    visual_stage["mode"] = "screenshot-led" if visual_stage.get("available") else "geometry-only"
+
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
         "coverage": "bounded-rebuild-scaffold",
@@ -4645,6 +4960,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         "visual_fallback": visual_fallback,
+        "visualStage": visual_stage,
         "note": "This scaffold is intentionally bounded. It is a starter for reconstruction when an exact reuse path is unavailable.",
     }
     asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens)

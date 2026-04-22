@@ -3,7 +3,8 @@
     "exact": {
       "total": 4,
       "status_counts.ok": 4,
-      "surface_counts.static-document": 4,
+      "surface_counts.static-document": 3,
+      "surface_counts.longform-content-surface": 1,
       "renderer_route_counts.exact-reuse": 2,
       "renderer_route_counts.bounded-rebuild": 2,
       "renderer_family_counts.document-next-app": 4,
@@ -43,7 +44,7 @@
       "exact": {
         "status": "ok",
         "route_quality": "complete",
-        "route.primary_surface": "static-document",
+        "route.primary_surface": "longform-content-surface",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "bounded-rebuild",
         "route.renderer_family": "document-next-app"

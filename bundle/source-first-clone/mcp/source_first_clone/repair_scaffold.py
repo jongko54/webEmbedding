@@ -571,206 +571,6 @@ def _load_breakpoint_contexts(capture_bundle: dict[str, Any], repair_plan: dict[
     return contexts
 
 
-def _render_repaired_bounded_reference_page_component() -> str:
-    return "\n".join(
-        [
-            'import type { BoundedReferenceData } from "./reference-data";',
-            "",
-            "type Props = {",
-            "  data: BoundedReferenceData;",
-            "};",
-            "",
-            "export function BoundedReferencePage({ data }: Props) {",
-            '  const variant = data.presentation?.variant ?? "default";',
-            '  const compact = variant === "compact-center-stage";',
-            "  const bodySections = compact ? data.bodySections.slice(0, 2) : data.bodySections;",
-            "  const interactionEntries = compact ? data.interactions.slice(0, 3) : data.interactions;",
-            "  const heroBits = compact ? data.metaBits.slice(0, 2) : data.metaBits;",
-            "  return (",
-            '    <main className={`bounded-shell ${compact ? "bounded-shell--compact" : ""}`.trim()}>',
-            '      <header className={`bounded-masthead bounded-panel ${compact ? "bounded-masthead--compact" : ""}`.trim()}>',
-            '        <div className="bounded-brand-block">',
-            '          <p className="bounded-eyebrow">{compact ? "Reference shell" : "Captured reference"}</p>',
-            '          <strong className="bounded-brand">{data.masthead.brand}</strong>',
-            "        </div>",
-            '        <nav className="bounded-nav" aria-label="Captured navigation sample">',
-            "          {data.masthead.links.length ? (",
-            "            data.masthead.links.map((link) => (",
-            '              <a className="bounded-nav-link" href={link.href ?? "#"} key={`${link.label}-${link.href ?? "inline"}`}>',
-            "                {link.label}",
-            "              </a>",
-            "            ))",
-            "          ) : (",
-            '            <span className="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>',
-            "          )}",
-            "        </nav>",
-            "      </header>",
-            "",
-            '      <section className={`bounded-hero bounded-panel ${compact ? "bounded-hero--compact" : ""}`.trim()}>',
-            "        {compact ? <div className=\"bounded-hero-orb\" aria-hidden=\"true\" /> : null}",
-            '        <p className="bounded-eyebrow">{data.hero.eyebrow}</p>',
-            "        <h1>{data.hero.title}</h1>",
-            '        <p className="bounded-lede">{data.hero.copy}</p>',
-            '        <div className="bounded-meta">',
-            "          {heroBits.map((bit) => (",
-            '            <span className="bounded-chip" key={bit}>',
-            "              {bit}",
-            "            </span>",
-            "          ))}",
-            "        </div>",
-            '        <div className={`bounded-hero-actions ${compact ? "bounded-hero-actions--compact" : ""}`.trim()}>',
-            '          <span className="bounded-chip bounded-chip--muted">{data.hero.meta}</span>',
-            "          {data.hero.details.slice(0, compact ? 2 : 3).map((detail) => (",
-            '            <span className="bounded-chip bounded-chip--muted" key={detail}>',
-            "              {detail}",
-            "            </span>",
-            "          ))}",
-            "          {data.hero.actions.map((action) => (",
-            '            <a className="bounded-cta" href={action.href ?? "#"} key={`${action.label}-${action.href ?? "inline"}`}>',
-            "              {action.label}",
-            "            </a>",
-            "          ))}",
-            "        </div>",
-            "      </section>",
-            "",
-            "      {compact ? (",
-            '        <section className="bounded-compact-shell">',
-            "          {bodySections.length ? (",
-            '            <section className="bounded-section-grid bounded-section-grid--compact">',
-            "              {bodySections.map((section) => (",
-            '                <article className="bounded-card bounded-panel" data-role={section.role} key={section.id}>',
-            '                  <div className="bounded-card-head">',
-            '                    <p className="bounded-kicker">{section.role}</p>',
-            '                    <span className="bounded-chip bounded-chip--muted">{section.tag}</span>',
-            "                  </div>",
-            "                  <h2>{section.title}</h2>",
-            '                  <p className="bounded-copy">{section.copy}</p>',
-            '                  <div className="bounded-meta bounded-meta--inline">',
-            '                    <span className="bounded-chip">{section.meta}</span>',
-            "                  </div>",
-            "                </article>",
-            "              ))}",
-            "            </section>",
-            "          ) : null}",
-            '          <section className="bounded-panel bounded-stack">',
-            '            <p className="bounded-kicker">Interaction samples</p>',
-            '            <div className="bounded-stack bounded-stack--tight">',
-            "              {interactionEntries.length ? (",
-            "                interactionEntries.map((entry) => (",
-            '                  <article className="bounded-mini-card" key={entry.id}>',
-            "                    <strong>{entry.label}</strong>",
-            '                    <p>{entry.copy}</p>',
-            '                    <div className="bounded-meta bounded-meta--inline">',
-            "                      {entry.states.slice(0, 2).map((state) => (",
-            '                        <span className="bounded-chip bounded-chip--muted" key={state}>',
-            "                          {state}",
-            "                        </span>",
-            "                      ))}",
-            "                    </div>",
-            "                  </article>",
-            "                ))",
-            "              ) : (",
-            '                <article className="bounded-mini-card"><strong>No sampled interactions</strong><p>Interaction data was not available in the capture bundle.</p></article>',
-            "              )}",
-            "            </div>",
-            "          </section>",
-            "        </section>",
-            "      ) : (",
-            '        <section className="bounded-layout">',
-            '          <div className="bounded-main">',
-            '            <section className="bounded-section-grid">',
-            "              {bodySections.map((section) => (",
-            '                <article className="bounded-card bounded-panel" data-role={section.role} key={section.id}>',
-            '                  <div className="bounded-card-head">',
-            '                    <p className="bounded-kicker">{section.role}</p>',
-            '                    <span className="bounded-chip bounded-chip--muted">{section.tag}</span>',
-            "                  </div>",
-            "                  <h2>{section.title}</h2>",
-            '                  <p className="bounded-copy">{section.copy}</p>',
-            '                  <div className="bounded-meta bounded-meta--inline">',
-            '                    <span className="bounded-chip">{section.meta}</span>',
-            "                    {section.details.slice(0, 3).map((detail) => (",
-            '                      <span className="bounded-chip bounded-chip--muted" key={detail}>',
-            "                        {detail}",
-            "                      </span>",
-            "                    ))}",
-            "                  </div>",
-            "                </article>",
-            "              ))}",
-            "            </section>",
-            "          </div>",
-            "",
-            '          <aside className="bounded-rail">',
-            '            <section className="bounded-panel bounded-stack">',
-            '              <p className="bounded-kicker">Renderer status</p>',
-            '              <div className="bounded-status-row">',
-            "                <strong>{data.reconstruction.strategy}</strong>",
-            '                <span className="bounded-chip">{data.reconstruction.confidence}</span>',
-            "              </div>",
-            '              <ul className="bounded-list">',
-            "                {data.reconstruction.remainingGaps.map((item) => (",
-            "                  <li key={item}>{item}</li>",
-            "                ))}",
-            "              </ul>",
-            "            </section>",
-            '            <section className="bounded-panel bounded-stack">',
-            '              <p className="bounded-kicker">Signals</p>',
-            '              <div className="bounded-meta bounded-meta--inline">',
-            "                {data.signalBits.length ? (",
-            "                  data.signalBits.map((signal) => (",
-            '                    <span className="bounded-chip bounded-chip--muted" key={signal}>',
-            "                      {signal}",
-            "                    </span>",
-            "                  ))",
-            "                ) : (",
-            '                  <span className="bounded-chip bounded-chip--muted">No extra runtime signals were captured.</span>',
-            "                )}",
-            "              </div>",
-            "            </section>",
-            '            <section className="bounded-panel bounded-stack">',
-            '              <p className="bounded-kicker">Interaction samples</p>',
-            '              <div className="bounded-stack">',
-            "                {interactionEntries.length ? (",
-            "                  interactionEntries.map((entry) => (",
-            '                    <article className="bounded-mini-card" key={entry.id}>',
-            "                      <strong>{entry.label}</strong>",
-            "                      <p>{entry.copy}</p>",
-            '                      <div className="bounded-meta bounded-meta--inline">',
-            "                        {entry.states.map((state) => (",
-            '                          <span className="bounded-chip bounded-chip--muted" key={state}>',
-            "                            {state}",
-            "                          </span>",
-            "                        ))}",
-            "                      </div>",
-            "                    </article>",
-            "                  ))",
-            "                ) : (",
-            '                  <article className="bounded-mini-card"><strong>No sampled interactions</strong><p>Interaction data was not available in the capture bundle.</p></article>',
-            "                )}",
-            "              </div>",
-            "            </section>",
-            '            <section className="bounded-panel bounded-stack">',
-            '              <p className="bounded-kicker">Layout rhythm</p>',
-            '              <div className="bounded-stack bounded-stack--tight">',
-            "                {data.reconstruction.layoutRhythm.slice(0, 6).map((item) => (",
-            '                  <article className="bounded-outline-item" key={item.id}>',
-            "                    <strong>{item.role}</strong>",
-            "                    <p>{item.size}</p>",
-            '                    <span className="bounded-outline-meta">y: {item.y ?? 0}</span>',
-            "                  </article>",
-            "                ))}",
-            "              </div>",
-            "            </section>",
-            "          </aside>",
-            "        </section>",
-            "      )}",
-            "    </main>",
-            "  );",
-            "}",
-        ]
-    )
-
-
 def _interaction_cards_from_capture(capture_bundle: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
     runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle, dict) else {}
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
@@ -1083,6 +883,11 @@ def build_repair_scaffold(
     repaired_app_model = json.loads(json.dumps(base_app_model))
     focus_checks = [str(item) for item in (repair_plan.get("focus_checks") or []) if item]
     applied_repairs: list[str] = []
+    artifact_quality = repair_plan.get("artifact_quality") if isinstance(repair_plan, dict) else {}
+    if not isinstance(artifact_quality, dict):
+        artifact_quality = {}
+    preserve_visual_stage = bool(artifact_quality.get("expects_visual_stage"))
+    preserve_shell_regions = bool(artifact_quality.get("expects_shell_regions"))
 
     runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle, dict) else {}
     captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
@@ -1103,6 +908,10 @@ def build_repair_scaffold(
     breakpoint_contexts = _load_breakpoint_contexts(capture_bundle, repair_plan)
     footer_surface = _footer_surface_summary(repaired_app_model)
     centered_focus_surface = _centered_focus_surface_summary(repaired_app_model)
+    if preserve_visual_stage:
+        applied_repairs.append("Preserved visualStage and visualLayers anchors from the captured source geometry.")
+    if preserve_shell_regions:
+        applied_repairs.append("Preserved shellRegions anchors from the captured app-shell topology.")
 
     if body_style.get("color"):
         palette["text"] = body_style.get("color")
@@ -1264,6 +1073,8 @@ def build_repair_scaffold(
         and current_layout_mode != "centered-focus"
         and not has_focus_shell
         and not has_footer_surface
+        and not preserve_visual_stage
+        and not preserve_shell_regions
         and len(repaired_app_model.get("sections", []) if isinstance(repaired_app_model.get("sections", []), list) else []) <= 4
         and len(body_sections) <= 2
     )
@@ -1316,6 +1127,7 @@ def build_repair_scaffold(
         "surfaceMode": repaired_app_model.get("presentation", {}).get("surfaceMode"),
         "footerSurface": footer_surface,
         "centeredFocusSurface": centered_focus_surface,
+        "artifactQuality": artifact_quality,
         "compactEligible": should_compact,
     }
     repaired_summary["styleTokens"] = style_tokens
@@ -1360,6 +1172,7 @@ def build_repair_scaffold(
             "applied_repairs": applied_repairs[:8],
             "priority_findings": (repair_plan.get("priority_findings") or [])[:6],
             "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
+            "artifact_quality": artifact_quality,
         },
     }
 

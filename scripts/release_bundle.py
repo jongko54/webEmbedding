@@ -7,6 +7,7 @@ import hashlib
 import shutil
 import tarfile
 from pathlib import Path
+from tarfile import TarInfo
 
 
 PLUGIN_NAME = "source-first-clone"
@@ -20,6 +21,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def release_filter(member: TarInfo) -> TarInfo | None:
+    parts = Path(member.name).parts
+    if "__pycache__" in parts or member.name.endswith(".pyc"):
+        return None
+    return member
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     dist_root = repo_root / "dist"
@@ -27,11 +35,13 @@ def main() -> int:
     installer = repo_root / "python" / "web_embedding" / "installer.py"
     bootstrap = repo_root / "scripts" / "bootstrap.sh"
 
+    if dist_root.exists():
+        shutil.rmtree(dist_root)
     dist_root.mkdir(parents=True, exist_ok=True)
 
     bundle_archive = dist_root / f"{PLUGIN_NAME}-bundle.tar.gz"
     with tarfile.open(bundle_archive, "w:gz") as archive:
-        archive.add(bundle_root, arcname=PLUGIN_NAME)
+        archive.add(bundle_root, arcname=PLUGIN_NAME, filter=release_filter)
 
     install_py = dist_root / "install.py"
     install_sh = dist_root / "install.sh"
@@ -54,4 +64,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
