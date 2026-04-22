@@ -751,6 +751,19 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                 media_srcs.append(str(media.get("src") or ""))
         return media_srcs
 
+    def media_layouts_for_text(text: str) -> list[dict[str, Any]]:
+        lowered = text.lower()
+        layouts: list[dict[str, Any]] = []
+        for section in longform_document_sections:
+            if not isinstance(section, dict):
+                continue
+            haystack = " ".join(str(section.get(key) or "") for key in ("title", "copy")).lower()
+            media = section.get("media") if isinstance(section.get("media"), dict) else {}
+            layout = section.get("layout") if isinstance(section.get("layout"), dict) else {}
+            if lowered in haystack and isinstance(media, dict) and media.get("src"):
+                layouts.append(layout)
+        return layouts
+
     expected_media_by_text = {
         "who we are": "who-img.png",
         "leadership": "leadership.jpg",
@@ -762,6 +775,19 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             raise AssertionError(
                 f"longform scaffold did not match nearby media for {section_text!r}: expected {expected_media}, saw {media_srcs}"
             )
+    expected_placement_by_text = {
+        "who we are": "right",
+        "leadership": "right",
+        "company values": "full",
+    }
+    for section_text, expected_placement in expected_placement_by_text.items():
+        layouts = media_layouts_for_text(section_text)
+        if not any(layout.get("mediaPlacement") == expected_placement for layout in layouts):
+            raise AssertionError(
+                f"longform scaffold did not preserve media placement for {section_text!r}: expected {expected_placement}, saw {layouts}"
+            )
+    if "data-media-placement" not in longform_preview or "--bounded-media-width" not in longform_preview:
+        raise AssertionError("longform scaffold preview does not render captured media placement variables")
     if not any(isinstance(section, dict) and section.get("a11yRole") for section in longform_document_sections):
         raise AssertionError("longform scaffold did not attach accessibility metadata to documentSections")
     if "bounded-document-flow" not in longform_preview or "bounded-document-section" not in longform_preview:

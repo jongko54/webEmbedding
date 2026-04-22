@@ -868,12 +868,17 @@ def _section_shell_style_attr(style_snapshot: dict[str, Any] | None) -> str:
     if not isinstance(style_snapshot, dict) or not style_snapshot:
         return ""
     shell_fields = {
+        "color": "color",
         "backgroundColor": "background-color",
         "backgroundImage": "background-image",
         "backgroundSize": "background-size",
         "backgroundPosition": "background-position",
         "backgroundRepeat": "background-repeat",
         "backgroundClip": "background-clip",
+        "paddingTop": "padding-top",
+        "paddingRight": "padding-right",
+        "paddingBottom": "padding-bottom",
+        "paddingLeft": "padding-left",
         "boxShadow": "box-shadow",
         "borderRadius": "border-radius",
         "borderTopLeftRadius": "border-top-left-radius",
@@ -2391,6 +2396,50 @@ def _pick_section_media(
     return best_index, _media_from_candidate(media_candidates[best_index], section)
 
 
+def _document_section_layout(
+    section_rect: dict[str, int],
+    media: dict[str, Any] | None,
+    viewport_width: int,
+) -> dict[str, Any]:
+    width_percent = min(100, max(36, (section_rect["width"] / max(viewport_width, 1)) * 100)) if section_rect["width"] else 100
+    offset_percent = min(18, max(0, (section_rect["x"] / max(viewport_width, 1)) * 100)) if section_rect["x"] else 0
+    min_height = max(96, min(section_rect["height"], 720)) if section_rect["height"] else 96
+    layout: dict[str, Any] = {
+        "widthPercent": round(width_percent, 2),
+        "offsetPercent": round(offset_percent, 2),
+        "minHeight": min_height,
+    }
+    media_rect = _rect_dict(media.get("rect")) if isinstance(media, dict) and isinstance(media.get("rect"), dict) else None
+    if not media_rect or not media_rect.get("width") or not media_rect.get("height") or not section_rect.get("width"):
+        return layout
+
+    media_width_percent = min(100, max(18, (media_rect["width"] / max(section_rect["width"], 1)) * 100))
+    media_height = max(120, min(media_rect["height"], 720))
+    section_center_x = _rect_center_x(section_rect)
+    media_center_x = _rect_center_x(media_rect)
+    media_left_delta = media_rect["x"] - section_rect["x"]
+    media_right_delta = (section_rect["x"] + section_rect["width"]) - (media_rect["x"] + media_rect["width"])
+    if media_width_percent >= 68 or media_rect["width"] >= int(section_rect["width"] * 0.66):
+        placement = "full"
+    elif media_center_x < section_center_x:
+        placement = "left"
+    else:
+        placement = "right"
+    layout.update(
+        {
+            "mediaPlacement": placement,
+            "mediaWidthPercent": round(min(72, max(24, media_width_percent)), 2),
+            "mediaMinHeight": media_height,
+            "mediaAspectRatio": round(media_rect["width"] / max(media_rect["height"], 1), 3),
+            "mediaOffsetPercent": round(
+                min(18, max(0, min(media_left_delta, media_right_delta) / max(section_rect["width"], 1) * 100)),
+                2,
+            ),
+        }
+    )
+    return layout
+
+
 def _build_document_sections(
     sections: list[dict[str, Any]],
     asset_manifest: dict[str, Any],
@@ -2416,9 +2465,6 @@ def _build_document_sections(
                 continue
         seen.add(section_id)
         rect = _rect_dict(section.get("rect"))
-        width_percent = min(100, max(36, (rect["width"] / max(viewport_width, 1)) * 100)) if rect["width"] else 100
-        offset_percent = min(18, max(0, (rect["x"] / max(viewport_width, 1)) * 100)) if rect["x"] else 0
-        min_height = max(96, min(rect["height"], 720)) if rect["height"] else 96
         media: dict[str, Any] | None = None
         candidate_index, picked_media = _pick_section_media(
             section,
@@ -2449,11 +2495,7 @@ def _build_document_sections(
                 "source": section.get("source") or "section",
                 "rect": rect,
                 "styleSnapshot": section.get("styleSnapshot") if isinstance(section.get("styleSnapshot"), dict) else {},
-                "layout": {
-                    "widthPercent": round(width_percent, 2),
-                    "offsetPercent": round(offset_percent, 2),
-                    "minHeight": min_height,
-                },
+                "layout": _document_section_layout(rect, media, viewport_width),
                 "media": media,
             }
         )
@@ -3391,7 +3433,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  htmlTag?: string | null;",
             "  tag?: string | null;",
             "  media?: { src?: string | null; alt?: string | null; kind?: string | null; objectFit?: string | null; objectPosition?: string | null } | null;",
-            "  layout?: { widthPercent?: number | null; offsetPercent?: number | null; minHeight?: number | null } | null;",
+            "  layout?: { widthPercent?: number | null; offsetPercent?: number | null; minHeight?: number | null; mediaPlacement?: string | null; mediaWidthPercent?: number | null; mediaMinHeight?: number | null; mediaAspectRatio?: number | null; mediaOffsetPercent?: number | null } | null;",
             "};",
             "",
             "type VisualStage = {",
@@ -3509,6 +3551,11 @@ def _render_bounded_reference_page_tsx() -> str:
             "  set(\"backgroundPosition\", snapshot.backgroundPosition);",
             "  set(\"backgroundRepeat\", snapshot.backgroundRepeat);",
             "  set(\"backgroundClip\", snapshot.backgroundClip);",
+            "  set(\"color\", snapshot.color);",
+            "  set(\"paddingTop\", snapshot.paddingTop);",
+            "  set(\"paddingRight\", snapshot.paddingRight);",
+            "  set(\"paddingBottom\", snapshot.paddingBottom);",
+            "  set(\"paddingLeft\", snapshot.paddingLeft);",
             "  set(\"boxShadow\", snapshot.boxShadow);",
             "  set(\"borderRadius\", snapshot.borderRadius);",
             "  set(\"borderTopLeftRadius\", snapshot.borderTopLeftRadius);",
@@ -3716,18 +3763,32 @@ def _render_bounded_reference_page_tsx() -> str:
             "    const widthPercent = Number(section.layout?.widthPercent ?? 100);",
             "    const offsetPercent = Number(section.layout?.offsetPercent ?? 0);",
             "    const minHeight = Number(section.layout?.minHeight ?? 0);",
-            "    return {",
+            "    const mediaWidth = Number(section.layout?.mediaWidthPercent ?? 0);",
+            "    const mediaMinHeight = Number(section.layout?.mediaMinHeight ?? 0);",
+            "    const mediaAspectRatio = Number(section.layout?.mediaAspectRatio ?? 0);",
+            "    const style: CSSProperties & Record<string, string | number | undefined> = {",
             "      ...base,",
             "      maxWidth: Number.isFinite(widthPercent) ? `${Math.min(Math.max(widthPercent, 36), 100)}%` : undefined,",
             "      marginLeft: Number.isFinite(offsetPercent) && offsetPercent > 0 ? `${offsetPercent}%` : undefined,",
             "      minHeight: Number.isFinite(minHeight) && minHeight > 0 ? `${minHeight}px` : undefined,",
             "    };",
+            "    if (Number.isFinite(mediaWidth) && mediaWidth > 0) {",
+            "      style[\"--bounded-media-width\"] = `${Math.min(Math.max(mediaWidth, 18), 76)}%`;",
+            "    }",
+            "    if (Number.isFinite(mediaMinHeight) && mediaMinHeight > 0) {",
+            "      style[\"--bounded-media-min-height\"] = `${mediaMinHeight}px`;",
+            "    }",
+            "    if (Number.isFinite(mediaAspectRatio) && mediaAspectRatio > 0) {",
+            "      style[\"--bounded-media-aspect\"] = `${mediaAspectRatio}`;",
+            "    }",
+            "    return style;",
             "  };",
             "  const renderDocumentSection = (section: BoundedLayer) => {",
             "    const hasMedia = Boolean(section.media?.src);",
             "    const mediaKind = section.media?.kind ?? \"photo\";",
+            "    const mediaPlacement = section.layout?.mediaPlacement ?? \"auto\";",
             "    return (",
-            '      <section className={`bounded-document-section bounded-document-section--${section.role ?? "content"}`} data-has-media={hasMedia ? "true" : "false"} data-media-kind={mediaKind} data-role={section.role ?? "content"} data-source-tag={section.tag ?? section.htmlTag ?? "section"} key={section.id ?? `${section.title}-${section.role}`} style={documentSectionStyle(section)}>',
+            '      <section className={`bounded-document-section bounded-document-section--${section.role ?? "content"}`} data-has-media={hasMedia ? "true" : "false"} data-media-kind={mediaKind} data-media-placement={mediaPlacement} data-role={section.role ?? "content"} data-source-tag={section.tag ?? section.htmlTag ?? "section"} key={section.id ?? `${section.title}-${section.role}`} style={documentSectionStyle(section)}>',
             '        <div className="bounded-document-copy">',
             '          {section.role ? <p className="bounded-kicker">{section.role}</p> : null}',
             "          {section.title ? <h2>{section.title}</h2> : null}",
@@ -4221,11 +4282,29 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             min_height = int(layout.get("minHeight") or 0)
         except (TypeError, ValueError):
             min_height = 0
+        try:
+            media_width_percent = float(layout.get("mediaWidthPercent") or 0)
+        except (TypeError, ValueError):
+            media_width_percent = 0
+        try:
+            media_min_height = int(layout.get("mediaMinHeight") or 0)
+        except (TypeError, ValueError):
+            media_min_height = 0
+        try:
+            media_aspect_ratio = float(layout.get("mediaAspectRatio") or 0)
+        except (TypeError, ValueError):
+            media_aspect_ratio = 0
         style_bits.append(f"max-width:{min(max(width_percent, 36), 100):.2f}%")
         if offset_percent > 0:
             style_bits.append(f"margin-left:{min(offset_percent, 18):.2f}%")
         if min_height > 0:
             style_bits.append(f"min-height:{min_height}px")
+        if media_width_percent > 0:
+            style_bits.append(f"--bounded-media-width:{min(max(media_width_percent, 18), 76):.2f}%")
+        if media_min_height > 0:
+            style_bits.append(f"--bounded-media-min-height:{media_min_height}px")
+        if media_aspect_ratio > 0:
+            style_bits.append(f"--bounded-media-aspect:{media_aspect_ratio:.3f}")
         attr = _section_shell_style_attr(section.get("styleSnapshot"))
         if attr:
             inline = attr.removeprefix(' style="').removesuffix('"')
@@ -4406,6 +4485,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         media_src = str(media.get("src") or "")
         has_media = bool(media_src)
         media_kind = str(media.get("kind") or "photo")
+        layout = section.get("layout", {}) if isinstance(section.get("layout"), dict) else {}
+        media_placement = str(layout.get("mediaPlacement") or "auto")
         media_alt = escape(str(media.get("alt") or section.get("title") or "Captured media"))
         media_style_parts: list[str] = []
         object_fit = _clean_text(media.get("objectFit"), 80)
@@ -4417,7 +4498,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         media_style_attr = f' style="{"; ".join(media_style_parts)}"' if media_style_parts else ""
         document_section_bits.extend(
             [
-                f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-media-kind="{escape(media_kind)}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
+                f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-media-kind="{escape(media_kind)}" data-media-placement="{escape(media_placement)}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
                 '                <div class="bounded-document-copy">',
                 f'                  <p class="bounded-kicker">{escape(role)}</p>',
                 f'                  <h2>{escape(str(section.get("title") or "Captured section"))}</h2>',
@@ -5178,7 +5259,20 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  background-clip: padding-box;",
             "}",
             ".bounded-document-section[data-has-media=\"true\"][data-media-kind=\"photo\"] {",
-            "  grid-template-columns: minmax(0, 1fr) minmax(220px, 42%);",
+            "  grid-template-columns: minmax(0, 1fr) minmax(220px, var(--bounded-media-width, 42%));",
+            "}",
+            ".bounded-document-section[data-media-placement=\"left\"] {",
+            "  grid-template-columns: minmax(220px, var(--bounded-media-width, 42%)) minmax(0, 1fr);",
+            "}",
+            ".bounded-document-section[data-media-placement=\"left\"] .bounded-document-media {",
+            "  order: -1;",
+            "}",
+            ".bounded-document-section[data-media-placement=\"full\"] {",
+            "  grid-template-columns: minmax(0, 1fr);",
+            "  align-items: start;",
+            "}",
+            ".bounded-document-section[data-media-placement=\"full\"] .bounded-document-media {",
+            "  width: 100%;",
             "}",
             ".bounded-document-copy {",
             "  max-width: 72ch;",
@@ -5196,19 +5290,20 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-document-media {",
             "  margin: 0;",
-            "  min-height: 160px;",
+            "  min-height: var(--bounded-media-min-height, 160px);",
             "  overflow: hidden;",
             "  border-radius: 8px;",
             "  background: rgba(255, 255, 255, 0.05);",
+            "  aspect-ratio: var(--bounded-media-aspect, auto);",
             "}",
             ".bounded-document-media img {",
             "  display: block;",
             "  width: 100%;",
             "  height: 100%;",
-            "  min-height: 160px;",
+            "  min-height: var(--bounded-media-min-height, 160px);",
             "  object-fit: contain;",
             "}",
-            ".bounded-document-section[data-media-kind=\"photo\"] .bounded-document-media img { object-fit: cover; min-height: 220px; }",
+            ".bounded-document-section[data-media-kind=\"photo\"] .bounded-document-media img { object-fit: cover; min-height: var(--bounded-media-min-height, 220px); }",
             ".bounded-panel {",
             "  border: 1px solid var(--bounded-border);",
             "  border-radius: var(--bounded-panel-radius);",
