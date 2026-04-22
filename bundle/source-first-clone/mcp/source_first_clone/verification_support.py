@@ -759,7 +759,21 @@ def _screenshot_drift_flags(
 ) -> list[str]:
     flags: list[str] = []
     if reference_dimensions and candidate_dimensions and reference_dimensions != candidate_dimensions:
-        flags.append("viewport-or-breakpoint drift")
+        width_similarity = metrics.get("width_similarity")
+        height_similarity = metrics.get("height_similarity")
+        layout_stable = (
+            metrics.get("grid_similarity", 0.0) >= 0.9
+            and metrics.get("band_similarity", 0.0) >= 0.9
+            and metrics.get("quadrant_similarity", 0.0) >= 0.9
+            and metrics.get("pixel_mismatch_ratio", 1.0) <= 0.08
+        )
+        same_viewport_width = (
+            reference_dimensions[0] == candidate_dimensions[0]
+            or (isinstance(width_similarity, (int, float)) and width_similarity >= 0.995)
+        )
+        minor_full_page_height_delta = isinstance(height_similarity, (int, float)) and height_similarity >= 0.95
+        if not (same_viewport_width and minor_full_page_height_delta and layout_stable):
+            flags.append("viewport-or-breakpoint drift")
     if metrics.get("quadrant_similarity", 1.0) < 0.8:
         flags.append("composition drift")
     if metrics.get("band_similarity", 1.0) < 0.78:
@@ -805,6 +819,8 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
         else:
             detail.append(f"PNG dimensions differ {ref_dims[0]}x{ref_dims[1]} vs {cand_dims[0]}x{cand_dims[1]}")
         metrics["dimension_similarity"] = 1.0 if ref_dims == cand_dims else _safe_ratio(ref_dims[0] * ref_dims[1], cand_dims[0] * cand_dims[1])
+        metrics["width_similarity"] = _safe_ratio(ref_dims[0], cand_dims[0])
+        metrics["height_similarity"] = _safe_ratio(ref_dims[1], cand_dims[1])
     if ref_size and cand_size:
         ratio = _safe_ratio(ref_size, cand_size)
         detail.append(f"byte-size ratio {ratio:.2f}")
@@ -926,6 +942,7 @@ def _dom_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str
     cand_stats = _dom_stats(cand_content)
     status = "present" if ref_present and cand_present else "missing"
     overlap = _tag_overlap(ref_stats.get("tags", {}), cand_stats.get("tags", {}))
+    tag_coverage = _set_balanced_coverage(ref_stats.get("tags", {}), cand_stats.get("tags", {}))
     summary = f"DOM snapshots present; node counts {ref_stats.get('node_count', 0)} vs {cand_stats.get('node_count', 0)}"
     if ref_stats.get("node_count") and cand_stats.get("node_count"):
         summary += f"; tag overlap {overlap:.2f}"
@@ -937,7 +954,11 @@ def _dom_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str
     depth_score = _count_similarity(ref_stats.get("max_depth"), cand_stats.get("max_depth"))
     shadow_score = _count_similarity(ref_stats.get("shadow_root_count"), cand_stats.get("shadow_root_count"))
     frame_score = _count_similarity(ref_stats.get("frame_document_count"), cand_stats.get("frame_document_count"))
-    similarity_parts = [score for score in [overlap, node_score, depth_score, shadow_score, frame_score] if score is not None]
+    similarity_parts = [
+        score
+        for score in [max(overlap, tag_coverage), node_score, depth_score, shadow_score, frame_score]
+        if score is not None
+    ]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
     return {
         "name": "dom snapshot",
@@ -950,6 +971,7 @@ def _dom_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str
         "details": {
             "node_count_delta": _numeric_delta(ref_stats.get("node_count"), cand_stats.get("node_count")),
             "tag_overlap": overlap,
+            "tag_coverage_overlap": tag_coverage,
             "depth_delta": _numeric_delta(ref_stats.get("max_depth"), cand_stats.get("max_depth")),
             "shadow_root_delta": _numeric_delta(ref_stats.get("shadow_root_count"), cand_stats.get("shadow_root_count")),
             "frame_document_delta": _numeric_delta(ref_stats.get("frame_document_count"), cand_stats.get("frame_document_count")),
@@ -966,19 +988,29 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
     cand_stats = _style_stats(candidate.get("content"))
     status = "present" if ref_present and cand_present else "missing"
     signature_overlap = _set_overlap(ref_stats.get("signatures", set()), cand_stats.get("signatures", set()))
+    signature_coverage = _set_balanced_coverage(ref_stats.get("signatures", set()), cand_stats.get("signatures", set()))
     summary = (
         f"computed styles present; sample counts {ref_stats.get('sample_count', 0)} vs {cand_stats.get('sample_count', 0)}"
     )
     if ref_stats.get("sample_count") and cand_stats.get("sample_count"):
         summary += f"; style-signature overlap {signature_overlap:.2f}"
     sample_score = _count_similarity(ref_stats.get("sample_count"), cand_stats.get("sample_count"))
-    tag_score = _set_overlap(ref_stats.get("tags", set()), cand_stats.get("tags", set()))
+    tag_overlap = _set_overlap(ref_stats.get("tags", set()), cand_stats.get("tags", set()))
+    tag_coverage = _set_balanced_coverage(ref_stats.get("tags", set()), cand_stats.get("tags", set()))
     font_overlap = _set_overlap(ref_stats.get("fonts", set()), cand_stats.get("fonts", set()))
     font_size_overlap = _set_overlap(ref_stats.get("font_sizes", set()), cand_stats.get("font_sizes", set()))
+    font_size_similarity = _numeric_token_set_similarity(ref_stats.get("font_sizes", set()), cand_stats.get("font_sizes", set()))
     display_overlap = _set_overlap(ref_stats.get("displays", set()), cand_stats.get("displays", set()))
     similarity_parts = [
         score
-        for score in [signature_overlap, sample_score, tag_score, font_overlap, font_size_overlap, display_overlap]
+        for score in [
+            max(signature_overlap, signature_coverage),
+            sample_score,
+            max(tag_overlap, tag_coverage),
+            font_overlap,
+            max(font_size_overlap, font_size_similarity),
+            display_overlap,
+        ]
         if score is not None
     ]
     similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
@@ -993,8 +1025,12 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
         "details": {
             "sample_count_delta": _numeric_delta(ref_stats.get("sample_count"), cand_stats.get("sample_count")),
             "signature_overlap": signature_overlap,
+            "signature_coverage_overlap": signature_coverage,
+            "tag_overlap": tag_overlap,
+            "tag_coverage_overlap": tag_coverage,
             "font_overlap": font_overlap,
             "font_size_overlap": font_size_overlap,
+            "font_size_similarity": font_size_similarity,
             "display_overlap": display_overlap,
             "common_tags": sorted(set(ref_stats.get("tags", [])) & set(cand_stats.get("tags", [])))[:8],
         },
@@ -1984,6 +2020,41 @@ def _set_overlap(reference: Any, candidate: Any) -> float:
     intersection = len(reference_set & candidate_set)
     union = len(reference_set | candidate_set)
     return intersection / union if union else 0.0
+
+
+def _set_balanced_coverage(reference: Any, candidate: Any) -> float:
+    reference_set = set(reference or [])
+    candidate_set = set(candidate or [])
+    if not reference_set or not candidate_set:
+        return 0.0
+    intersection = len(reference_set & candidate_set)
+    return ((intersection / len(reference_set)) + (intersection / len(candidate_set))) / 2
+
+
+def _numeric_token_set_similarity(reference: Any, candidate: Any) -> float:
+    reference_values = [_css_numeric_value(value) for value in set(reference or [])]
+    candidate_values = [_css_numeric_value(value) for value in set(candidate or [])]
+    reference_numbers = [value for value in reference_values if value is not None]
+    candidate_numbers = [value for value in candidate_values if value is not None]
+    if not reference_numbers or not candidate_numbers:
+        return _set_overlap(reference, candidate)
+
+    def coverage(values: list[float], targets: list[float]) -> float:
+        if not values or not targets:
+            return 0.0
+        return sum(max(_count_similarity(value, target) for target in targets) for value in values) / len(values)
+
+    return (coverage(reference_numbers, candidate_numbers) + coverage(candidate_numbers, reference_numbers)) / 2
+
+
+def _css_numeric_value(value: Any) -> float | None:
+    match = re.search(r"-?\d+(?:\.\d+)?", _clean_text(value))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
 
 
 def _counter_overlap(reference: Any, candidate: Any) -> float:

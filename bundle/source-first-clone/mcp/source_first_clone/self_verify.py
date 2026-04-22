@@ -357,6 +357,8 @@ def _visual_qa_metric_summary(metrics: dict[str, Any]) -> dict[str, float]:
     selected = {}
     for key in (
         "dimension_similarity",
+        "width_similarity",
+        "height_similarity",
         "ahash_similarity",
         "mean_luma_similarity",
         "contrast_similarity",

@@ -92,6 +92,97 @@ def assert_exact_ready_semantics(root: Path) -> None:
         raise AssertionError("exact_ready should follow ready_for_exact_reuse=true")
 
 
+def assert_verification_similarity_semantics() -> None:
+    from source_first_clone.verification_support import _dom_check, _screenshot_drift_flags, _styles_check  # noqa: PLC0415
+
+    stable_full_page_metrics = {
+        "width_similarity": 1.0,
+        "height_similarity": 0.9615,
+        "grid_similarity": 0.99,
+        "band_similarity": 0.99,
+        "quadrant_similarity": 0.99,
+        "pixel_mismatch_ratio": 0.014,
+    }
+    flags = _screenshot_drift_flags(stable_full_page_metrics, (390, 5048), (390, 4854))
+    if "viewport-or-breakpoint drift" in flags:
+        raise AssertionError(f"stable full-page height delta was treated as breakpoint drift: {flags}")
+    unstable_flags = _screenshot_drift_flags(
+        {**stable_full_page_metrics, "height_similarity": 0.8, "grid_similarity": 0.7},
+        (390, 5048),
+        (390, 4038),
+    )
+    if "viewport-or-breakpoint drift" not in unstable_flags:
+        raise AssertionError(f"material viewport drift was not reported: {unstable_flags}")
+
+    style_ref = [
+        {
+            "tag": "a",
+            "text": "Docs",
+            "rect": {"width": 160, "height": 32},
+            "styles": {"display": "block", "fontFamily": "Inter", "fontSize": "12.8px"},
+            "styleSignature": "a|docs|12.8px",
+        },
+        {
+            "tag": "section",
+            "text": "Reference section",
+            "rect": {"width": 720, "height": 240},
+            "styles": {"display": "grid", "fontFamily": "Inter", "fontSize": "16px"},
+            "styleSignature": "section|reference|16px",
+        },
+    ]
+    style_candidate = [
+        {
+            "tag": "a",
+            "text": "Docs",
+            "rect": {"width": 160, "height": 32},
+            "styles": {"display": "block", "fontFamily": "Inter", "fontSize": "14px"},
+            "styleSignature": "a|docs|14px",
+        },
+        {
+            "tag": "section",
+            "text": "Reference section",
+            "rect": {"width": 720, "height": 240},
+            "styles": {"display": "grid", "fontFamily": "Inter", "fontSize": "16px"},
+            "styleSignature": "section|reference|16px",
+        },
+        {
+            "tag": "span",
+            "text": "Runtime helper",
+            "rect": {"width": 24, "height": 24},
+            "styles": {"display": "inline", "fontFamily": "Inter", "fontSize": "16px"},
+            "styleSignature": "span|helper|16px",
+        },
+    ]
+    style_check = _styles_check(
+        {"available": True, "content": style_ref},
+        {"available": True, "content": style_candidate},
+    )
+    style_details = style_check.get("details") or {}
+    if not style_details.get("tag_coverage_overlap", 0) > style_details.get("tag_overlap", 0):
+        raise AssertionError(f"style tag coverage did not account for runtime helpers: {style_check}")
+    if not style_details.get("font_size_similarity", 0) > style_details.get("font_size_overlap", 0):
+        raise AssertionError(f"numeric font-size similarity did not smooth near-token drift: {style_check}")
+
+    def element(tag: str, children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {"type": "element", "tag": tag, "children": children or []}
+
+    dom_ref = element("html", [element("body", [element("main", [element("section", [element("p")])])])])
+    dom_candidate = element(
+        "html",
+        [
+            element("head", [element("meta"), element("script")]),
+            element("body", [element("main", [element("section", [element("p"), element("span")])])]),
+        ],
+    )
+    dom_check = _dom_check(
+        {"available": True, "content": dom_ref},
+        {"available": True, "content": dom_candidate},
+    )
+    dom_details = dom_check.get("details") or {}
+    if not dom_details.get("tag_coverage_overlap", 0) > dom_details.get("tag_overlap", 0):
+        raise AssertionError(f"DOM tag coverage did not account for runtime-added tags: {dom_check}")
+
+
 def assert_site_profile_routing_semantics() -> None:
     from source_first_clone.planning import plan_reproduction_path  # noqa: PLC0415
     from source_first_clone.site_profile import classify_site_profile  # noqa: PLC0415
@@ -1106,6 +1197,7 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
 def main() -> int:
     root = repo_root()
     assert_exact_ready_semantics(root)
+    assert_verification_similarity_semantics()
     assert_fetch_url_decodes_compressed_html()
     assert_site_profile_routing_semantics()
     assert_rebuild_scaffold_visual_semantics()
