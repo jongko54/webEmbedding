@@ -1,7 +1,7 @@
 {
   "name": "web-embedding",
   "version": "0.3.1",
-  "description": "Source-first Codex plugin installer for webpage intake, session-aware capture planning, and exact-clone workflows.",
+  "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/jongko54/webEmbedding#readme",
@@ -23,6 +23,7 @@
     "bundle",
     "!bundle/**/__pycache__",
     "!bundle/**/*.pyc",
+    "docs/assets/webembedding-skill-mcp-card.png",
     "fixtures/frame-shadow-parity",
     "python",
     "!python/**/__pycache__",

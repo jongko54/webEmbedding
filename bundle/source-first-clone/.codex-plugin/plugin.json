@@ -1,7 +1,7 @@
 {
   "name": "source-first-clone",
   "version": "0.3.1",
-  "description": "Prefer original embeds, previews, viewers, and remixable sources before rebuilding a reference surface.",
+  "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "author": {
     "name": "Jongho",
     "email": "hello@example.com",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Source-First Clone",
-    "shortDescription": "Find reuse paths, attach session-aware capture, and avoid fake-exact rebuilds",
-    "longDescription": "A Codex plugin for source-first webpage intake. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, adds session-aware runtime capture scaffolds with Playwright-style options, and only falls back to rebuilding after the source-first paths are exhausted.",
+    "shortDescription": "Capture URL evidence, rebuild blocked pages, and verify clone fidelity",
+    "longDescription": "A Skill and MCP workflow for source-first website cloning. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, captures runtime evidence with Playwright-style options, and only falls back to bounded reconstruction after source-first paths are exhausted.",
     "developerName": "Jongho",
     "category": "Developer Tools",
     "capabilities": [
