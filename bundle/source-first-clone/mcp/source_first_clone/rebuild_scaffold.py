@@ -358,7 +358,16 @@ def _match_style_block_for_text(
     for index, block in enumerate(style_blocks):
         if index in used_indexes or not isinstance(block, dict):
             continue
-        score = _text_overlap_score(text, str(block.get("text") or ""))
+        block_text = str(block.get("text") or "")
+        overlap = _text_overlap_score(text, block_text)
+        left_tokens = {token for token in _text_key(text, 260).split() if len(token) > 1}
+        right_tokens = {token for token in _text_key(block_text, 260).split() if len(token) > 1}
+        length_ratio = (
+            min(len(left_tokens), len(right_tokens)) / max(len(left_tokens), len(right_tokens), 1)
+            if left_tokens and right_tokens
+            else 0.0
+        )
+        score = (overlap * 0.74) + (length_ratio * 0.26)
         if score > best_score:
             best_score = score
             best_index = index
@@ -403,6 +412,58 @@ def _build_dom_section_blocks(
             }
         )
     return blocks
+
+
+def _prune_parent_dom_sections(dom_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pruned: list[dict[str, Any]] = []
+    for index, section in enumerate(dom_sections):
+        if not isinstance(section, dict):
+            continue
+        tag = str(section.get("tag") or "").lower()
+        role = str(section.get("role") or "").lower()
+        if tag in {"footer"} or role in {"contentinfo"}:
+            pruned.append(section)
+            continue
+        text_key = _text_key(section.get("text"), 420)
+        text_tokens = {token for token in text_key.split() if len(token) > 1}
+        if len(text_tokens) < 18:
+            pruned.append(section)
+            continue
+        try:
+            depth = int(section.get("depth") or 0)
+        except (TypeError, ValueError):
+            depth = 0
+        child_token_union: set[str] = set()
+        child_count = 0
+        for other in dom_sections[index + 1 :]:
+            if not isinstance(other, dict):
+                continue
+            try:
+                other_depth = int(other.get("depth") or 0)
+            except (TypeError, ValueError):
+                other_depth = 0
+            if other_depth <= depth:
+                continue
+            other_key = _text_key(other.get("text"), 260)
+            if not other_key:
+                continue
+            overlap = _text_overlap_score(text_key, other_key)
+            if overlap < 0.18 and other_key not in text_key:
+                continue
+            other_tokens = {token for token in other_key.split() if len(token) > 1}
+            if not other_tokens:
+                continue
+            child_token_union |= other_tokens
+            child_count += 1
+        coverage = len(text_tokens & child_token_union) / max(len(text_tokens), 1)
+        if child_count >= 1 and tag == "main" and len(text_tokens) >= 20:
+            continue
+        if child_count >= 2 and tag == "div" and len(text_tokens) >= 25:
+            continue
+        if child_count >= 2 and coverage >= 0.42:
+            continue
+        pruned.append(section)
+    return pruned
 
 
 def _merge_representative_blocks(dom_blocks: list[dict[str, Any]], style_blocks: list[dict[str, Any]], limit: int = 16) -> list[dict[str, Any]]:
@@ -541,6 +602,7 @@ def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 24) 
                     "opacity": styles.get("opacity"),
                 },
                 "styleSnapshot": _style_snapshot_from_styles(styles),
+                "media": entry.get("media") if isinstance(entry.get("media"), dict) else None,
             }
         )
         if len(blocks) >= limit:
@@ -1352,12 +1414,160 @@ def _collect_ranked_image_values(values: list[str | None], limit: int = 12) -> l
     return sorted(cleaned, key=_image_url_rank)[:limit]
 
 
+def _extract_css_urls(value: Any) -> list[str]:
+    raw = str(value or "")
+    if not raw or raw == "none":
+        return []
+    urls: list[str] = []
+    for match in re.finditer(r"url\((['\"]?)(.*?)\1\)", raw):
+        cleaned = " ".join(str(match.group(2) or "").split())
+        if cleaned and cleaned not in urls:
+            urls.append(cleaned)
+    return urls
+
+
+def _media_kind_from_url(value: Any) -> str:
+    lowered = str(value or "").lower()
+    if lowered.endswith(".svg") or ".svg?" in lowered:
+        return "graphic"
+    if any(ext in lowered for ext in (".mp4", ".webm", ".mov", ".m4v")):
+        return "video"
+    return "photo"
+
+
+def _media_candidate_url(media: dict[str, Any] | None) -> str:
+    if not isinstance(media, dict):
+        return ""
+    for field in ("currentSrc", "src", "poster"):
+        value = _clean_text(media.get(field), 2048)
+        if value:
+            return value
+    return ""
+
+
+def _append_media_candidate(
+    candidates: list[dict[str, Any]],
+    seen: set[tuple[str, int, int, int, int]],
+    *,
+    src: Any,
+    rect: dict[str, Any] | None = None,
+    alt: Any = None,
+    source: str,
+    object_fit: Any = None,
+    object_position: Any = None,
+    kind: str | None = None,
+) -> None:
+    cleaned_src = " ".join(str(src or "").split())
+    if not cleaned_src:
+        return
+    media_rect = _rect_dict(rect)
+    key = (
+        cleaned_src,
+        int(media_rect.get("x") or 0),
+        int(media_rect.get("y") or 0),
+        int(media_rect.get("width") or 0),
+        int(media_rect.get("height") or 0),
+    )
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(
+        {
+            "src": cleaned_src,
+            "kind": kind or _media_kind_from_url(cleaned_src),
+            "alt": _clean_text(alt, 180) or None,
+            "source": source,
+            "rect": media_rect if media_rect.get("width") and media_rect.get("height") else None,
+            "objectFit": _clean_text(object_fit, 80) or None,
+            "objectPosition": _clean_text(object_position, 80) or None,
+            "rank": -_image_url_rank(cleaned_src)[0],
+        }
+    )
+
+
+def _collect_media_candidates(
+    asset_content: dict[str, Any],
+    style_blocks: list[dict[str, Any]],
+    *,
+    limit: int = 28,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, int, int]] = set()
+    for item in asset_content.get("imageElements", []) or []:
+        if not isinstance(item, dict):
+            continue
+        _append_media_candidate(
+            candidates,
+            seen,
+            src=item.get("currentSrc") or item.get("src"),
+            rect=item.get("rect"),
+            alt=item.get("alt"),
+            source="asset-image-element",
+            object_fit=item.get("objectFit"),
+            object_position=item.get("objectPosition"),
+        )
+    for block in style_blocks:
+        if not isinstance(block, dict):
+            continue
+        rect = block.get("rect") if isinstance(block.get("rect"), dict) else None
+        media = block.get("media") if isinstance(block.get("media"), dict) else None
+        if media:
+            src = _media_candidate_url(media)
+            if src:
+                _append_media_candidate(
+                    candidates,
+                    seen,
+                    src=src,
+                    rect=rect,
+                    alt=media.get("alt") or block.get("text"),
+                    source="style-media",
+                    object_fit=media.get("objectFit"),
+                    object_position=media.get("objectPosition"),
+                )
+            for background_url in media.get("backgroundUrls", []) or []:
+                _append_media_candidate(
+                    candidates,
+                    seen,
+                    src=background_url,
+                    rect=rect,
+                    alt=block.get("text"),
+                    source="style-background-media",
+                    object_fit=block.get("styles", {}).get("backgroundSize") if isinstance(block.get("styles"), dict) else None,
+                    object_position=block.get("styles", {}).get("backgroundPosition") if isinstance(block.get("styles"), dict) else None,
+                )
+        styles = block.get("styles") if isinstance(block.get("styles"), dict) else {}
+        for background_url in _extract_css_urls(styles.get("backgroundImage")):
+            _append_media_candidate(
+                candidates,
+                seen,
+                src=background_url,
+                rect=rect,
+                alt=block.get("text"),
+                source="style-background",
+                object_fit=styles.get("backgroundSize"),
+                object_position=styles.get("backgroundPosition"),
+            )
+    for src in asset_content.get("backgroundImages", []) or []:
+        _append_media_candidate(candidates, seen, src=src, source="asset-background")
+    for src in asset_content.get("images", []) or []:
+        _append_media_candidate(candidates, seen, src=src, source="asset-image")
+
+    def sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, str]:
+        rect = candidate.get("rect") if isinstance(candidate.get("rect"), dict) else {}
+        has_rect = 0 if rect.get("width") and rect.get("height") else 1
+        return (has_rect, int(_image_url_rank(candidate.get("src"))[0]), int(rect.get("y") or 0), str(candidate.get("src") or ""))
+
+    candidates.sort(key=sort_key)
+    return candidates[:limit]
+
+
 def _build_asset_manifest(
     summary: dict[str, Any],
     asset_content: dict[str, Any],
     css_analysis: dict[str, Any],
     typography: dict[str, Any],
     style_tokens: dict[str, list[str]],
+    style_blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     linked_stylesheets = css_analysis.get("linkedStylesheets", []) if isinstance(css_analysis, dict) else []
     stylesheet_urls = _collect_url_values(
@@ -1380,16 +1590,29 @@ def _build_asset_manifest(
         ],
         limit=4,
     )
+    image_values = [
+        *(asset_content.get("images", []) or []),
+        *[
+            (item.get("currentSrc") or item.get("src"))
+            for item in (asset_content.get("imageElements", []) or [])
+            if isinstance(item, dict)
+        ],
+        *(asset_content.get("backgroundImages", []) or []),
+    ]
+    media_candidates = _collect_media_candidates(asset_content, style_blocks or [], limit=28)
     return {
         "summary": {
             "images": len(asset_content.get("images", []) or []),
+            "imageElements": len(asset_content.get("imageElements", []) or []),
+            "backgroundImages": len(asset_content.get("backgroundImages", []) or []),
             "scripts": len(asset_content.get("scripts", []) or []),
             "stylesheets": len(asset_content.get("stylesheets", []) or []),
             "videos": len(asset_content.get("videos", []) or []),
             "audios": len(asset_content.get("audios", []) or []),
             "iframes": len(asset_content.get("iframes", []) or []),
         },
-        "images": _collect_ranked_image_values(asset_content.get("images", []) or [], limit=12),
+        "images": _collect_ranked_image_values(image_values, limit=16),
+        "mediaCandidates": media_candidates,
         "scripts": _collect_url_values(asset_content.get("scripts", []) or [], limit=12),
         "stylesheets": stylesheet_urls,
         "videos": _collect_url_values(asset_content.get("videos", []) or [], limit=8),
@@ -2081,6 +2304,93 @@ def _document_section_tag(section: dict[str, Any]) -> str:
     return "section"
 
 
+def _section_media_score(section: dict[str, Any], candidate: dict[str, Any]) -> float:
+    section_rect = _rect_dict(section.get("rect"))
+    candidate_rect = _rect_dict(candidate.get("rect") if isinstance(candidate.get("rect"), dict) else None)
+    src = str(candidate.get("src") or "")
+    if not src:
+        return -1.0
+    score = max(float(candidate.get("rank") or 0.0), 0.0) / 120.0
+    role = str(section.get("role") or "").lower()
+    lowered_src = src.lower()
+    if role in {"footer", "action"}:
+        return -1.0
+    if role != "masthead" and any(token in lowered_src for token in ("logo", "wordmark", "favicon", "lockup")):
+        score -= 0.75
+    if not candidate_rect.get("width") or not candidate_rect.get("height"):
+        return score
+
+    section_top = section_rect["y"]
+    section_bottom = section_rect["y"] + max(section_rect["height"], 1)
+    media_top = candidate_rect["y"]
+    media_bottom = candidate_rect["y"] + max(candidate_rect["height"], 1)
+    vertical_overlap = max(0, min(section_bottom, media_bottom) - max(section_top, media_top))
+    overlap_ratio = vertical_overlap / max(min(section_rect["height"] or 1, candidate_rect["height"] or 1), 1)
+    section_center = _rect_center_y(section_rect)
+    media_center = _rect_center_y(candidate_rect)
+    center_distance = abs(section_center - media_center) / max(section_rect["height"], candidate_rect["height"], 1)
+    section_left = section_rect["x"]
+    section_right = section_rect["x"] + max(section_rect["width"], 1)
+    media_left = candidate_rect["x"]
+    media_right = candidate_rect["x"] + max(candidate_rect["width"], 1)
+    horizontal_overlap = max(0, min(section_right, media_right) - max(section_left, media_left))
+    horizontal_ratio = horizontal_overlap / max(min(section_rect["width"] or 1, candidate_rect["width"] or 1), 1)
+    score += overlap_ratio * 1.8
+    score += horizontal_ratio * 0.45
+    score += max(0.0, 1.0 - center_distance) * 0.9
+    if overlap_ratio <= 0 and center_distance > 0.9:
+        score -= 0.85
+    if section_top <= media_top and media_bottom <= section_bottom:
+        score += 0.6
+    if candidate_rect["width"] < 48 or candidate_rect["height"] < 48:
+        score -= 0.5
+    return score
+
+
+def _media_from_candidate(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any] | None:
+    src = _clean_text(candidate.get("src"), 2048)
+    if not src:
+        return None
+    media: dict[str, Any] = {
+        "src": src,
+        "alt": candidate.get("alt") or section.get("title") or section.get("role") or "Captured media",
+        "kind": candidate.get("kind") or _media_kind_from_url(src),
+        "source": candidate.get("source") or "asset",
+    }
+    rect = candidate.get("rect") if isinstance(candidate.get("rect"), dict) else None
+    if rect:
+        media["rect"] = _rect_dict(rect)
+    for field in ("objectFit", "objectPosition"):
+        value = _clean_text(candidate.get(field), 80)
+        if value and value not in {"fill", "normal", "auto"}:
+            media[field] = value
+    return media
+
+
+def _pick_section_media(
+    section: dict[str, Any],
+    media_candidates: list[dict[str, Any]],
+    used_candidate_indexes: set[int],
+    *,
+    require_positioned: bool = False,
+) -> tuple[int | None, dict[str, Any] | None]:
+    best_index: int | None = None
+    best_score = -1.0
+    for index, candidate in enumerate(media_candidates):
+        if index in used_candidate_indexes or not isinstance(candidate, dict):
+            continue
+        if require_positioned and not isinstance(candidate.get("rect"), dict):
+            continue
+        score = _section_media_score(section, candidate)
+        if score > best_score:
+            best_score = score
+            best_index = index
+    threshold = 0.48 if require_positioned else 0.24
+    if best_index is None or best_score < threshold:
+        return None, None
+    return best_index, _media_from_candidate(media_candidates[best_index], section)
+
+
 def _build_document_sections(
     sections: list[dict[str, Any]],
     asset_manifest: dict[str, Any],
@@ -2088,6 +2398,10 @@ def _build_document_sections(
 ) -> list[dict[str, Any]]:
     raw_images = asset_manifest.get("images", []) if isinstance(asset_manifest.get("images", []), list) else []
     images = [str(url) for url in sorted(raw_images, key=_image_url_rank) if str(url or "").strip()]
+    media_candidates = asset_manifest.get("mediaCandidates", []) if isinstance(asset_manifest.get("mediaCandidates"), list) else []
+    media_candidates = [candidate for candidate in media_candidates if isinstance(candidate, dict) and candidate.get("src")]
+    has_positioned_candidates = any(isinstance(candidate.get("rect"), dict) for candidate in media_candidates)
+    used_candidate_indexes: set[int] = set()
     image_cursor = 0
     document_sections: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2095,18 +2409,32 @@ def _build_document_sections(
         section_id = str(section.get("id") or f"document-section-{len(document_sections) + 1}")
         if section_id in seen or section.get("role") == "masthead":
             continue
+        tag_lower = str(section.get("tag") or "").lower()
+        if tag_lower in {"img", "picture", "svg", "video", "canvas", "iframe", "embed", "object"} and section.get("source") != "dom-semantic-section":
+            section_text_key = _text_key(" ".join(str(section.get(key) or "") for key in ("title", "copy")), 160)
+            if len(section_text_key.split()) <= 4 or "captured layout block derived" in section_text_key:
+                continue
         seen.add(section_id)
         rect = _rect_dict(section.get("rect"))
         width_percent = min(100, max(36, (rect["width"] / max(viewport_width, 1)) * 100)) if rect["width"] else 100
         offset_percent = min(18, max(0, (rect["x"] / max(viewport_width, 1)) * 100)) if rect["x"] else 0
         min_height = max(96, min(rect["height"], 720)) if rect["height"] else 96
         media: dict[str, Any] | None = None
-        if images and section.get("role") not in {"footer", "action"}:
+        candidate_index, picked_media = _pick_section_media(
+            section,
+            media_candidates,
+            used_candidate_indexes,
+            require_positioned=has_positioned_candidates,
+        )
+        if candidate_index is not None and picked_media:
+            used_candidate_indexes.add(candidate_index)
+            media = picked_media
+        elif images and not has_positioned_candidates and section.get("role") not in {"footer", "action"}:
             src = str(images[image_cursor % len(images)])
             image_cursor += 1
             lowered_src = src.lower()
             media_kind = "graphic" if lowered_src.endswith(".svg") or ".svg?" in lowered_src else "photo"
-            media = {"src": src, "alt": section.get("title") or section.get("role") or "Captured media", "kind": media_kind}
+            media = {"src": src, "alt": section.get("title") or section.get("role") or "Captured media", "kind": media_kind, "source": "ranked-asset"}
         document_sections.append(
             {
                 "id": f"document-{section_id}",
@@ -3062,7 +3390,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  zIndex?: number | null;",
             "  htmlTag?: string | null;",
             "  tag?: string | null;",
-            "  media?: { src?: string | null; alt?: string | null; kind?: string | null } | null;",
+            "  media?: { src?: string | null; alt?: string | null; kind?: string | null; objectFit?: string | null; objectPosition?: string | null } | null;",
             "  layout?: { widthPercent?: number | null; offsetPercent?: number | null; minHeight?: number | null } | null;",
             "};",
             "",
@@ -3191,6 +3519,20 @@ def _render_bounded_reference_page_tsx() -> str:
             "  set(\"borderStyle\", snapshot.borderStyle);",
             "  set(\"borderWidth\", snapshot.borderWidth);",
             "  return style;",
+            "}",
+            "",
+            "function mediaImageStyle(media?: BoundedLayer[\"media\"]): CSSProperties | undefined {",
+            "  if (!media) {",
+            "    return undefined;",
+            "  }",
+            "  const style: CSSProperties = {};",
+            "  if (media.objectFit && media.objectFit !== \"fill\") {",
+            "    style.objectFit = media.objectFit as CSSProperties[\"objectFit\"];",
+            "  }",
+            "  if (media.objectPosition) {",
+            "    style.objectPosition = media.objectPosition;",
+            "  }",
+            "  return Object.keys(style).length ? style : undefined;",
             "}",
             "",
             "function stageRectStyle(",
@@ -3393,7 +3735,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "        </div>",
             "        {hasMedia ? (",
             '          <figure className="bounded-document-media">',
-            '            <img alt={section.media?.alt ?? ""} loading="lazy" src={section.media?.src ?? ""} />',
+            '            <img alt={section.media?.alt ?? ""} loading="lazy" src={section.media?.src ?? ""} style={mediaImageStyle(section.media)} />',
             "          </figure>",
             "        ) : null}",
             "      </section>",
@@ -4065,6 +4407,14 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         has_media = bool(media_src)
         media_kind = str(media.get("kind") or "photo")
         media_alt = escape(str(media.get("alt") or section.get("title") or "Captured media"))
+        media_style_parts: list[str] = []
+        object_fit = _clean_text(media.get("objectFit"), 80)
+        object_position = _clean_text(media.get("objectPosition"), 80)
+        if object_fit and object_fit != "fill":
+            media_style_parts.append(f"object-fit:{escape(object_fit)}")
+        if object_position:
+            media_style_parts.append(f"object-position:{escape(object_position)}")
+        media_style_attr = f' style="{"; ".join(media_style_parts)}"' if media_style_parts else ""
         document_section_bits.extend(
             [
                 f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-media-kind="{escape(media_kind)}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
@@ -4079,7 +4429,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             document_section_bits.extend(
                 [
                     '                <figure class="bounded-document-media">',
-                    f'                  <img alt="{media_alt}" loading="lazy" src="{escape(media_src)}" />',
+                    f'                  <img alt="{media_alt}" loading="lazy" src="{escape(media_src)}"{media_style_attr} />',
                     "                </figure>",
                 ]
             )
@@ -5367,6 +5717,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     if dom_capture.get("available"):
         _collect_dom_outline(dom_capture.get("content"), outline)
         _collect_dom_semantic_sections(dom_capture.get("content"), dom_semantic_sections)
+        dom_semantic_sections = _prune_parent_dom_sections(dom_semantic_sections)
     accessibility_landmarks = (
         _collect_accessibility_landmarks(accessibility_capture.get("content"))
         if accessibility_capture.get("available")
@@ -5587,8 +5938,15 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "visualStage": visual_stage,
         "note": "This scaffold is intentionally bounded. It is a starter for reconstruction when an exact reuse path is unavailable.",
     }
-    asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens)
+    asset_manifest = _build_asset_manifest(summary, asset_content, css_analysis, typography, style_tokens, style_blocks)
     summary["assetManifest"] = asset_manifest
+    media_candidates_for_signal = asset_manifest.get("mediaCandidates", [])
+    if not isinstance(media_candidates_for_signal, list):
+        media_candidates_for_signal = []
+    summary["signals"]["positioned_media_available"] = any(
+        isinstance(candidate, dict) and isinstance(candidate.get("rect"), dict)
+        for candidate in media_candidates_for_signal
+    )
     app_model = _build_app_model(summary)
     runtime_materialization = _build_runtime_materialization(summary, app_model, style_entries)
     summary["runtimeMaterialization"] = runtime_materialization

@@ -3243,6 +3243,21 @@ async function captureAccessibilitySnapshot(context, page) {
           }
         });
       };
+      const normalizeAssetUrl = (value) => {
+        if (!value) return null;
+        try {
+          return new URL(value, document.baseURI).href;
+        } catch (error) {
+          return String(value || "").trim() || null;
+        }
+      };
+      const extractCssUrls = (value) => {
+        const raw = String(value || "");
+        if (!raw || raw === "none") return [];
+        return Array.from(raw.matchAll(/url\((['"]?)(.*?)\1\)/g))
+          .map((match) => normalizeAssetUrl(match[2]))
+          .filter(Boolean);
+      };
       const normalizeColor = (value) => normalizeValue(value).replace(/,\s+/g, ",");
       const bucketDimension = (value) => {
         const numeric = Number(value);
@@ -3546,6 +3561,43 @@ async function captureAccessibilitySnapshot(context, page) {
           normalizeValue(styles.gap),
         ].join("|");
       };
+      const captureMediaMetadata = (element, style) => {
+        const tag = element.tagName.toLowerCase();
+        const cssUrls = extractCssUrls(style.backgroundImage);
+        const media = {
+          src: null,
+          currentSrc: null,
+          poster: null,
+          alt: normalizeText(element.getAttribute("alt"), 160) || normalizeText(element.getAttribute("aria-label"), 160) || normalizeText(element.getAttribute("title"), 160),
+          backgroundUrls: cssUrls,
+          objectFit: style.objectFit,
+          objectPosition: style.objectPosition,
+        };
+        if (tag === "img") {
+          media.src = normalizeAssetUrl(element.getAttribute("src") || element.src);
+          media.currentSrc = normalizeAssetUrl(element.currentSrc || element.src || element.getAttribute("src"));
+        } else if (tag === "source") {
+          media.src = normalizeAssetUrl(element.getAttribute("srcset") || element.getAttribute("src"));
+        } else if (tag === "picture") {
+          const image = element.querySelector("img");
+          if (image) {
+            media.src = normalizeAssetUrl(image.getAttribute("src") || image.src);
+            media.currentSrc = normalizeAssetUrl(image.currentSrc || image.src || image.getAttribute("src"));
+            media.alt = media.alt || normalizeText(image.getAttribute("alt"), 160) || normalizeText(image.getAttribute("aria-label"), 160);
+          }
+        } else if (tag === "video") {
+          media.src = normalizeAssetUrl(element.currentSrc || element.src || element.getAttribute("src"));
+          media.poster = normalizeAssetUrl(element.getAttribute("poster"));
+        } else if (tag === "iframe" || tag === "embed" || tag === "object") {
+          media.src = normalizeAssetUrl(element.getAttribute("src") || element.getAttribute("data"));
+        } else if (tag === "svg") {
+          media.alt = media.alt || normalizeText(element.textContent, 160);
+        }
+        if (!media.src && !media.currentSrc && !media.poster && !media.backgroundUrls.length && tag !== "svg") {
+          return null;
+        }
+        return media;
+      };
 
       const addEntry = (element, sampleBucket, sampleReason) => {
         if (!element || !element.tagName || seen.has(element)) {
@@ -3579,6 +3631,7 @@ async function captureAccessibilitySnapshot(context, page) {
           semanticPath: describeSelectorPath(element),
           childCount: element.children ? element.children.length : 0,
           descendantCount: element.querySelectorAll ? Math.min(999, element.querySelectorAll("*").length) : 0,
+          media: captureMediaMetadata(element, style),
           rect: {
             x: Math.round(rect.x),
             y: Math.round(rect.y),
@@ -3890,6 +3943,15 @@ async function captureAccessibilitySnapshot(context, page) {
       };
       const uniq = (values) => Array.from(new Set(values.filter(Boolean)));
       const roots = collectDocumentRoots(document, 12);
+      const rectPayload = (node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      };
       const backgroundImages = uniq(
         roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("body *")).slice(0, 200))
           .flatMap((node) => {
@@ -3899,6 +3961,19 @@ async function captureAccessibilitySnapshot(context, page) {
             return Array.from(raw.matchAll(/url\\((['\"]?)(.*?)\\1\\)/g)).map((match) => normalize(match[2]));
           })
       );
+      const imageElements = roots.flatMap(({ document: doc, frameSrc }) =>
+        Array.from(doc.images).slice(0, 120).map((node) => ({
+          src: normalize(node.getAttribute("src") || node.src),
+          currentSrc: normalize(node.currentSrc || node.src || node.getAttribute("src")),
+          alt: node.getAttribute("alt") || node.getAttribute("aria-label") || node.getAttribute("title") || null,
+          loading: node.getAttribute("loading"),
+          className: typeof node.className === "string" && node.className ? node.className.slice(0, 120) : null,
+          rect: rectPayload(node),
+          objectFit: window.getComputedStyle(node).objectFit,
+          objectPosition: window.getComputedStyle(node).objectPosition,
+          frameSrc,
+        }))
+      ).filter((entry) => entry.currentSrc || entry.src);
       const preloadLinks = roots.flatMap(({ document: doc, frameSrc }) =>
         Array.from(doc.querySelectorAll('link[rel="preload"], link[rel="prefetch"], link[rel="modulepreload"]')).map((node) => ({
           rel: node.getAttribute("rel"),
@@ -3940,6 +4015,7 @@ async function captureAccessibilitySnapshot(context, page) {
         audios: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("audio"), (node) => normalize(node.currentSrc || node.src)))),
         iframes: uniq(roots.flatMap(({ document: doc }) => Array.from(doc.querySelectorAll("iframe"), (node) => normalize(node.src)))),
         backgroundImages,
+        imageElements,
         preloadLinks: preloadLinks.filter((entry) => entry.href),
         fontFaces,
         roots: roots.map((entry) => ({

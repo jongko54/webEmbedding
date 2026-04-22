@@ -471,6 +471,23 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             },
         },
         {
+            "tag": "img",
+            "text": "img",
+            "rect": {"x": 760, "y": 220, "width": 590, "height": 640},
+            "media": {
+                "currentSrc": "https://fixture.example/assets/who-img.png",
+                "alt": "Fixture Corp campus and artists",
+                "objectFit": "cover",
+                "objectPosition": "50% 50%",
+            },
+            "styles": {
+                "display": "block",
+                "objectFit": "cover",
+                "objectPosition": "50% 50%",
+                "borderRadius": "0px",
+            },
+        },
+        {
             "tag": "section",
             "text": "Leadership Founder profile and governance overview with portrait media and editorial copy.",
             "rect": {"x": 162, "y": 1324, "width": 910, "height": 877},
@@ -483,6 +500,23 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             },
         },
         {
+            "tag": "img",
+            "text": "img",
+            "rect": {"x": 720, "y": 1388, "width": 420, "height": 560},
+            "media": {
+                "currentSrc": "https://fixture.example/assets/leadership.jpg",
+                "alt": "Founder portrait",
+                "objectFit": "cover",
+                "objectPosition": "50% 35%",
+            },
+            "styles": {
+                "display": "block",
+                "objectFit": "cover",
+                "objectPosition": "50% 35%",
+                "borderRadius": "0px",
+            },
+        },
+        {
             "tag": "section",
             "text": "Company values Brand mission Global offices Artists labels and business groups.",
             "rect": {"x": 162, "y": 2401, "width": 910, "height": 1048},
@@ -492,6 +526,23 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                 "color": "rgb(12, 12, 12)",
                 "fontSize": "20px",
                 "fontFamily": "Inter, sans-serif",
+            },
+        },
+        {
+            "tag": "img",
+            "text": "img",
+            "rect": {"x": 162, "y": 2600, "width": 910, "height": 420},
+            "media": {
+                "currentSrc": "https://fixture.example/assets/company-values.jpg",
+                "alt": "Global office collaboration",
+                "objectFit": "cover",
+                "objectPosition": "50% 50%",
+            },
+            "styles": {
+                "display": "block",
+                "objectFit": "cover",
+                "objectPosition": "50% 50%",
+                "borderRadius": "0px",
             },
         },
         {
@@ -526,6 +577,36 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                 "https://fixture.example/assets/who-img.png",
                 "https://fixture.example/assets/leadership.jpg",
                 "https://fixture.example/assets/company-values.jpg",
+            ],
+            "imageElements": [
+                {
+                    "currentSrc": "https://fixture.example/assets/logo.svg",
+                    "alt": "Fixture logo",
+                    "rect": {"x": 32, "y": 24, "width": 100, "height": 24},
+                    "objectFit": "contain",
+                    "objectPosition": "50% 50%",
+                },
+                {
+                    "currentSrc": "https://fixture.example/assets/company-values.jpg",
+                    "alt": "Global office collaboration",
+                    "rect": {"x": 162, "y": 2600, "width": 910, "height": 420},
+                    "objectFit": "cover",
+                    "objectPosition": "50% 50%",
+                },
+                {
+                    "currentSrc": "https://fixture.example/assets/who-img.png",
+                    "alt": "Fixture Corp campus and artists",
+                    "rect": {"x": 760, "y": 220, "width": 590, "height": 640},
+                    "objectFit": "cover",
+                    "objectPosition": "50% 50%",
+                },
+                {
+                    "currentSrc": "https://fixture.example/assets/leadership.jpg",
+                    "alt": "Founder portrait",
+                    "rect": {"x": 720, "y": 1388, "width": 420, "height": 560},
+                    "objectFit": "cover",
+                    "objectPosition": "50% 35%",
+                },
             ],
             "scripts": [],
         },
@@ -622,6 +703,15 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         raise AssertionError("longform scaffold did not report accessibility landmark extraction")
     if not longform_summary.get("accessibilityLandmarks"):
         raise AssertionError("longform scaffold did not persist accessibility landmark samples")
+    if not longform_summary.get("signals", {}).get("positioned_media_available"):
+        raise AssertionError("longform scaffold did not report positioned media candidates")
+    media_candidates = (
+        longform_summary.get("assetManifest", {}).get("mediaCandidates", [])
+        if isinstance(longform_summary.get("assetManifest"), dict)
+        else []
+    )
+    if not media_candidates or not any(isinstance(candidate, dict) and candidate.get("rect") for candidate in media_candidates):
+        raise AssertionError("longform scaffold did not persist media candidates with source rects")
     longform_roles = {
         str(section.get("role") or "")
         for section in longform_document_sections
@@ -649,6 +739,29 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
     )
     if first_media.endswith("logo.svg"):
         raise AssertionError("longform scaffold preferred logo/icon assets over content imagery")
+    def media_srcs_for_text(text: str) -> list[str]:
+        lowered = text.lower()
+        media_srcs: list[str] = []
+        for section in longform_document_sections:
+            if not isinstance(section, dict):
+                continue
+            haystack = " ".join(str(section.get(key) or "") for key in ("title", "copy")).lower()
+            media = section.get("media") if isinstance(section.get("media"), dict) else {}
+            if lowered in haystack and isinstance(media, dict):
+                media_srcs.append(str(media.get("src") or ""))
+        return media_srcs
+
+    expected_media_by_text = {
+        "who we are": "who-img.png",
+        "leadership": "leadership.jpg",
+        "company values": "company-values.jpg",
+    }
+    for section_text, expected_media in expected_media_by_text.items():
+        media_srcs = media_srcs_for_text(section_text)
+        if not any(expected_media in media_src for media_src in media_srcs):
+            raise AssertionError(
+                f"longform scaffold did not match nearby media for {section_text!r}: expected {expected_media}, saw {media_srcs}"
+            )
     if not any(isinstance(section, dict) and section.get("a11yRole") for section in longform_document_sections):
         raise AssertionError("longform scaffold did not attach accessibility metadata to documentSections")
     if "bounded-document-flow" not in longform_preview or "bounded-document-section" not in longform_preview:
