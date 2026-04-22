@@ -1683,8 +1683,10 @@ def _infer_section_role(
         return "action"
     if tag == "form":
         return "hero"
-    if height >= int(viewport_height * 0.18) or (width >= int(viewport_width * 0.76) and y > max(120, viewport_height // 8)):
+    if y <= max(180, viewport_height // 5) and height >= int(viewport_height * 0.18):
         return "hero"
+    if height >= int(viewport_height * 0.18) or (width >= int(viewport_width * 0.76) and y > max(120, viewport_height // 8)):
+        return "band"
     if width >= int(viewport_width * 0.5) and height <= max(140, viewport_height // 10):
         return "band"
     return "content"
@@ -1790,6 +1792,63 @@ def _build_shell_regions(visual_layers: list[dict[str, Any]]) -> list[dict[str, 
     return regions[:8]
 
 
+def _document_section_tag(section: dict[str, Any]) -> str:
+    role = str(section.get("role") or "").lower()
+    source_tag = str(section.get("tag") or "").lower()
+    if role == "footer" or source_tag == "footer":
+        return "footer"
+    if source_tag in {"main", "article", "aside"}:
+        return source_tag
+    return "section"
+
+
+def _build_document_sections(
+    sections: list[dict[str, Any]],
+    asset_manifest: dict[str, Any],
+    viewport_width: int,
+) -> list[dict[str, Any]]:
+    images = asset_manifest.get("images", []) if isinstance(asset_manifest.get("images", []), list) else []
+    image_cursor = 0
+    document_sections: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for section in sorted((entry for entry in sections if isinstance(entry, dict)), key=lambda entry: _rect_dict(entry.get("rect")).get("y", 0)):
+        section_id = str(section.get("id") or f"document-section-{len(document_sections) + 1}")
+        if section_id in seen or section.get("role") == "masthead":
+            continue
+        seen.add(section_id)
+        rect = _rect_dict(section.get("rect"))
+        width_percent = min(100, max(36, (rect["width"] / max(viewport_width, 1)) * 100)) if rect["width"] else 100
+        offset_percent = min(18, max(0, (rect["x"] / max(viewport_width, 1)) * 100)) if rect["x"] else 0
+        min_height = max(96, min(rect["height"], 720)) if rect["height"] else 96
+        media: dict[str, Any] | None = None
+        if images and section.get("role") not in {"footer", "action"}:
+            src = str(images[image_cursor % len(images)])
+            image_cursor += 1
+            media = {"src": src, "alt": section.get("title") or section.get("role") or "Captured media"}
+        document_sections.append(
+            {
+                "id": f"document-{section_id}",
+                "sourceSectionId": section_id,
+                "htmlTag": _document_section_tag(section),
+                "tag": section.get("tag") or "div",
+                "role": section.get("role") or "content",
+                "title": section.get("title") or "Captured section",
+                "copy": section.get("copy") or "",
+                "meta": section.get("meta") or "",
+                "details": section.get("details") if isinstance(section.get("details"), list) else [],
+                "rect": rect,
+                "styleSnapshot": section.get("styleSnapshot") if isinstance(section.get("styleSnapshot"), dict) else {},
+                "layout": {
+                    "widthPercent": round(width_percent, 2),
+                    "offsetPercent": round(offset_percent, 2),
+                    "minHeight": min_height,
+                },
+                "media": media,
+            }
+        )
+    return document_sections[:12]
+
+
 def _renderer_confidence(summary: dict[str, Any]) -> str:
     signals = summary.get("signals", {}) if isinstance(summary, dict) else {}
     if all(bool(signals.get(label)) for label in ("dom_available", "styles_available", "interactions_available")):
@@ -1879,6 +1938,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     interaction_trace = (interaction_summary or {}).get("traceSample", [])
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
+    asset_manifest = summary.get("assetManifest", {}) if isinstance(summary.get("assetManifest"), dict) else {}
     visual_stage = summary.get("visualStage", {}) if isinstance(summary.get("visualStage"), dict) else {}
     viewport_width = _viewport_side(summary, "width", 1440)
     viewport_height = _viewport_side(summary, "height", 1200)
@@ -2305,6 +2365,15 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             for section in section_cards
             if section["id"] != hero_section["id"] and section.get("role") not in {"masthead", "footer"} and _rect_dict(section.get("rect")).get("y", 0) >= body_start_y and _rect_dict(section.get("rect")).get("y", 0) < footer_top
         ] or (section_cards[1:] or section_cards[:1])
+    document_sections = _build_document_sections(
+        [
+            hero_section,
+            *body_sections,
+            *([footer_section] if isinstance(footer_section, dict) else []),
+        ],
+        asset_manifest,
+        viewport_width,
+    )
     rhythm = [
         {
             "id": section["id"],
@@ -2467,6 +2536,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             "rightLinks": footer_right_links,
             "controls": footer_controls,
         },
+        "documentSections": document_sections,
         "bodySections": body_sections,
         "visualLayers": visual_layers,
         "interactions": interaction_cards,
@@ -2704,6 +2774,10 @@ def _render_bounded_reference_page_tsx() -> str:
             "  rect?: { x?: number | null; y?: number | null; width?: number | null; height?: number | null } | null;",
             "  styleSnapshot?: Record<string, unknown> | null;",
             "  zIndex?: number | null;",
+            "  htmlTag?: string | null;",
+            "  tag?: string | null;",
+            "  media?: { src?: string | null; alt?: string | null } | null;",
+            "  layout?: { widthPercent?: number | null; offsetPercent?: number | null; minHeight?: number | null } | null;",
             "};",
             "",
             "type VisualStage = {",
@@ -2835,6 +2909,7 @@ def _render_bounded_reference_page_tsx() -> str:
             '  const shellTopology = data.shellTopology ?? {};',
             '  const shellState = data.shellState ?? {};',
             "  const visualLayers = ((data.visualLayers?.length ? data.visualLayers : data.sections) ?? []) as readonly BoundedLayer[];",
+            "  const documentSections = ((data.documentSections?.length ? data.documentSections : data.bodySections) ?? []) as readonly BoundedLayer[];",
             "  const shellRegions = ((data.shellRegions ?? []) as readonly BoundedLayer[]);",
             "  const visualStage = data.visualStage as VisualStage | undefined;",
             "  const stageReferenceSrc = visualStage?.referenceImage?.src;",
@@ -2980,6 +3055,35 @@ def _render_bounded_reference_page_tsx() -> str:
             "      </div>",
             "    );",
             "  };",
+            "  const documentSectionStyle = (section: BoundedLayer): CSSProperties => {",
+            "    const base = styleFromSnapshot(section.styleSnapshot, true) ?? {};",
+            "    const widthPercent = Number(section.layout?.widthPercent ?? 100);",
+            "    const offsetPercent = Number(section.layout?.offsetPercent ?? 0);",
+            "    const minHeight = Number(section.layout?.minHeight ?? 0);",
+            "    return {",
+            "      ...base,",
+            "      maxWidth: Number.isFinite(widthPercent) ? `${Math.min(Math.max(widthPercent, 36), 100)}%` : undefined,",
+            "      marginLeft: Number.isFinite(offsetPercent) && offsetPercent > 0 ? `${offsetPercent}%` : undefined,",
+            "      minHeight: Number.isFinite(minHeight) && minHeight > 0 ? `${minHeight}px` : undefined,",
+            "    };",
+            "  };",
+            "  const renderDocumentSection = (section: BoundedLayer) => {",
+            "    const hasMedia = Boolean(section.media?.src);",
+            "    return (",
+            '      <section className={`bounded-document-section bounded-document-section--${section.role ?? "content"}`} data-has-media={hasMedia ? "true" : "false"} data-role={section.role ?? "content"} data-source-tag={section.tag ?? section.htmlTag ?? "section"} key={section.id ?? `${section.title}-${section.role}`} style={documentSectionStyle(section)}>',
+            '        <div className="bounded-document-copy">',
+            '          {section.role ? <p className="bounded-kicker">{section.role}</p> : null}',
+            "          {section.title ? <h2>{section.title}</h2> : null}",
+            "          {section.copy ? <p>{section.copy}</p> : null}",
+            "        </div>",
+            "        {hasMedia ? (",
+            '          <figure className="bounded-document-media">',
+            '            <img alt={section.media?.alt ?? ""} loading="lazy" src={section.media?.src ?? ""} />',
+            "          </figure>",
+            "        ) : null}",
+            "      </section>",
+            "    );",
+            "  };",
             "  return (",
             '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}${stageFirst ? " bounded-shell--stage-first" : ""}`}>',
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
@@ -3115,7 +3219,11 @@ def _render_bounded_reference_page_tsx() -> str:
             "",
             '      <div className={`bounded-layout${centeredFocus ? " bounded-layout--centered" : ""}`}>',
             '        <div className="bounded-main">',
-            '          <div className="bounded-section-grid">',
+            '          <div className="bounded-document-flow">',
+            "            {documentSections.map((section) => renderDocumentSection(section))}",
+            "          </div>",
+            "          {!documentSections.length ? (",
+            '            <div className="bounded-section-grid">',
             "                {data.bodySections.map((section) => (",
             '                  <div className="bounded-card bounded-panel" data-role={section.role} key={section.id} style={styleFromSnapshot(section.styleSnapshot, true)}>',
             '                    <div className="bounded-card-head">',
@@ -3134,7 +3242,8 @@ def _render_bounded_reference_page_tsx() -> str:
             "                    </div>",
             "                  </div>",
             "                ))}",
-            "          </div>",
+            "            </div>",
+            "          ) : null}",
             "          {!centeredFocus ? (",
             '            <div className="bounded-panel bounded-stack bounded-visible-interactions">',
             '              <p className="bounded-kicker">Interaction samples</p>',
@@ -3285,6 +3394,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     runtime_materialization = app_model.get("runtimeMaterialization", {}) if isinstance(app_model, dict) else {}
     meta_bits = app_model.get("metaBits", []) if isinstance(app_model.get("metaBits", []), list) else []
     signal_bits = app_model.get("signalBits", []) if isinstance(app_model.get("signalBits", []), list) else []
+    document_sections = app_model.get("documentSections", []) if isinstance(app_model.get("documentSections", []), list) else []
     body_sections = app_model.get("bodySections", []) if isinstance(app_model.get("bodySections", []), list) else []
     interactions = app_model.get("interactions", []) if isinstance(app_model.get("interactions", []), list) else []
     layout_rhythm = reconstruction.get("layoutRhythm", []) if isinstance(reconstruction.get("layoutRhythm", []), list) else []
@@ -3433,6 +3543,33 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             f"min-height:{max((height / viewport_height) * 100, 2):.2f}%",
         ]
         attr = _style_attr_from_snapshot(section.get("styleSnapshot"))
+        if attr:
+            inline = attr.removeprefix(' style="').removesuffix('"')
+            if inline:
+                style_bits.append(inline)
+        return f' style="{escape("; ".join(bit for bit in style_bits if bit))}"'
+
+    def render_document_section_style(section: dict[str, Any]) -> str:
+        layout = section.get("layout", {}) if isinstance(section.get("layout"), dict) else {}
+        style_bits: list[str] = []
+        try:
+            width_percent = float(layout.get("widthPercent") or 100)
+        except (TypeError, ValueError):
+            width_percent = 100
+        try:
+            offset_percent = float(layout.get("offsetPercent") or 0)
+        except (TypeError, ValueError):
+            offset_percent = 0
+        try:
+            min_height = int(layout.get("minHeight") or 0)
+        except (TypeError, ValueError):
+            min_height = 0
+        style_bits.append(f"max-width:{min(max(width_percent, 36), 100):.2f}%")
+        if offset_percent > 0:
+            style_bits.append(f"margin-left:{min(offset_percent, 18):.2f}%")
+        if min_height > 0:
+            style_bits.append(f"min-height:{min_height}px")
+        attr = _style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)
         if attr:
             inline = attr.removeprefix(' style="').removesuffix('"')
             if inline:
@@ -3601,6 +3738,36 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         centered_nav_bits.append(f'          <a class="bounded-nav-link{extra_class}" href="{href}"{role_attr}{aria_attr}{link_style}>{visible_label}</a>')
     if not centered_nav_bits:
         centered_nav_bits.append('          <span class="bounded-nav-link bounded-nav-link--muted">No reusable navigation links were sampled.</span>')
+
+    document_section_bits: list[str] = []
+    for section in document_sections:
+        if not isinstance(section, dict):
+            continue
+        role = str(section.get("role") or "content")
+        role_class = re.sub(r"[^a-z0-9_-]+", "-", role.lower()).strip("-") or "content"
+        media = section.get("media", {}) if isinstance(section.get("media"), dict) else {}
+        media_src = str(media.get("src") or "")
+        has_media = bool(media_src)
+        media_alt = escape(str(media.get("alt") or section.get("title") or "Captured media"))
+        document_section_bits.extend(
+            [
+                f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
+                '                <div class="bounded-document-copy">',
+                f'                  <p class="bounded-kicker">{escape(role)}</p>',
+                f'                  <h2>{escape(str(section.get("title") or "Captured section"))}</h2>',
+                f'                  <p>{escape(str(section.get("copy") or ""))}</p>',
+                "                </div>",
+            ]
+        )
+        if has_media:
+            document_section_bits.extend(
+                [
+                    '                <figure class="bounded-document-media">',
+                    f'                  <img alt="{media_alt}" loading="lazy" src="{escape(media_src)}" />',
+                    "                </figure>",
+                ]
+            )
+        document_section_bits.append("              </section>")
 
     section_cards = []
     for section in body_sections:
@@ -3931,9 +4098,18 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "    </div>",
             f'    <div class="bounded-layout{" bounded-layout--centered" if centered_focus else ""}">',
             '      <div class="bounded-main">',
-            '        <div class="bounded-section-grid">',
-            *section_cards,
+            '        <div class="bounded-document-flow">',
+            *document_section_bits,
             "        </div>",
+            *(
+                []
+                if document_section_bits
+                else [
+                    '        <div class="bounded-section-grid">',
+                    *section_cards,
+                    "        </div>",
+                ]
+            ),
             *(
                 []
                 if centered_focus
@@ -4319,6 +4495,52 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: grid;",
             "  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));",
             "  gap: 18px;",
+            "}",
+            ".bounded-document-flow {",
+            "  display: grid;",
+            "  gap: clamp(18px, 3vw, 42px);",
+            "}",
+            ".bounded-document-section {",
+            "  display: grid;",
+            "  grid-template-columns: minmax(0, 1fr);",
+            "  gap: clamp(18px, 3vw, 36px);",
+            "  align-items: center;",
+            "  width: 100%;",
+            "  padding: clamp(24px, 4vw, 64px);",
+            "  border-radius: 0;",
+            "  border: 0;",
+            "  background-clip: padding-box;",
+            "}",
+            ".bounded-document-section[data-has-media=\"true\"] {",
+            "  grid-template-columns: minmax(0, 1fr) minmax(220px, 42%);",
+            "}",
+            ".bounded-document-copy {",
+            "  max-width: 72ch;",
+            "}",
+            ".bounded-document-copy h2 {",
+            "  margin: 0;",
+            "  font-size: clamp(1.6rem, 3vw, 3.8rem);",
+            "  line-height: 1.04;",
+            "  letter-spacing: var(--bounded-heading-letter-spacing);",
+            "}",
+            ".bounded-document-copy p:not(.bounded-kicker) {",
+            "  margin: 14px 0 0;",
+            "  color: var(--bounded-muted);",
+            "  line-height: var(--bounded-body-line-height);",
+            "}",
+            ".bounded-document-media {",
+            "  margin: 0;",
+            "  min-height: 220px;",
+            "  overflow: hidden;",
+            "  border-radius: 8px;",
+            "  background: rgba(255, 255, 255, 0.05);",
+            "}",
+            ".bounded-document-media img {",
+            "  display: block;",
+            "  width: 100%;",
+            "  height: 100%;",
+            "  min-height: 220px;",
+            "  object-fit: cover;",
             "}",
             ".bounded-panel {",
             "  border: 1px solid var(--bounded-border);",
@@ -4787,6 +5009,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  }",
             "  .bounded-nav { justify-content: flex-start; }",
             "  .bounded-shell-panel-grid { grid-template-columns: minmax(0, 1fr); }",
+            "  .bounded-document-section, .bounded-document-section[data-has-media=\"true\"] { grid-template-columns: minmax(0, 1fr); max-width: 100% !important; margin-left: 0 !important; }",
             "  .bounded-footer { flex-direction: column; align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }",
             "  .bounded-footer--frame { margin-left: -20px; margin-right: -20px; }",
             "  .bounded-footer-cluster--end { justify-content: flex-start; }",

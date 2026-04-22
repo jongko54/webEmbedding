@@ -325,6 +325,7 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         profile: dict[str, Any],
         *,
         entries: list[dict[str, Any]] | None = None,
+        asset_content: dict[str, Any] | None = None,
         title: str = "Fixture App",
         url: str = "https://fixture.example/app",
         viewport_width: int = 960,
@@ -366,7 +367,7 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                     },
                     "interactions": {"available": True, "content": []},
                     "interactionTrace": {"available": True, "content": {"steps": []}},
-                    "assets": {"available": True, "content": {"images": [], "scripts": []}},
+                    "assets": {"available": True, "content": asset_content or {"images": [], "scripts": []}},
                 },
             },
         }
@@ -511,6 +512,14 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
     longform_bundle = capture_bundle(
         longform_profile,
         entries=longform_entries,
+        asset_content={
+            "images": [
+                "https://fixture.example/assets/who-img.png",
+                "https://fixture.example/assets/leadership.jpg",
+                "https://fixture.example/assets/company-values.jpg",
+            ],
+            "scripts": [],
+        },
         title="Fixture Corp",
         url="https://fixture.example/company/info",
         viewport_width=1440,
@@ -526,6 +535,9 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
     longform_presentation = (
         longform_model.get("presentation") if isinstance(longform_model.get("presentation"), dict) else {}
     )
+    longform_document_sections = (
+        longform_model.get("documentSections") if isinstance(longform_model.get("documentSections"), list) else []
+    )
     if longform_summary.get("renderer", {}).get("kind") != "role-inferred-next-app":
         raise AssertionError("longform scaffold did not select role-inferred-next-app")
     if longform_presentation.get("variant") != "visual-reference-first" or not longform_presentation.get("stageFirst"):
@@ -536,6 +548,31 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         raise AssertionError("longform scaffold preview does not render the stage-first screenshot reference")
     if "order: -2" not in longform_css or "bounded-shell--stage-first > .bounded-stage" not in longform_css:
         raise AssertionError("longform scaffold CSS does not visually promote the reference stage")
+    if len(longform_document_sections) < 3:
+        raise AssertionError("longform scaffold did not derive documentSections from captured page content")
+    longform_roles = {
+        str(section.get("role") or "")
+        for section in longform_document_sections
+        if isinstance(section, dict)
+    }
+    if "band" not in longform_roles:
+        raise AssertionError(f"longform scaffold collapsed lower content sections into hero-only roles: {longform_roles}")
+    joined_document_text = " ".join(
+        " ".join(str(section.get(key) or "") for key in ("title", "copy", "role", "tag"))
+        for section in longform_document_sections
+        if isinstance(section, dict)
+    ).lower()
+    for expected_text in ("who we are", "leadership", "company values"):
+        if expected_text not in joined_document_text:
+            raise AssertionError(f"longform scaffold did not carry captured page text into documentSections: {expected_text}")
+    if not any(isinstance(section, dict) and isinstance(section.get("media"), dict) and section["media"].get("src") for section in longform_document_sections):
+        raise AssertionError("longform scaffold did not attach captured image assets to documentSections")
+    if "bounded-document-flow" not in longform_preview or "bounded-document-section" not in longform_preview:
+        raise AssertionError("longform scaffold preview does not render DOM-derived document sections")
+    if "bounded-document-media" not in longform_preview or "https://fixture.example/assets/who-img.png" not in longform_preview:
+        raise AssertionError("longform scaffold preview does not materialize captured image assets")
+    if "renderDocumentSection" not in longform_tsx or "documentSections" not in longform_tsx:
+        raise AssertionError("longform scaffold TSX does not expose DOM-derived document section rendering")
     with tempfile.TemporaryDirectory(prefix="scaffold-quality-", dir=temp_parent) as temp_name:
         persisted_longform = persist_rebuild_scaffold(Path(temp_name) / "longform", longform_scaffold)
         longform_quality = _artifact_quality_signals(persisted_longform)
