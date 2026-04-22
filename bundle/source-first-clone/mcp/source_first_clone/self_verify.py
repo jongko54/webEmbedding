@@ -331,6 +331,289 @@ def _artifact_quality_signals(rebuild_artifacts: dict[str, str]) -> dict[str, An
     }
 
 
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_report_check(report: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
+    if not isinstance(report, dict):
+        return None
+    if report.get("name") == name:
+        return report
+    for key in ("check_details", "checks"):
+        checks = report.get(key)
+        if not isinstance(checks, list):
+            continue
+        for item in checks:
+            if isinstance(item, dict) and item.get("name") == name:
+                return item
+    return None
+
+
+def _visual_qa_metric_summary(metrics: dict[str, Any]) -> dict[str, float]:
+    selected = {}
+    for key in (
+        "dimension_similarity",
+        "ahash_similarity",
+        "mean_luma_similarity",
+        "contrast_similarity",
+        "rgb_similarity",
+        "histogram_similarity",
+        "grid_similarity",
+        "quadrant_similarity",
+        "band_similarity",
+        "edge_similarity",
+        "pixel_luma_similarity",
+        "pixel_rgb_similarity",
+        "pixel_mismatch_similarity",
+        "pixel_mismatch_ratio",
+        "pixel_mean_abs_luma_delta",
+        "pixel_mean_abs_rgb_delta",
+    ):
+        value = _coerce_float(metrics.get(key))
+        if value is not None:
+            selected[key] = round(value, 4)
+    return selected
+
+
+def _visual_qa_focus_for_flags(flags: list[str]) -> list[str]:
+    focus = ["screenshot"]
+    flag_focus = {
+        "viewport-or-breakpoint drift": ["breakpoint layout", "viewport geometry"],
+        "composition drift": ["stage geometry", "section placement"],
+        "vertical-flow drift": ["vertical flow", "section placement"],
+        "layout-or-large-visual drift": ["stage geometry", "media placement"],
+        "palette-or-background drift": ["palette"],
+        "color-balance drift": ["palette"],
+        "shape-and-contrast drift": ["typography", "component shape"],
+        "contrast-or-depth drift": ["surface contrast"],
+        "pixel-structure drift": ["media placement", "micro layout"],
+        "luma-or-contrast drift": ["surface contrast"],
+        "channel-color drift": ["accent colors"],
+    }
+    for flag in flags:
+        for item in flag_focus.get(flag, []):
+            if item not in focus:
+                focus.append(item)
+    return focus[:8]
+
+
+def _visual_qa_actions_for_flags(flags: list[str]) -> list[str]:
+    actions = []
+    if "viewport-or-breakpoint drift" in flags:
+        actions.append("Re-render and compare against the same viewport and breakpoint dimensions before tuning layout.")
+    if "composition drift" in flags or "layout-or-large-visual drift" in flags:
+        actions.append("Align stage geometry, section y-positions, and large media placement against the reference screenshot.")
+    if "vertical-flow drift" in flags:
+        actions.append("Rebuild vertical flow using captured section heights and top offsets before changing fine styling.")
+    if "pixel-structure drift" in flags:
+        actions.append("Compare local spacing, overlay positions, and image/media bounds against the reference pixel grid.")
+    if "palette-or-background drift" in flags or "color-balance drift" in flags or "channel-color drift" in flags:
+        actions.append("Promote captured body, surface, text, and accent colors into the renderer tokens.")
+    if "shape-and-contrast drift" in flags or "contrast-or-depth drift" in flags or "luma-or-contrast drift" in flags:
+        actions.append("Audit typography weight, contrast, surface depth, and component shape against the reference capture.")
+    if not actions:
+        actions.append("Recheck screenshot, stage geometry, media placement, and palette before claiming visual parity.")
+    deduped = []
+    for action in actions:
+        if action not in deduped:
+            deduped.append(action)
+    return deduped[:6]
+
+
+def _visual_qa_score_from_metrics(similarity: float | None, metrics: dict[str, Any], flags: list[str]) -> int:
+    score = int(round(max(0.0, min(1.0, similarity if similarity is not None else 0.0)) * 100))
+    if similarity is None:
+        score = 50 if metrics else 0
+    flag_penalties = {
+        "viewport-or-breakpoint drift": 20,
+        "composition drift": 16,
+        "vertical-flow drift": 14,
+        "layout-or-large-visual drift": 16,
+        "pixel-structure drift": 14,
+        "palette-or-background drift": 10,
+        "color-balance drift": 10,
+        "channel-color drift": 10,
+        "shape-and-contrast drift": 8,
+        "contrast-or-depth drift": 8,
+        "luma-or-contrast drift": 8,
+    }
+    flag_penalty = min(48, sum(flag_penalties.get(flag, 6) for flag in flags))
+    score = min(score, max(0, 100 - flag_penalty))
+    metric_penalty = 0
+    pixel_mismatch = _coerce_float(metrics.get("pixel_mismatch_ratio"))
+    if pixel_mismatch is not None:
+        if pixel_mismatch >= 0.28:
+            metric_penalty += 12
+        elif pixel_mismatch >= 0.16:
+            metric_penalty += 6
+    for key in ("grid_similarity", "band_similarity", "histogram_similarity"):
+        value = _coerce_float(metrics.get(key))
+        if value is not None and value < 0.78:
+            metric_penalty += 4
+    for key in ("pixel_luma_similarity", "pixel_rgb_similarity"):
+        value = _coerce_float(metrics.get(key))
+        if value is not None and value < 0.78:
+            metric_penalty += 5
+    return max(0, min(100, score - min(metric_penalty, 24)))
+
+
+def _screenshot_visual_qa_from_report(report: dict[str, Any] | None) -> dict[str, Any]:
+    detail = _find_report_check(report, "screenshot")
+    if not isinstance(detail, dict):
+        return {
+            "available": False,
+            "status": "missing",
+            "ready": False,
+            "grade": "unavailable",
+            "score": 0,
+            "reason": "No screenshot check was present in the verification report.",
+        }
+    detail_payload = detail.get("details") if isinstance(detail.get("details"), dict) else {}
+    metrics = detail_payload.get("metrics") if isinstance(detail_payload.get("metrics"), dict) else {}
+    drift_flags = detail_payload.get("drift_flags") if isinstance(detail_payload.get("drift_flags"), list) else []
+    if not drift_flags and isinstance(detail.get("drift_flags"), list):
+        drift_flags = detail.get("drift_flags") or []
+    similarity = _coerce_float(detail.get("similarity"))
+    status = str(detail.get("status") or "missing")
+    if status != "present":
+        return {
+            "available": True,
+            "status": status,
+            "ready": False,
+            "grade": "fail",
+            "score": 0,
+            "drift_flags": drift_flags,
+            "metrics": _visual_qa_metric_summary(metrics),
+            "focus_checks": ["screenshot"],
+            "priority_findings": [
+                {
+                    "check": "visual QA screenshot",
+                    "summary": "Screenshot visual QA failed because a comparable persisted PNG was missing.",
+                    "focus": "recapture screenshot evidence",
+                }
+            ],
+            "recommended_actions": [
+                "Recapture reference and rendered screenshots before treating the rebuild as visually verified."
+            ],
+        }
+
+    score = _visual_qa_score_from_metrics(similarity, metrics, drift_flags)
+    blocking_flags = {
+        "viewport-or-breakpoint drift",
+        "composition drift",
+        "vertical-flow drift",
+        "layout-or-large-visual drift",
+        "pixel-structure drift",
+    }
+    if score >= 88 and not any(flag in blocking_flags for flag in drift_flags):
+        grade = "pass"
+    elif score >= 72:
+        grade = "watch"
+    else:
+        grade = "fail"
+    focus_checks = _visual_qa_focus_for_flags(drift_flags)
+    actions = _visual_qa_actions_for_flags(drift_flags if grade != "pass" else [])
+    finding_summary = f"Screenshot visual QA {grade} ({score}/100)"
+    if drift_flags:
+        finding_summary += ": " + ", ".join(drift_flags[:5])
+    return {
+        "available": True,
+        "status": status,
+        "ready": grade == "pass",
+        "grade": grade,
+        "score": score,
+        "similarity": round(similarity, 4) if similarity is not None else None,
+        "drift_flags": [str(flag) for flag in drift_flags],
+        "metrics": _visual_qa_metric_summary(metrics),
+        "focus_checks": focus_checks,
+        "priority_findings": [
+            {
+                "check": "visual QA screenshot",
+                "summary": finding_summary,
+                "focus": ", ".join(focus_checks[1:] or ["screenshot parity"]),
+            }
+        ]
+        if grade != "pass"
+        else [],
+        "recommended_actions": actions if grade != "pass" else [],
+    }
+
+
+def _compact_visual_qa(visual_qa: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(visual_qa, dict):
+        return {"available": False}
+    return {
+        "available": bool(visual_qa.get("available")),
+        "status": visual_qa.get("status"),
+        "ready": bool(visual_qa.get("ready")),
+        "grade": visual_qa.get("grade"),
+        "score": visual_qa.get("score"),
+        "similarity": visual_qa.get("similarity"),
+        "drift_flags": visual_qa.get("drift_flags") or [],
+        "focus_checks": visual_qa.get("focus_checks") or [],
+        "metrics": visual_qa.get("metrics") or {},
+    }
+
+
+def _combined_visual_qa(
+    root_visual_qa: dict[str, Any] | None,
+    breakpoint_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    qas: list[dict[str, Any]] = []
+    if isinstance(root_visual_qa, dict) and root_visual_qa.get("available"):
+        qas.append(root_visual_qa)
+    for report in breakpoint_reports:
+        if not isinstance(report, dict):
+            continue
+        qa = report.get("visual_qa")
+        if isinstance(qa, dict) and qa.get("available"):
+            qas.append(qa)
+    if not qas:
+        return {"available": False}
+    grade_rank = {"fail": 3, "watch": 2, "pass": 1, "unavailable": 0}
+    worst = max(qas, key=lambda qa: (grade_rank.get(str(qa.get("grade")), 0), -int(qa.get("score") or 0)))
+    focus_checks: list[str] = []
+    drift_flags: list[str] = []
+    priority_findings: list[Any] = []
+    recommended_actions: list[str] = []
+    for qa in qas:
+        for item in qa.get("focus_checks") or []:
+            if item and item not in focus_checks:
+                focus_checks.append(str(item))
+        for item in qa.get("drift_flags") or []:
+            if item and item not in drift_flags:
+                drift_flags.append(str(item))
+        for item in qa.get("priority_findings") or []:
+            if item and item not in priority_findings:
+                priority_findings.append(item)
+        for item in qa.get("recommended_actions") or []:
+            if item and str(item) not in recommended_actions:
+                recommended_actions.append(str(item))
+    return {
+        "available": True,
+        "ready": all(bool(qa.get("ready")) for qa in qas),
+        "grade": worst.get("grade"),
+        "score": min(int(qa.get("score") or 0) for qa in qas),
+        "root": _compact_visual_qa(root_visual_qa),
+        "breakpoints": [
+            {
+                "name": report.get("name"),
+                **_compact_visual_qa(report.get("visual_qa")),
+            }
+            for report in breakpoint_reports
+            if isinstance(report, dict) and isinstance(report.get("visual_qa"), dict)
+        ],
+        "drift_flags": drift_flags[:10],
+        "focus_checks": focus_checks[:8],
+        "priority_findings": priority_findings[:6],
+        "recommended_actions": recommended_actions[:6],
+    }
+
+
 def _breakpoint_variant_map(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
     breakpoints = bundle.get("breakpoints", {}) if isinstance(bundle, dict) else {}
     variants = breakpoints.get("variants", []) if isinstance(breakpoints, dict) else []
@@ -463,6 +746,9 @@ def _renderer_summary(renderer: dict[str, Any] | None) -> dict[str, Any]:
     artifact_quality = renderer.get("artifact_quality") if isinstance(renderer, dict) else {}
     if not isinstance(artifact_quality, dict):
         artifact_quality = {}
+    visual_qa = renderer.get("visual_qa") if isinstance(renderer, dict) else {}
+    if not isinstance(visual_qa, dict):
+        visual_qa = {}
     return {
         "name": renderer.get("name"),
         "kind": renderer.get("kind"),
@@ -476,6 +762,10 @@ def _renderer_summary(renderer: dict[str, Any] | None) -> dict[str, Any]:
         "breakpoint_ready_count": sum(1 for report in reports if isinstance(report, dict) and report.get("available") and report.get("ready_for_exact_clone")),
         "artifact_quality_ready": artifact_quality.get("ready"),
         "artifact_quality_missing": artifact_quality.get("missing_required") or [],
+        "visual_qa_ready": visual_qa.get("ready"),
+        "visual_qa_grade": visual_qa.get("grade"),
+        "visual_qa_score": visual_qa.get("score"),
+        "visual_qa_drift_flags": visual_qa.get("drift_flags") or [],
     }
 
 
@@ -514,10 +804,15 @@ def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
     preferred_artifact_quality = preferred_renderer.get("artifact_quality")
     if not isinstance(preferred_artifact_quality, dict):
         preferred_artifact_quality = {}
+    preferred_visual_qa = preferred_renderer.get("visual_qa")
+    if not isinstance(preferred_visual_qa, dict):
+        preferred_visual_qa = {}
     return {
         "score": score,
         "root_score": root_score,
         "preferred_renderer_score": preferred_score,
+        "preferred_visual_qa_score": preferred_visual_qa.get("score") or 0,
+        "preferred_visual_qa_grade": preferred_visual_qa.get("grade"),
         "renderer_count": len(renderers),
         "breakpoint_count": len(available_breakpoints),
         "breakpoint_ready_count": breakpoint_ready_count,
@@ -529,6 +824,9 @@ def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
             "ready_for_exact_clone": preferred_renderer.get("ready_for_exact_clone"),
             "report_path": preferred_renderer.get("report_path"),
             "artifact_quality_ready": preferred_artifact_quality.get("ready"),
+            "visual_qa_ready": preferred_visual_qa.get("ready"),
+            "visual_qa_grade": preferred_visual_qa.get("grade"),
+            "visual_qa_score": preferred_visual_qa.get("score"),
         },
         "renderers": [_renderer_summary(item) for item in renderers if isinstance(item, dict)],
         "root_ready_for_exact_clone": bool((root_report or {}).get("ready_for_exact_clone")),
@@ -563,6 +861,9 @@ def _build_repair_plan(
     comparison = root_report.get("comparison_summary", {}) if isinstance(root_report, dict) else {}
     renderer_name = renderer.get("name") or "starter"
     renderer_score = renderer.get("score")
+    root_visual_qa = renderer.get("visual_qa") if isinstance(renderer, dict) else {}
+    if not isinstance(root_visual_qa, dict):
+        root_visual_qa = _screenshot_visual_qa_from_report(root_report)
     breakpoint_focus = []
     for report in breakpoint_reports:
         if not isinstance(report, dict) or not report.get("available"):
@@ -576,6 +877,7 @@ def _build_repair_plan(
                 "focus": report.get("focus"),
             }
         )
+    visual_qa = _combined_visual_qa(root_visual_qa, breakpoint_reports)
     focus_checks = [item.get("name") for item in (comparison.get("weakest_checks") or []) if isinstance(item, dict)]
     normalized_focus_checks = [str(item) for item in focus_checks if item]
     score = 0
@@ -585,6 +887,16 @@ def _build_repair_plan(
         score = 0
     priority_findings = [item for item in (guidance.get("priority_findings") or []) if item]
     recommended_actions = [str(item) for item in (guidance.get("recommended_actions") or []) if item]
+    if visual_qa.get("available") and not visual_qa.get("ready"):
+        for focus in visual_qa.get("focus_checks") or []:
+            if focus and focus not in normalized_focus_checks:
+                normalized_focus_checks.append(str(focus))
+        for finding in reversed(visual_qa.get("priority_findings") or []):
+            if finding and finding not in priority_findings:
+                priority_findings.insert(0, finding)
+        for action in reversed(visual_qa.get("recommended_actions") or []):
+            if action and str(action) not in recommended_actions:
+                recommended_actions.insert(0, str(action))
     artifact_quality = artifact_quality if isinstance(artifact_quality, dict) else {}
     missing_quality = [
         str(item)
@@ -657,6 +969,7 @@ def _build_repair_plan(
         "score": renderer_score,
         "focus_checks": normalized_focus_checks[:6],
         "artifact_quality": artifact_quality,
+        "visual_qa": visual_qa,
         "priority_findings": priority_findings[:6],
         "recommended_actions": recommended_actions,
         "breakpoint_focus": breakpoint_focus,
@@ -674,6 +987,15 @@ def _build_repair_plan(
                 *[f"- {item}" for item in priority_text[:6]],
                 "Recommended actions:",
                 *[f"- {item}" for item in recommended_actions[:6]],
+                "Visual QA:",
+                *(
+                    [
+                        f"- grade {visual_qa.get('grade')} / score {visual_qa.get('score')}",
+                        f"- drift flags: {', '.join((visual_qa.get('drift_flags') or [])[:6]) or 'none'}",
+                    ]
+                    if visual_qa.get("available")
+                    else ["- unavailable"]
+                ),
                 "Breakpoint focus:",
                 *[
                     f"- {item.get('name')}: {item.get('focus')} (score {item.get('score')})"
@@ -705,7 +1027,15 @@ def run_rebuild_self_verify(
             "reason": "No renderable preview entrypoint was present in the rebuild scaffold.",
         }
 
-    rebuild_root = Path(renderer_candidates[0]["entrypoint"]).expanduser().resolve().parent
+    static_roots = [
+        Path(candidate["entrypoint"]).expanduser().resolve().parent
+        for candidate in renderer_candidates
+        if candidate.get("kind") == "static"
+    ]
+    if static_roots:
+        rebuild_root = Path(os.path.commonpath([str(path) for path in static_roots]))
+    else:
+        rebuild_root = Path(renderer_candidates[0]["entrypoint"]).expanduser().resolve().parent
     primary_request = reference_bundle.get("session_request", {}) if isinstance(reference_bundle, dict) else {}
     breakpoint_summary = reference_bundle.get("breakpoints", {}) if isinstance(reference_bundle, dict) else {}
     breakpoint_profiles = breakpoint_summary.get("requested_profiles") if isinstance(breakpoint_summary, dict) else []
@@ -782,6 +1112,7 @@ def run_rebuild_self_verify(
                     },
                     "breakpoints": {"compared": 0, "reports": []},
                     "artifact_quality": artifact_quality,
+                    "visual_qa": {"available": False, "reason": runtime_error or "Renderer did not produce a capture."},
                     "runtime_error": runtime_error,
                 }
                 renderer_results.append(renderer_result)
@@ -799,6 +1130,8 @@ def run_rebuild_self_verify(
                 candidate_url=rendered_bundle.get("url"),
             )
             root_report_path = _persist_report(renderer_dir / "verification.json", root_report)
+            visual_qa = _screenshot_visual_qa_from_report(root_report)
+            visual_qa_path = _persist_report(renderer_dir / "visual-qa.json", visual_qa)
 
             reference_variants = _breakpoint_variant_map(reference_bundle)
             rendered_variants = _breakpoint_variant_map(rendered_bundle)
@@ -834,6 +1167,11 @@ def run_rebuild_self_verify(
                         candidate_url=rendered_variant_bundle.get("url"),
                     )
                     report_path = _persist_report(renderer_dir / "breakpoints" / f"{variant_name}-verification.json", report)
+                    breakpoint_visual_qa = _screenshot_visual_qa_from_report(report)
+                    breakpoint_visual_qa_path = _persist_report(
+                        renderer_dir / "breakpoints" / f"{variant_name}-visual-qa.json",
+                        breakpoint_visual_qa,
+                    )
                     breakpoint_reports.append(
                         {
                             "name": variant_name,
@@ -843,6 +1181,8 @@ def run_rebuild_self_verify(
                             "ready_for_exact_clone": (report.get("downstream_guidance") or {}).get("ready_for_exact_clone"),
                             "focus": ((report.get("downstream_guidance") or {}).get("priority_findings") or [None])[0],
                             "report_path": report_path,
+                            "visual_qa": breakpoint_visual_qa,
+                            "visual_qa_path": breakpoint_visual_qa_path,
                         }
                     )
             overall_ready = _renderer_ready(root_report)
@@ -850,8 +1190,18 @@ def run_rebuild_self_verify(
             quality_ready = bool(artifact_quality.get("ready"))
             if quality_required and not quality_ready:
                 overall_ready = False
+            if visual_qa.get("available") and not visual_qa.get("ready"):
+                overall_ready = False
             if breakpoint_reports:
-                overall_ready = overall_ready and all(bool(report.get("ready_for_exact_clone")) for report in breakpoint_reports)
+                overall_ready = overall_ready and all(
+                    bool(report.get("ready_for_exact_clone"))
+                    and not (
+                        isinstance(report.get("visual_qa"), dict)
+                        and report["visual_qa"].get("available")
+                        and not report["visual_qa"].get("ready")
+                    )
+                    for report in breakpoint_reports
+                )
             score = _comparison_score(root_report)
             renderer_result = {
                 "name": name,
@@ -863,6 +1213,8 @@ def run_rebuild_self_verify(
                 "score": score,
                 "ready_for_exact_clone": overall_ready,
                 "artifact_quality": artifact_quality,
+                "visual_qa": visual_qa,
+                "visual_qa_path": visual_qa_path,
                 "artifact_quality_ready": quality_ready,
                 "artifact_quality_required": quality_required,
                 "rendered_capture_manifest": ((rendered_bundle.get("bundle") or {}).get("persisted") or {}).get("files", {}).get("capture_manifest"),
@@ -880,10 +1232,16 @@ def run_rebuild_self_verify(
             renderer_results.append(renderer_result)
             persisted["renderers"][name] = {
                 "root_report": root_report_path,
+                "visual_qa": visual_qa_path,
                 "breakpoint_reports": {
                     report["name"]: report["report_path"]
                     for report in breakpoint_reports
                     if report.get("available") and report.get("report_path")
+                },
+                "breakpoint_visual_qa": {
+                    report["name"]: report["visual_qa_path"]
+                    for report in breakpoint_reports
+                    if report.get("available") and report.get("visual_qa_path")
                 },
             }
             if renderer_result.get("ready_for_exact_clone"):
@@ -923,11 +1281,13 @@ def run_rebuild_self_verify(
         "renderer_summaries": renderer_summaries,
         "preferred_renderer": {
             "name": (preferred_renderer or {}).get("name"),
+            "kind": (preferred_renderer or {}).get("kind"),
             "entrypoint": (preferred_renderer or {}).get("entrypoint"),
             "score": (preferred_renderer or {}).get("score"),
             "ready_for_exact_clone": (preferred_renderer or {}).get("ready_for_exact_clone"),
             "report_path": (((preferred_renderer or {}).get("root_report") or {}).get("report_path")),
             "artifact_quality_ready": ((preferred_renderer or {}).get("artifact_quality") or {}).get("ready"),
+            "visual_qa": _compact_visual_qa((preferred_renderer or {}).get("visual_qa")),
         },
         "preferred_renderer_summary": preferred_renderer_summary,
         "renderers": [
@@ -940,10 +1300,12 @@ def run_rebuild_self_verify(
                 "report_path": ((item.get("root_report") or {}).get("report_path")),
                 "artifact_quality_ready": ((item.get("artifact_quality") or {}).get("ready")),
                 "artifact_quality_missing": ((item.get("artifact_quality") or {}).get("missing_required") or []),
+                "visual_qa": _compact_visual_qa(item.get("visual_qa")),
             }
             for item in renderer_results
         ],
         "artifact_quality": artifact_quality,
+        "visual_qa": repair_plan.get("visual_qa"),
         "rendered_capture_manifest": (preferred_renderer or {}).get("rendered_capture_manifest"),
         "root_report": (preferred_renderer or {}).get("root_report"),
         "breakpoints": (preferred_renderer or {}).get("breakpoints") or {"compared": 0, "reports": []},
@@ -959,6 +1321,7 @@ def run_rebuild_self_verify(
             "priority_findings": repair_plan.get("priority_findings"),
             "recommended_actions": repair_plan.get("recommended_actions"),
             "artifact_quality": repair_plan.get("artifact_quality"),
+            "visual_qa": repair_plan.get("visual_qa"),
             "path": persisted["repair_plan"],
             "prompt_path": persisted["repair_prompt"],
         },

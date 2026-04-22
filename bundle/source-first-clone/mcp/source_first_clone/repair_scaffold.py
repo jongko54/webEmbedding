@@ -886,6 +886,9 @@ def build_repair_scaffold(
     artifact_quality = repair_plan.get("artifact_quality") if isinstance(repair_plan, dict) else {}
     if not isinstance(artifact_quality, dict):
         artifact_quality = {}
+    visual_qa = repair_plan.get("visual_qa") if isinstance(repair_plan, dict) else {}
+    if not isinstance(visual_qa, dict):
+        visual_qa = {}
     preserve_visual_stage = bool(artifact_quality.get("expects_visual_stage"))
     preserve_shell_regions = bool(artifact_quality.get("expects_shell_regions"))
 
@@ -1119,6 +1122,9 @@ def build_repair_scaffold(
 
     repaired_summary["signals"] = json.loads(json.dumps(repaired_summary.get("signals", {})))
     repaired_summary["signals"]["auto_repair_available"] = True
+    if visual_qa.get("available"):
+        repaired_summary["signals"]["visual_qa_grade"] = visual_qa.get("grade")
+        repaired_summary["signals"]["visual_qa_score"] = visual_qa.get("score")
     repaired_summary["repairPass"] = {
         "target_renderer": repair_plan.get("target_renderer"),
         "focus_checks": focus_checks[:6],
@@ -1128,6 +1134,7 @@ def build_repair_scaffold(
         "footerSurface": footer_surface,
         "centeredFocusSurface": centered_focus_surface,
         "artifactQuality": artifact_quality,
+        "visualQA": visual_qa,
         "compactEligible": should_compact,
     }
     repaired_summary["styleTokens"] = style_tokens
@@ -1173,6 +1180,7 @@ def build_repair_scaffold(
             "priority_findings": (repair_plan.get("priority_findings") or [])[:6],
             "recommended_actions": (repair_plan.get("recommended_actions") or [])[:6],
             "artifact_quality": artifact_quality,
+            "visual_qa": visual_qa,
         },
     }
 

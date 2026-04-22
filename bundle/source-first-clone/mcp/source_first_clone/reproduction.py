@@ -674,7 +674,10 @@ def _repair_pass_summary(
             "score": preferred.get("score"),
             "ready_for_exact_clone": preferred.get("ready_for_exact_clone"),
             "report_path": preferred.get("report_path"),
+            "visual_qa": preferred.get("visual_qa"),
         },
+        "visual_qa": repair_verify.get("visual_qa")
+        or (summary.get("preferred_renderer") or {}).get("visual_qa"),
         "renderer_count": repair_verify.get("renderer_count"),
         "breakpoint_count": summary.get("breakpoint_count"),
         "breakpoint_ready_count": summary.get("breakpoint_ready_count"),
@@ -760,6 +763,7 @@ def _build_repair_loop(
                 "self_verify": repair_verify.get("persisted"),
                 "self_verify_summary": repair_pass["self_verify_summary"],
                 "renderer_summary": repair_pass["renderer_summary"],
+                "visual_qa": repair_verify.get("visual_qa"),
             }
         )
 

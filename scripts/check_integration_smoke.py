@@ -421,6 +421,44 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             raise AssertionError(f"repair plan did not promote missing visual stage geometry: {repair_plan}")
         if "bounded-stage-reference" not in str(repair_plan.get("prompt") or ""):
             raise AssertionError(f"repair prompt did not mention the screenshot stage anchor: {repair_plan}")
+        visual_drift_report = {
+            "comparison_summary": {"score": 62, "weakest_checks": [{"name": "screenshot"}]},
+            "downstream_guidance": {"priority_findings": [], "recommended_actions": []},
+            "check_details": [
+                {
+                    "name": "screenshot",
+                    "status": "present",
+                    "similarity": 0.64,
+                    "details": {
+                        "metrics": {
+                            "grid_similarity": 0.63,
+                            "band_similarity": 0.7,
+                            "histogram_similarity": 0.72,
+                            "pixel_mismatch_ratio": 0.31,
+                            "pixel_luma_similarity": 0.69,
+                            "pixel_rgb_similarity": 0.74,
+                        },
+                        "drift_flags": [
+                            "layout-or-large-visual drift",
+                            "pixel-structure drift",
+                            "palette-or-background drift",
+                        ],
+                    },
+                }
+            ],
+        }
+        visual_repair_plan = _build_repair_plan(
+            {"name": "role-inferred-app", "score": 62, "report": visual_drift_report},
+            [],
+            canvas_quality,
+        )
+        visual_qa = visual_repair_plan.get("visual_qa") if isinstance(visual_repair_plan.get("visual_qa"), dict) else {}
+        if visual_qa.get("grade") != "fail":
+            raise AssertionError(f"visual QA did not fail on severe screenshot drift: {visual_repair_plan}")
+        if "media placement" not in (visual_repair_plan.get("focus_checks") or []):
+            raise AssertionError(f"repair plan did not promote media placement from visual QA: {visual_repair_plan}")
+        if "Visual QA:" not in str(visual_repair_plan.get("prompt") or ""):
+            raise AssertionError(f"repair prompt did not expose visual QA drift: {visual_repair_plan}")
         repair_pass = build_repair_scaffold(
             capture_bundle=canvas_bundle,
             rebuild_artifacts=persisted_canvas,
@@ -429,6 +467,7 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                     "target_renderer": "role-inferred-app",
                     "focus_checks": ["screenshot"],
                     "artifact_quality": canvas_quality,
+                    "visual_qa": visual_repair_plan.get("visual_qa"),
                     "priority_findings": [],
                     "recommended_actions": [],
                 }
@@ -442,6 +481,12 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             raise AssertionError("visual repair collapsed screenshot-backed stage into compact generic layout")
         if not repaired_model.get("visualStage") or not repaired_model.get("visualLayers"):
             raise AssertionError("visual repair dropped visualStage/visualLayers anchors")
+        repaired_summary = (repair_pass.get("artifacts") or {}).get("layout-summary.json")
+        repair_notes = (repair_pass.get("artifacts") or {}).get("repair-notes.json")
+        if not isinstance(repaired_summary, dict) or not (repaired_summary.get("repairPass") or {}).get("visualQA"):
+            raise AssertionError("visual repair did not carry visual QA into layout summary")
+        if not isinstance(repair_notes, dict) or not repair_notes.get("visual_qa"):
+            raise AssertionError("visual repair did not carry visual QA into repair notes")
 
     longform_entries = [
         {
