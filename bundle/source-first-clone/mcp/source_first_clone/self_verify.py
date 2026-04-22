@@ -807,8 +807,16 @@ def _self_verify_summary(self_verify: dict[str, Any] | None) -> dict[str, Any]:
     preferred_visual_qa = preferred_renderer.get("visual_qa")
     if not isinstance(preferred_visual_qa, dict):
         preferred_visual_qa = {}
+    visual_qa_available = bool(preferred_visual_qa.get("available"))
+    visual_qa_score = preferred_visual_qa.get("score")
+    try:
+        screen_clone_score = int(visual_qa_score if visual_qa_available else score)
+    except (TypeError, ValueError):
+        screen_clone_score = score
     return {
         "score": score,
+        "screen_clone_score": screen_clone_score,
+        "screen_clone_ready": bool(preferred_visual_qa.get("ready")) if visual_qa_available else bool(self_verify.get("overall_ready_for_exact_clone")),
         "root_score": root_score,
         "preferred_renderer_score": preferred_score,
         "preferred_visual_qa_score": preferred_visual_qa.get("score") or 0,
@@ -1311,6 +1319,8 @@ def run_rebuild_self_verify(
         "breakpoints": (preferred_renderer or {}).get("breakpoints") or {"compared": 0, "reports": []},
         "overall_ready_for_exact_clone": overall_ready,
         "score": self_verify_summary.get("score"),
+        "screen_clone_score": self_verify_summary.get("screen_clone_score"),
+        "screen_clone_ready": self_verify_summary.get("screen_clone_ready"),
         "breakpoint_ready_count": self_verify_summary.get("breakpoint_ready_count"),
         "breakpoint_score_average": self_verify_summary.get("breakpoint_score_average"),
         "repair_plan": {

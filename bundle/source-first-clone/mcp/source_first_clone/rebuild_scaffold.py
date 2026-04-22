@@ -3438,6 +3438,8 @@ def _render_bounded_reference_page_tsx() -> str:
             "",
             "type VisualStage = {",
             "  height?: number | null;",
+            "  documentHeight?: number | null;",
+            "  viewportHeight?: number | null;",
             "  referenceImage?: { src?: string | null } | null;",
             "};",
             "",
@@ -3617,7 +3619,13 @@ def _render_bounded_reference_page_tsx() -> str:
             "  const visualStage = data.visualStage as VisualStage | undefined;",
             "  const stageReferenceSrc = visualStage?.referenceImage?.src;",
             '  const stageFirst = Boolean(data.presentation?.stageFirst || data.presentation?.variant === "visual-reference-first");',
-            "  const stageHeight = visualStage?.height ?? data.viewport?.height;",
+            "  const stageHeight = stageReferenceSrc",
+            "    ? (visualStage?.documentHeight ?? visualStage?.height ?? data.documentHeight ?? data.viewport?.height)",
+            "    : (visualStage?.height ?? data.viewport?.height);",
+            "  const stageGeometry = {",
+            "    width: data.viewport?.width,",
+            "    height: stageReferenceSrc ? (visualStage?.documentHeight ?? stageHeight) : (data.viewport?.height ?? stageHeight),",
+            "  };",
             "  const stageCanvasStyle: CSSProperties | undefined = stageHeight ? { minHeight: `${stageHeight}px` } : undefined;",
             "  const renderFocusInput = () => {",
             '    const placeholder = data.hero.focusInput?.placeholder ?? data.hero.focusInput?.label ?? data.title;',
@@ -3737,7 +3745,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    return <div {...shimProps} className={entry.className} key={key} role={role} style={shimStyle}>{content}</div>;",
             "  };",
             "  const renderVisualLayer = (layer: BoundedLayer) => {",
-            "    const rectStyle = stageRectStyle(layer.rect, data.viewport) ?? {};",
+            "    const rectStyle = stageRectStyle(layer.rect, stageGeometry) ?? {};",
             "    const style = { ...rectStyle, ...styleFromSnapshot(layer.styleSnapshot, true), zIndex: layer.zIndex ?? undefined };",
             "    return (",
             '      <div className="bounded-visual-layer" data-kind={layer.kind ?? layer.role ?? "content"} data-role={layer.role ?? "content"} key={layer.id ?? `${layer.title}-${layer.kind}`} style={style}>',
@@ -3748,7 +3756,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    );",
             "  };",
             "  const renderShellRegion = (region: BoundedLayer) => {",
-            "    const rectStyle = stageRectStyle(region.rect, data.viewport) ?? {};",
+            "    const rectStyle = stageRectStyle(region.rect, stageGeometry) ?? {};",
             "    const style = { ...rectStyle, ...styleFromSnapshot(region.styleSnapshot, true), zIndex: region.zIndex ?? undefined };",
             "    return (",
             '      <div className="bounded-shell-region" data-region={region.role ?? region.kind ?? "content"} key={region.id ?? `${region.title}-${region.role}`} style={style}>',
@@ -4135,7 +4143,15 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     visual_layers = app_model.get("visualLayers", []) if isinstance(app_model.get("visualLayers", []), list) else []
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
-    viewport_height = max(int(visual_stage.get("height") or viewport.get("height") or 1200), 1)
+    viewport_height = max(
+        int(
+            visual_stage.get("documentHeight")
+            or visual_stage.get("height")
+            or viewport.get("height")
+            or 1200
+        ),
+        1,
+    )
     nav_shadow_text = escape(str(runtime_materialization.get("navText") or ""))
     search_shadow_text = escape(str(runtime_materialization.get("searchText") or ""))
     footer_shadow_text = escape(str(runtime_materialization.get("footerText") or ""))
@@ -5119,8 +5135,32 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  pointer-events: none !important;",
             "}",
             ".bounded-shell--stage-first > .bounded-layout {",
-            "  width: min(1280px, calc(100% - 40px));",
-            "  margin: 20px auto 0;",
+            "  position: absolute !important;",
+            "  width: 1px !important;",
+            "  height: 1px !important;",
+            "  padding: 0 !important;",
+            "  margin: -1px !important;",
+            "  overflow: hidden !important;",
+            "  clip: rect(0 0 0 0);",
+            "  clip-path: inset(50%);",
+            "  white-space: nowrap;",
+            "  border: 0 !important;",
+            "  visibility: hidden !important;",
+            "  pointer-events: none !important;",
+            "}",
+            ".bounded-shell--stage-first > .bounded-footer {",
+            "  position: absolute !important;",
+            "  width: 1px !important;",
+            "  height: 1px !important;",
+            "  padding: 0 !important;",
+            "  margin: -1px !important;",
+            "  overflow: hidden !important;",
+            "  clip: rect(0 0 0 0);",
+            "  clip-path: inset(50%);",
+            "  white-space: nowrap;",
+            "  border: 0 !important;",
+            "  visibility: hidden !important;",
+            "  pointer-events: none !important;",
             "}",
             ".bounded-shell--stage-first .bounded-stage-reference {",
             "  width: 100%;",
@@ -5942,7 +5982,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
 
     visual_stage = _extract_visual_stage_reference(capture_bundle, captures)
     visual_stage["width"] = viewport_width
-    visual_stage["height"] = viewport_height
+    visual_stage["viewportHeight"] = viewport_height
+    visual_stage["height"] = document_height if visual_stage.get("available") else viewport_height
     visual_stage["documentHeight"] = document_height
     visual_stage["mode"] = "screenshot-led" if visual_stage.get("available") else "geometry-only"
 

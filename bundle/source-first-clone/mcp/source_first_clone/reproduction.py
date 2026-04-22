@@ -649,6 +649,25 @@ def _self_verify_score(self_verify: dict[str, Any] | None) -> int:
     return int(_self_verify_summary(self_verify).get("score") or 0)
 
 
+def _self_verify_visual_qa(self_verify: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(self_verify, dict):
+        return {}
+    visual_qa = self_verify.get("visual_qa")
+    if not isinstance(visual_qa, dict):
+        preferred = self_verify.get("preferred_renderer") if isinstance(self_verify.get("preferred_renderer"), dict) else {}
+        visual_qa = preferred.get("visual_qa") if isinstance(preferred.get("visual_qa"), dict) else {}
+    return visual_qa if isinstance(visual_qa, dict) else {}
+
+
+def _self_verify_screen_clone_ready(self_verify: dict[str, Any] | None) -> bool:
+    visual_qa = _self_verify_visual_qa(self_verify)
+    try:
+        score = int(visual_qa.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    return bool(visual_qa.get("available") and visual_qa.get("ready") and score >= 88)
+
+
 def _repair_pass_summary(
     pass_index: int,
     current_score: int,
@@ -703,6 +722,16 @@ def _build_repair_loop(
             "available": False,
             "status": "skipped",
             "reason": "Initial bounded renderer already met the exact-clone readiness threshold.",
+        }
+    if _self_verify_screen_clone_ready(initial_self_verify):
+        visual_qa = _self_verify_visual_qa(initial_self_verify)
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Initial bounded renderer already met the screen-clone visual QA threshold.",
+            "visual_qa": visual_qa,
+            "initial_score": _self_verify_score(initial_self_verify),
+            "screen_clone_score": visual_qa.get("score"),
         }
 
     current_rebuild_artifacts = rebuild_artifacts
