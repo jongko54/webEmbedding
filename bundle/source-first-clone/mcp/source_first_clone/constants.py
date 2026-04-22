@@ -16,7 +16,7 @@ DEFAULT_BROWSER_PATHS = [
 
 BREAKPOINT_PROFILES = {
     "desktop": {"width": 1440, "height": 1200},
-    "tablet": {"width": 1024, "height": 1366},
+    "tablet": {"width": 768, "height": 1024},
     "mobile": {"width": 390, "height": 844},
 }
 

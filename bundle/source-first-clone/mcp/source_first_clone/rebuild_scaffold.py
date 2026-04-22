@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import base64
+import struct
 from collections import Counter
 from html import escape
 from pathlib import Path
@@ -196,6 +197,64 @@ def _extract_visual_stage_reference(capture_bundle: dict[str, Any], captures: di
         }
 
     return {"available": False, "referenceImage": None}
+
+
+def _image_dimensions(data: bytes) -> tuple[int, int] | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        try:
+            return struct.unpack(">II", data[16:24])
+        except struct.error:
+            return None
+    return None
+
+
+def _image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _extract_breakpoint_visual_stages(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stages: list[dict[str, Any]] = []
+    for variant in variants:
+        if not isinstance(variant, dict) or not variant.get("available"):
+            continue
+        screenshot_path = variant.get("screenshot")
+        if not screenshot_path:
+            continue
+        path = Path(str(screenshot_path)).expanduser()
+        if not path.exists() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        dimensions = _image_dimensions(data)
+        viewport = variant.get("viewport") if isinstance(variant.get("viewport"), dict) else {}
+        width = int((dimensions or (0, 0))[0] or viewport.get("width") or 0)
+        height = int((dimensions or (0, 0))[1] or viewport.get("height") or 0)
+        if width <= 0 or height <= 0:
+            continue
+        mime_type = _image_mime_type(path)
+        stages.append(
+            {
+                "name": _clean_text(variant.get("name"), 40) or f"breakpoint-{len(stages) + 1}",
+                "width": width,
+                "height": height,
+                "documentHeight": height,
+                "viewport": {
+                    "width": int(viewport.get("width") or width),
+                    "height": int(viewport.get("height") or height),
+                },
+                "referenceImage": {
+                    "src": f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}",
+                    "mimeType": mime_type,
+                    "byteLength": len(data),
+                    "path": str(path),
+                },
+            }
+        )
+    return sorted(stages, key=lambda item: int((item.get("viewport") or {}).get("width") or item.get("width") or 0))
 
 
 def _collect_dom_outline(node: dict[str, Any] | None, bucket: list[dict[str, Any]], depth: int = 0, limit: int = 12) -> None:
@@ -3622,6 +3681,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  documentHeight?: number | null;",
             "  viewportHeight?: number | null;",
             "  referenceImage?: { src?: string | null } | null;",
+            "  breakpoints?: { name?: string | null; width?: number | null; height?: number | null; documentHeight?: number | null; viewport?: { width?: number | null; height?: number | null } | null; referenceImage?: { src?: string | null } | null }[] | null;",
             "};",
             "",
             "type StructureProbe = {",
@@ -3809,6 +3869,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  const shellRegions = ((data.shellRegions ?? []) as readonly BoundedLayer[]);",
             "  const visualStage = data.visualStage as VisualStage | undefined;",
             "  const stageReferenceSrc = visualStage?.referenceImage?.src;",
+            "  const breakpointStageSources = (visualStage?.breakpoints ?? []).filter((stage) => stage?.referenceImage?.src && (stage.viewport?.width ?? stage.width));",
             '  const stageFirst = Boolean(data.presentation?.stageFirst || data.presentation?.variant === "visual-reference-first");',
             "  const stageHeight = stageReferenceSrc",
             "    ? (visualStage?.documentHeight ?? visualStage?.height ?? data.documentHeight ?? data.viewport?.height)",
@@ -4185,7 +4246,14 @@ def _render_bounded_reference_page_tsx() -> str:
             "      ) : null}",
             "",
             '      <div className={`bounded-stage bounded-panel${centeredFocus ? " bounded-stage--compact" : ""}${stageReferenceSrc ? " bounded-stage--reference" : ""}`}>',
-            '            {stageReferenceSrc ? <img alt="" aria-hidden="true" className="bounded-stage-reference" src={stageReferenceSrc} /> : null}',
+            "            {stageReferenceSrc ? (",
+            '              <picture className="bounded-stage-picture" aria-hidden="true">',
+            "                {breakpointStageSources.map((stage) => (",
+            '                  <source key={stage.name ?? stage.referenceImage?.src ?? String(stage.viewport?.width ?? stage.width)} media={`(max-width: ${Number(stage.viewport?.width ?? stage.width)}px)`} srcSet={stage.referenceImage?.src ?? undefined} />',
+            "                ))}",
+            '                <img alt="" aria-hidden="true" className="bounded-stage-reference" src={stageReferenceSrc} />',
+            "              </picture>",
+            "            ) : null}",
             '            <div className={`bounded-stage-canvas${stageReferenceSrc ? " bounded-stage-canvas--overlay" : ""}`} style={stageCanvasStyle}>',
             "              {visualLayers.slice(0, 28).map((layer) => renderVisualLayer(layer))}",
             "        </div>",
@@ -4389,6 +4457,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     visual_stage = app_model.get("visualStage", {}) if isinstance(app_model.get("visualStage", {}), dict) else {}
     reference_image = visual_stage.get("referenceImage", {}) if isinstance(visual_stage.get("referenceImage"), dict) else {}
     reference_image_src = str(reference_image.get("src") or "")
+    breakpoint_visual_stages = (
+        visual_stage.get("breakpoints", []) if isinstance(visual_stage.get("breakpoints", []), list) else []
+    )
     visual_layers = app_model.get("visualLayers", []) if isinstance(app_model.get("visualLayers", []), list) else []
     viewport = app_model.get("viewport", {}) if isinstance(app_model, dict) else {}
     viewport_width = max(int(viewport.get("width") or 1440), 1)
@@ -4416,6 +4487,16 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         for entry in (runtime_materialization.get("headLinks", []) if isinstance(runtime_materialization.get("headLinks", []), list) else [])
         if isinstance(entry, dict)
     ]
+    stage_source_bits = []
+    for stage in breakpoint_visual_stages:
+        if not isinstance(stage, dict):
+            continue
+        image = stage.get("referenceImage") if isinstance(stage.get("referenceImage"), dict) else {}
+        src = str(image.get("src") or "")
+        viewport_meta = stage.get("viewport") if isinstance(stage.get("viewport"), dict) else {}
+        width = int(viewport_meta.get("width") or stage.get("width") or 0)
+        if src and width > 0:
+            stage_source_bits.append(f'        <source media="(max-width: {width}px)" srcset="{escape(src)}" />')
     head_script_bits = [
         f'<script data-bounded-runtime="{escape(str(entry.get("slot") or f"head-{index}"))}" type="application/json">{escape(str(entry.get("content") or "{}"))}</script>'
         for index, entry in enumerate(runtime_materialization.get("headScripts", []) if isinstance(runtime_materialization.get("headScripts", []), list) else [])
@@ -5185,7 +5266,16 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             "    </div>",
             *app_shell_panel_bits,
             f'    <div class="bounded-stage bounded-panel{" bounded-stage--compact" if centered_focus else ""}{" bounded-stage--reference" if reference_image_src else ""}">',
-            *( [f'      <img alt="" aria-hidden="true" class="bounded-stage-reference" src="{escape(reference_image_src)}" />'] if reference_image_src else [] ),
+            *(
+                [
+                    '      <picture class="bounded-stage-picture" aria-hidden="true">',
+                    *stage_source_bits,
+                    f'        <img alt="" aria-hidden="true" class="bounded-stage-reference" src="{escape(reference_image_src)}" />',
+                    "      </picture>",
+                ]
+                if reference_image_src
+                else []
+            ),
             f'      <div class="bounded-stage-canvas{" bounded-stage-canvas--overlay" if reference_image_src else ""}" style="min-height:{viewport_height}px">',
             *stage_cards,
             "      </div>",
@@ -5966,6 +6056,10 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  position: relative;",
             "  min-height: 280px;",
             "}",
+            ".bounded-stage-picture {",
+            "  display: block;",
+            "  width: 100%;",
+            "}",
             ".bounded-stage-reference {",
             "  display: block;",
             "  width: 100%;",
@@ -6367,6 +6461,11 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     visual_stage["height"] = document_height if visual_stage.get("available") else viewport_height
     visual_stage["documentHeight"] = document_height
     visual_stage["mode"] = "screenshot-led" if visual_stage.get("available") else "geometry-only"
+    breakpoint_visual_stages = _extract_breakpoint_visual_stages(
+        breakpoint_variants if isinstance(breakpoint_variants, list) else []
+    )
+    if breakpoint_visual_stages:
+        visual_stage["breakpoints"] = breakpoint_visual_stages
 
     summary = {
         "schema_version": SCAFFOLD_SCHEMA_VERSION,
