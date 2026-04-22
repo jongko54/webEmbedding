@@ -326,6 +326,8 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         *,
         entries: list[dict[str, Any]] | None = None,
         asset_content: dict[str, Any] | None = None,
+        dom_content: dict[str, Any] | None = None,
+        accessibility_content: dict[str, Any] | None = None,
         title: str = "Fixture App",
         url: str = "https://fixture.example/app",
         viewport_width: int = 960,
@@ -338,7 +340,11 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             "static": {
                 "title": title,
                 "final_url": url,
-                "frame_policy": {"embeddable": False},
+                "frame_policy": {
+                    "x_frame_options": "DENY",
+                    "embeddable": False,
+                    "reason": "X-Frame-Options=DENY blocks exact iframe reuse.",
+                },
                 "platform": "generic",
                 "platform_adapter": {"platform": "generic"},
                 "candidate_urls": [],
@@ -354,7 +360,9 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                         "byteLength": 68,
                         "base64": tiny_png,
                     },
+                    "accessibility": {"available": bool(accessibility_content), "content": accessibility_content or {}},
                     "styles": {"available": True, "content": selected_entries},
+                    "dom": {"available": bool(dom_content), "content": dom_content or {}},
                     "cssAnalysis": {
                         "available": True,
                         "content": {
@@ -514,11 +522,67 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         entries=longform_entries,
         asset_content={
             "images": [
+                "https://fixture.example/assets/logo.svg",
                 "https://fixture.example/assets/who-img.png",
                 "https://fixture.example/assets/leadership.jpg",
                 "https://fixture.example/assets/company-values.jpg",
             ],
             "scripts": [],
+        },
+        dom_content={
+            "type": "element",
+            "tag": "html",
+            "children": [
+                {
+                    "type": "element",
+                    "tag": "body",
+                    "children": [
+                        {
+                            "type": "element",
+                            "tag": "main",
+                            "text": "WHO WE ARE We believe in music and create a global lifestyle platform around artists and fans. Leadership Founder profile and governance overview with portrait media and editorial copy. Company values Brand mission Global offices Artists labels and business groups.",
+                            "children": [
+                                {
+                                    "type": "element",
+                                    "tag": "section",
+                                    "text": "WHO WE ARE We believe in music and create a global lifestyle platform around artists and fans.",
+                                    "children": [],
+                                },
+                                {
+                                    "type": "element",
+                                    "tag": "section",
+                                    "text": "Leadership Founder profile and governance overview with portrait media and editorial copy.",
+                                    "children": [],
+                                },
+                                {
+                                    "type": "element",
+                                    "tag": "section",
+                                    "text": "Company values Brand mission Global offices Artists labels and business groups.",
+                                    "children": [],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "element",
+                            "tag": "footer",
+                            "role": "contentinfo",
+                            "text": "Family sites Privacy Terms Contact",
+                            "children": [],
+                        },
+                    ],
+                }
+            ],
+        },
+        accessibility_content={
+            "role": "AXTree",
+            "name": "Fixture accessibility tree",
+            "nodes": [
+                {"nodeId": 1, "role": "main", "name": "Fixture Corp main content"},
+                {"nodeId": 2, "role": "heading", "name": "WHO WE ARE"},
+                {"nodeId": 3, "role": "heading", "name": "Leadership"},
+                {"nodeId": 4, "role": "heading", "name": "Company values"},
+                {"nodeId": 5, "role": "contentinfo", "name": "Family sites Privacy Terms Contact"},
+            ],
         },
         title="Fixture Corp",
         url="https://fixture.example/company/info",
@@ -550,6 +614,14 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         raise AssertionError("longform scaffold CSS does not visually promote the reference stage")
     if len(longform_document_sections) < 3:
         raise AssertionError("longform scaffold did not derive documentSections from captured page content")
+    if not longform_summary.get("signals", {}).get("dom_semantic_sections_available"):
+        raise AssertionError("longform scaffold did not report DOM semantic section extraction")
+    if not longform_summary.get("domSections"):
+        raise AssertionError("longform scaffold did not persist DOM semantic section samples")
+    if not longform_summary.get("signals", {}).get("accessibility_landmarks_available"):
+        raise AssertionError("longform scaffold did not report accessibility landmark extraction")
+    if not longform_summary.get("accessibilityLandmarks"):
+        raise AssertionError("longform scaffold did not persist accessibility landmark samples")
     longform_roles = {
         str(section.get("role") or "")
         for section in longform_document_sections
@@ -567,6 +639,18 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             raise AssertionError(f"longform scaffold did not carry captured page text into documentSections: {expected_text}")
     if not any(isinstance(section, dict) and isinstance(section.get("media"), dict) and section["media"].get("src") for section in longform_document_sections):
         raise AssertionError("longform scaffold did not attach captured image assets to documentSections")
+    first_media = next(
+        (
+            section["media"]["src"]
+            for section in longform_document_sections
+            if isinstance(section, dict) and isinstance(section.get("media"), dict) and section["media"].get("src")
+        ),
+        "",
+    )
+    if first_media.endswith("logo.svg"):
+        raise AssertionError("longform scaffold preferred logo/icon assets over content imagery")
+    if not any(isinstance(section, dict) and section.get("a11yRole") for section in longform_document_sections):
+        raise AssertionError("longform scaffold did not attach accessibility metadata to documentSections")
     if "bounded-document-flow" not in longform_preview or "bounded-document-section" not in longform_preview:
         raise AssertionError("longform scaffold preview does not render DOM-derived document sections")
     if "bounded-document-media" not in longform_preview or "https://fixture.example/assets/who-img.png" not in longform_preview:

@@ -230,6 +230,232 @@ def _collect_dom_outline(node: dict[str, Any] | None, bucket: list[dict[str, Any
             bucket.append({"depth": depth, "tag": "#text", "text": text})
 
 
+def _text_key(value: Any, limit: int = 96) -> str:
+    text = _clean_text(value, limit).lower()
+    return re.sub(r"[\W_]+", " ", text, flags=re.UNICODE).strip()
+
+
+def _dom_section_is_noise(tag: str, role: str, text: str) -> bool:
+    lowered = text.lower()
+    if tag in {"html", "head", "body", "script", "style", "nav"}:
+        return True
+    if tag == "aside" and ("cookie" in lowered or "쿠키" in lowered):
+        return True
+    if "cookie" in lowered and ("accept" in lowered or "쿠키" in lowered or "거부" in lowered):
+        return True
+    if role in {"navigation", "menu"}:
+        return True
+    return False
+
+
+def _collect_dom_semantic_sections(
+    node: dict[str, Any] | None,
+    bucket: list[dict[str, Any]],
+    *,
+    depth: int = 0,
+    in_main: bool = False,
+    limit: int = 18,
+) -> None:
+    if not isinstance(node, dict) or len(bucket) >= limit:
+        return
+    if node.get("type") != "element":
+        for child in node.get("children", []) or []:
+            _collect_dom_semantic_sections(child, bucket, depth=depth + 1, in_main=in_main, limit=limit)
+        return
+
+    tag = str(node.get("tag") or "element").lower()
+    role = str(node.get("role") or "").lower()
+    text = _clean_text(node.get("text"), 420)
+    next_in_main = in_main or tag == "main" or role == "main"
+    if tag.lower() in NOISY_TAGS:
+        return
+
+    candidate = (
+        tag in {"main", "section", "article", "footer"}
+        or role in {"main", "contentinfo"}
+        or (next_in_main and tag in {"div", "header"} and len(text.split()) >= 7)
+    )
+    if candidate and text and not _looks_like_code_noise(text) and not _dom_section_is_noise(tag, role, text):
+        key = _text_key(text, 120)
+        if key and not any(entry.get("key") == key for entry in bucket):
+            bucket.append(
+                {
+                    "depth": depth,
+                    "tag": tag,
+                    "role": role or None,
+                    "text": text,
+                    "key": key,
+                }
+            )
+
+    for child in node.get("children", []) or []:
+        _collect_dom_semantic_sections(child, bucket, depth=depth + 1, in_main=next_in_main, limit=limit)
+        if len(bucket) >= limit:
+            break
+
+
+def _accessibility_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return _clean_text(value.get("value"), 180)
+    return _clean_text(value, 180)
+
+
+def _collect_accessibility_landmarks(content: Any, limit: int = 24) -> list[dict[str, Any]]:
+    nodes: list[Any] = []
+    if isinstance(content, dict) and isinstance(content.get("nodes"), list):
+        nodes = content.get("nodes") or []
+    elif isinstance(content, dict):
+        nodes = [content]
+    landmarks: list[dict[str, Any]] = []
+    landmark_roles = {"banner", "navigation", "main", "contentinfo", "heading", "link", "button", "search"}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        role = _accessibility_value(node.get("role"))
+        name = _accessibility_value(node.get("name"))
+        role_key = role.lower()
+        if role_key not in landmark_roles:
+            continue
+        if role_key in {"link", "button"} and not name:
+            continue
+        if role_key == "link" and len(landmarks) >= max(6, limit // 2):
+            continue
+        landmarks.append(
+            {
+                "role": role_key,
+                "name": name or None,
+                "nodeId": node.get("nodeId"),
+                "backendDOMNodeId": node.get("backendDOMNodeId"),
+            }
+        )
+        if len(landmarks) >= limit:
+            break
+    return landmarks
+
+
+def _text_overlap_score(left: str, right: str) -> float:
+    left_key = _text_key(left, 180)
+    right_key = _text_key(right, 180)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key in right_key or right_key in left_key:
+        return 1.0
+    left_tokens = {token for token in left_key.split() if len(token) > 1}
+    right_tokens = {token for token in right_key.split() if len(token) > 1}
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(len(left_tokens), 1)
+
+
+def _match_style_block_for_text(
+    text: str,
+    style_blocks: list[dict[str, Any]],
+    used_indexes: set[int],
+) -> tuple[int | None, dict[str, Any] | None]:
+    best_index: int | None = None
+    best_block: dict[str, Any] | None = None
+    best_score = 0.0
+    for index, block in enumerate(style_blocks):
+        if index in used_indexes or not isinstance(block, dict):
+            continue
+        score = _text_overlap_score(text, str(block.get("text") or ""))
+        if score > best_score:
+            best_score = score
+            best_index = index
+            best_block = block
+    if best_score < 0.22:
+        return None, None
+    return best_index, best_block
+
+
+def _build_dom_section_blocks(
+    dom_sections: list[dict[str, Any]],
+    style_blocks: list[dict[str, Any]],
+    viewport_width: int,
+    viewport_height: int,
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    used_style_indexes: set[int] = set()
+    fallback_y = 0
+    for index, section in enumerate(dom_sections[:14]):
+        if not isinstance(section, dict):
+            continue
+        match_index, match = _match_style_block_for_text(str(section.get("text") or ""), style_blocks, used_style_indexes)
+        if match_index is not None:
+            used_style_indexes.add(match_index)
+        match_rect = _rect_dict(match.get("rect")) if isinstance(match, dict) else {}
+        rect = match_rect if match_rect.get("width") and match_rect.get("height") else {
+            "x": 0,
+            "y": fallback_y,
+            "width": viewport_width,
+            "height": max(240, int(viewport_height * 0.42)),
+        }
+        fallback_y = max(fallback_y + rect["height"], rect["y"] + rect["height"])
+        blocks.append(
+            {
+                "tag": section.get("tag") or (match or {}).get("tag") or "section",
+                "role": section.get("role") or (match or {}).get("role"),
+                "text": section.get("text") or (match or {}).get("text"),
+                "rect": rect,
+                "styles": (match or {}).get("styles") if isinstance((match or {}).get("styles"), dict) else {},
+                "styleSnapshot": _style_snapshot_from_block(match) if isinstance(match, dict) else {},
+                "source": "dom-semantic-section",
+            }
+        )
+    return blocks
+
+
+def _merge_representative_blocks(dom_blocks: list[dict[str, Any]], style_blocks: list[dict[str, Any]], limit: int = 16) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for block in [*dom_blocks, *style_blocks]:
+        if not isinstance(block, dict):
+            continue
+        key = _text_key(block.get("text"), 140) or f"{block.get('tag')}:{_rect_dict(block.get('rect')).get('y')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(block)
+        if len(merged) >= limit:
+            break
+    merged.sort(key=lambda block: (_rect_dict(block.get("rect")).get("y", 0), _rect_dict(block.get("rect")).get("x", 0)))
+    return merged
+
+
+def _enrich_document_sections_with_accessibility(
+    document_sections: list[dict[str, Any]],
+    accessibility_landmarks: list[dict[str, Any]],
+) -> None:
+    used_indexes: set[int] = set()
+    for section in document_sections:
+        if not isinstance(section, dict):
+            continue
+        section_text = " ".join(str(section.get(key) or "") for key in ("title", "copy"))
+        best_index: int | None = None
+        best_score = 0.0
+        for index, landmark in enumerate(accessibility_landmarks):
+            if index in used_indexes or not isinstance(landmark, dict):
+                continue
+            name = str(landmark.get("name") or "")
+            role = str(landmark.get("role") or "")
+            score = _text_overlap_score(section_text, name)
+            if role in {"main", "contentinfo"} and str(section.get("role") or "") in {"hero", "footer"}:
+                score = max(score, 0.34)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index is None or best_score < 0.18:
+            continue
+        landmark = accessibility_landmarks[best_index]
+        used_indexes.add(best_index)
+        section["a11yRole"] = landmark.get("role")
+        section["accessibleName"] = landmark.get("name")
+        section["sourceNodeIds"] = {
+            "accessibilityNodeId": landmark.get("nodeId"),
+            "backendDOMNodeId": landmark.get("backendDOMNodeId"),
+        }
+
+
 def _collect_style_blocks(style_entries: list[dict[str, Any]], limit: int = 24) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     for index, entry in enumerate(style_entries):
@@ -574,6 +800,37 @@ def _style_attr_from_snapshot(style_snapshot: dict[str, Any] | None, *, visual_o
     if not parts:
         return ""
     return ' style="' + " ".join(parts) + '"'
+
+
+def _section_shell_style_attr(style_snapshot: dict[str, Any] | None) -> str:
+    if not isinstance(style_snapshot, dict) or not style_snapshot:
+        return ""
+    shell_fields = {
+        "backgroundColor": "background-color",
+        "backgroundImage": "background-image",
+        "backgroundSize": "background-size",
+        "backgroundPosition": "background-position",
+        "backgroundRepeat": "background-repeat",
+        "backgroundClip": "background-clip",
+        "boxShadow": "box-shadow",
+        "borderRadius": "border-radius",
+        "borderTopLeftRadius": "border-top-left-radius",
+        "borderTopRightRadius": "border-top-right-radius",
+        "borderBottomRightRadius": "border-bottom-right-radius",
+        "borderBottomLeftRadius": "border-bottom-left-radius",
+        "borderColor": "border-color",
+        "borderStyle": "border-style",
+        "borderWidth": "border-width",
+    }
+    parts: list[str] = []
+    for field, css_name in shell_fields.items():
+        value = style_snapshot.get(field)
+        if value is None:
+            continue
+        cleaned = " ".join(str(value).split())
+        if cleaned:
+            parts.append(f"{css_name}: {escape(cleaned)};")
+    return (' style="' + " ".join(parts) + '"') if parts else ""
 
 
 def _collect_unique(values: list[str | None], limit: int = 4) -> list[str]:
@@ -1075,6 +1332,26 @@ def _collect_url_values(values: list[str | None], limit: int = 8) -> list[str]:
     return seen
 
 
+def _image_url_rank(value: Any) -> tuple[int, str]:
+    url = str(value or "")
+    lowered = url.lower()
+    score = 0
+    if any(ext in lowered for ext in (".jpg", ".jpeg", ".png", ".webp", ".avif")):
+        score += 20
+    if any(token in lowered for token in ("hero", "home", "showcase", "gallery", "issue", "donate", "feature", "banner", "card", "720", "1440")):
+        score += 12
+    if any(token in lowered for token in ("logo", "wordmark", "symbol", "lockup", "favicon", "icon")):
+        score -= 28
+    if lowered.endswith(".svg") or ".svg?" in lowered:
+        score -= 12
+    return (-score, url)
+
+
+def _collect_ranked_image_values(values: list[str | None], limit: int = 12) -> list[str]:
+    cleaned = _collect_url_values(values, limit=max(limit * 4, 24))
+    return sorted(cleaned, key=_image_url_rank)[:limit]
+
+
 def _build_asset_manifest(
     summary: dict[str, Any],
     asset_content: dict[str, Any],
@@ -1112,7 +1389,7 @@ def _build_asset_manifest(
             "audios": len(asset_content.get("audios", []) or []),
             "iframes": len(asset_content.get("iframes", []) or []),
         },
-        "images": _collect_url_values(asset_content.get("images", []) or [], limit=12),
+        "images": _collect_ranked_image_values(asset_content.get("images", []) or [], limit=12),
         "scripts": _collect_url_values(asset_content.get("scripts", []) or [], limit=12),
         "stylesheets": stylesheet_urls,
         "videos": _collect_url_values(asset_content.get("videos", []) or [], limit=8),
@@ -1675,7 +1952,9 @@ def _infer_section_role(
 
     if tag == "footer":
         return "footer"
-    if tag in {"header", "nav"}:
+    if tag == "nav":
+        return "masthead"
+    if tag == "header" and y <= max(120, viewport_height // 8):
         return "masthead"
     if y <= max(120, viewport_height // 8) and width >= int(viewport_width * 0.45) and height <= max(96, viewport_height // 8):
         return "masthead"
@@ -1807,7 +2086,8 @@ def _build_document_sections(
     asset_manifest: dict[str, Any],
     viewport_width: int,
 ) -> list[dict[str, Any]]:
-    images = asset_manifest.get("images", []) if isinstance(asset_manifest.get("images", []), list) else []
+    raw_images = asset_manifest.get("images", []) if isinstance(asset_manifest.get("images", []), list) else []
+    images = [str(url) for url in sorted(raw_images, key=_image_url_rank) if str(url or "").strip()]
     image_cursor = 0
     document_sections: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1824,7 +2104,9 @@ def _build_document_sections(
         if images and section.get("role") not in {"footer", "action"}:
             src = str(images[image_cursor % len(images)])
             image_cursor += 1
-            media = {"src": src, "alt": section.get("title") or section.get("role") or "Captured media"}
+            lowered_src = src.lower()
+            media_kind = "graphic" if lowered_src.endswith(".svg") or ".svg?" in lowered_src else "photo"
+            media = {"src": src, "alt": section.get("title") or section.get("role") or "Captured media", "kind": media_kind}
         document_sections.append(
             {
                 "id": f"document-{section_id}",
@@ -1836,6 +2118,7 @@ def _build_document_sections(
                 "copy": section.get("copy") or "",
                 "meta": section.get("meta") or "",
                 "details": section.get("details") if isinstance(section.get("details"), list) else [],
+                "source": section.get("source") or "section",
                 "rect": rect,
                 "styleSnapshot": section.get("styleSnapshot") if isinstance(section.get("styleSnapshot"), dict) else {},
                 "layout": {
@@ -1939,6 +2222,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     palette = summary.get("palette", {}) if isinstance(summary, dict) else {}
     typography = summary.get("typography", {}) if isinstance(summary, dict) else {}
     asset_manifest = summary.get("assetManifest", {}) if isinstance(summary.get("assetManifest"), dict) else {}
+    accessibility_landmarks = summary.get("accessibilityLandmarks", []) if isinstance(summary.get("accessibilityLandmarks"), list) else []
     visual_stage = summary.get("visualStage", {}) if isinstance(summary.get("visualStage"), dict) else {}
     viewport_width = _viewport_side(summary, "width", 1440)
     viewport_height = _viewport_side(summary, "height", 1200)
@@ -1950,7 +2234,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
     section_cards: list[dict[str, Any]] = []
-    for index, block in enumerate(blocks[:10]):
+    for index, block in enumerate(blocks[:14]):
         if not isinstance(block, dict):
             continue
         rect = block.get("rect", {}) if isinstance(block.get("rect", {}), dict) else {}
@@ -1969,6 +2253,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 "copy": _block_copy(block),
                 "meta": f"{rect.get('width', 0)} x {rect.get('height', 0)} px",
                 "details": detail_parts,
+                "source": block.get("source") or "style-block",
                 "styleSnapshot": _style_snapshot_from_block(block),
                 "rect": {
                     "x": rect.get("x", 0),
@@ -2374,6 +2659,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         asset_manifest,
         viewport_width,
     )
+    _enrich_document_sections_with_accessibility(document_sections, accessibility_landmarks)
     rhythm = [
         {
             "id": section["id"],
@@ -2776,7 +3062,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  zIndex?: number | null;",
             "  htmlTag?: string | null;",
             "  tag?: string | null;",
-            "  media?: { src?: string | null; alt?: string | null } | null;",
+            "  media?: { src?: string | null; alt?: string | null; kind?: string | null } | null;",
             "  layout?: { widthPercent?: number | null; offsetPercent?: number | null; minHeight?: number | null } | null;",
             "};",
             "",
@@ -2877,6 +3163,34 @@ def _render_bounded_reference_page_tsx() -> str:
             '  if (allow("flexDirection")) set("flexDirection", snapshot.flexDirection);',
             '  if (allow("opacity")) set("opacity", snapshot.opacity);',
             "  return Object.keys(style).length ? style : undefined;",
+            "}",
+            "",
+            "function sectionShellStyleFromSnapshot(snapshot?: Record<string, unknown> | null): CSSProperties {",
+            "  if (!snapshot || typeof snapshot !== \"object\") {",
+            "    return {};",
+            "  }",
+            "  const style: CSSProperties = {};",
+            "  const set = (key: keyof CSSProperties, value: unknown) => {",
+            "    if (typeof value === \"string\" && value.trim()) {",
+            "      style[key] = value as CSSProperties[keyof CSSProperties];",
+            "    }",
+            "  };",
+            "  set(\"backgroundColor\", snapshot.backgroundColor);",
+            "  set(\"backgroundImage\", snapshot.backgroundImage);",
+            "  set(\"backgroundSize\", snapshot.backgroundSize);",
+            "  set(\"backgroundPosition\", snapshot.backgroundPosition);",
+            "  set(\"backgroundRepeat\", snapshot.backgroundRepeat);",
+            "  set(\"backgroundClip\", snapshot.backgroundClip);",
+            "  set(\"boxShadow\", snapshot.boxShadow);",
+            "  set(\"borderRadius\", snapshot.borderRadius);",
+            "  set(\"borderTopLeftRadius\", snapshot.borderTopLeftRadius);",
+            "  set(\"borderTopRightRadius\", snapshot.borderTopRightRadius);",
+            "  set(\"borderBottomRightRadius\", snapshot.borderBottomRightRadius);",
+            "  set(\"borderBottomLeftRadius\", snapshot.borderBottomLeftRadius);",
+            "  set(\"borderColor\", snapshot.borderColor);",
+            "  set(\"borderStyle\", snapshot.borderStyle);",
+            "  set(\"borderWidth\", snapshot.borderWidth);",
+            "  return style;",
             "}",
             "",
             "function stageRectStyle(",
@@ -3056,7 +3370,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    );",
             "  };",
             "  const documentSectionStyle = (section: BoundedLayer): CSSProperties => {",
-            "    const base = styleFromSnapshot(section.styleSnapshot, true) ?? {};",
+            "    const base = sectionShellStyleFromSnapshot(section.styleSnapshot);",
             "    const widthPercent = Number(section.layout?.widthPercent ?? 100);",
             "    const offsetPercent = Number(section.layout?.offsetPercent ?? 0);",
             "    const minHeight = Number(section.layout?.minHeight ?? 0);",
@@ -3069,8 +3383,9 @@ def _render_bounded_reference_page_tsx() -> str:
             "  };",
             "  const renderDocumentSection = (section: BoundedLayer) => {",
             "    const hasMedia = Boolean(section.media?.src);",
+            "    const mediaKind = section.media?.kind ?? \"photo\";",
             "    return (",
-            '      <section className={`bounded-document-section bounded-document-section--${section.role ?? "content"}`} data-has-media={hasMedia ? "true" : "false"} data-role={section.role ?? "content"} data-source-tag={section.tag ?? section.htmlTag ?? "section"} key={section.id ?? `${section.title}-${section.role}`} style={documentSectionStyle(section)}>',
+            '      <section className={`bounded-document-section bounded-document-section--${section.role ?? "content"}`} data-has-media={hasMedia ? "true" : "false"} data-media-kind={mediaKind} data-role={section.role ?? "content"} data-source-tag={section.tag ?? section.htmlTag ?? "section"} key={section.id ?? `${section.title}-${section.role}`} style={documentSectionStyle(section)}>',
             '        <div className="bounded-document-copy">',
             '          {section.role ? <p className="bounded-kicker">{section.role}</p> : null}',
             "          {section.title ? <h2>{section.title}</h2> : null}",
@@ -3569,7 +3884,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             style_bits.append(f"margin-left:{min(offset_percent, 18):.2f}%")
         if min_height > 0:
             style_bits.append(f"min-height:{min_height}px")
-        attr = _style_attr_from_snapshot(section.get("styleSnapshot"), visual_only=True)
+        attr = _section_shell_style_attr(section.get("styleSnapshot"))
         if attr:
             inline = attr.removeprefix(' style="').removesuffix('"')
             if inline:
@@ -3748,10 +4063,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
         media = section.get("media", {}) if isinstance(section.get("media"), dict) else {}
         media_src = str(media.get("src") or "")
         has_media = bool(media_src)
+        media_kind = str(media.get("kind") or "photo")
         media_alt = escape(str(media.get("alt") or section.get("title") or "Captured media"))
         document_section_bits.extend(
             [
-                f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
+                f'              <section class="bounded-document-section bounded-document-section--{escape(role_class)}" data-has-media="{str(has_media).lower()}" data-media-kind="{escape(media_kind)}" data-role="{escape(role)}" data-source-tag="{escape(str(section.get("tag") or section.get("htmlTag") or "section"))}"{render_document_section_style(section)}>',
                 '                <div class="bounded-document-copy">',
                 f'                  <p class="bounded-kicker">{escape(role)}</p>',
                 f'                  <h2>{escape(str(section.get("title") or "Captured section"))}</h2>',
@@ -4511,7 +4827,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  border: 0;",
             "  background-clip: padding-box;",
             "}",
-            ".bounded-document-section[data-has-media=\"true\"] {",
+            ".bounded-document-section[data-has-media=\"true\"][data-media-kind=\"photo\"] {",
             "  grid-template-columns: minmax(0, 1fr) minmax(220px, 42%);",
             "}",
             ".bounded-document-copy {",
@@ -4530,7 +4846,7 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "}",
             ".bounded-document-media {",
             "  margin: 0;",
-            "  min-height: 220px;",
+            "  min-height: 160px;",
             "  overflow: hidden;",
             "  border-radius: 8px;",
             "  background: rgba(255, 255, 255, 0.05);",
@@ -4539,9 +4855,10 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  display: block;",
             "  width: 100%;",
             "  height: 100%;",
-            "  min-height: 220px;",
-            "  object-fit: cover;",
+            "  min-height: 160px;",
+            "  object-fit: contain;",
             "}",
+            ".bounded-document-section[data-media-kind=\"photo\"] .bounded-document-media img { object-fit: cover; min-height: 220px; }",
             ".bounded-panel {",
             "  border: 1px solid var(--bounded-border);",
             "  border-radius: var(--bounded-panel-radius);",
@@ -5026,6 +5343,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     captures = sections["captures"]
     session_request = sections["session_request"]
     dom_capture = captures.get("dom", {}) if isinstance(captures, dict) else {}
+    accessibility_capture = captures.get("accessibility", {}) if isinstance(captures, dict) else {}
     styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
     assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
@@ -5039,14 +5357,23 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
     viewport_height = int(session_request.get("viewport_height") or 1200)
     style_blocks = _collect_style_blocks(style_entries)
     document_height = _document_height_from_blocks(style_blocks, viewport_height)
-    blocks = _select_representative_blocks(
+    selected_style_blocks = _select_representative_blocks(
         style_blocks,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
     )
     outline: list[dict[str, Any]] = []
+    dom_semantic_sections: list[dict[str, Any]] = []
     if dom_capture.get("available"):
         _collect_dom_outline(dom_capture.get("content"), outline)
+        _collect_dom_semantic_sections(dom_capture.get("content"), dom_semantic_sections)
+    accessibility_landmarks = (
+        _collect_accessibility_landmarks(accessibility_capture.get("content"))
+        if accessibility_capture.get("available")
+        else []
+    )
+    dom_blocks = _build_dom_section_blocks(dom_semantic_sections, style_blocks, viewport_width, viewport_height)
+    blocks = _merge_representative_blocks(dom_blocks, selected_style_blocks)
 
     asset_content = assets_capture.get("content", {}) if isinstance(assets_capture, dict) else {}
     image_count = len(asset_content.get("images", []) or []) if isinstance(asset_content, dict) else 0
@@ -5197,12 +5524,15 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "documentHeight": document_height,
         "signals": {
             "dom_available": bool(dom_capture.get("available")),
+            "accessibility_available": bool(accessibility_capture.get("available")),
             "styles_available": bool(styles_capture.get("available")),
             "css_analysis_available": bool(css_analysis_capture.get("available")),
             "assets_available": bool(assets_capture.get("available")),
             "interactions_available": bool(interactions_capture.get("available")),
             "runtime_available": bool(runtime.get("available")),
             "breakpoint_variants_available": bool(breakpoint_variants),
+            "dom_semantic_sections_available": bool(dom_semantic_sections),
+            "accessibility_landmarks_available": bool(accessibility_landmarks),
         },
         "breakpoints": {
             "requested_profiles": breakpoint_summary.get("requested_profiles") if isinstance(breakpoint_summary, dict) else [],
@@ -5210,6 +5540,8 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
             "variant_count": len(breakpoint_variants) if isinstance(breakpoint_variants, list) else 0,
         },
         "outline": outline[:12],
+        "domSections": dom_semantic_sections[:12],
+        "accessibilityLandmarks": accessibility_landmarks[:16],
         "blocks": blocks,
         "palette": palette,
         "typography": typography,
