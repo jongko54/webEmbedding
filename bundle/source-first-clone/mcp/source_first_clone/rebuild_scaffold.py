@@ -2094,6 +2094,25 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
     if layout_mode == "centered-focus":
         hero_title = str(summary.get("title") or hero_title)
         hero_copy = ""
+    visual_reference_image = visual_stage.get("referenceImage") if isinstance(visual_stage.get("referenceImage"), dict) else {}
+    visual_reference_src = str((visual_reference_image or {}).get("src") or "")
+    reference_first = bool(
+        layout_mode == "structured-grid"
+        and visual_stage.get("available")
+        and visual_reference_src
+        and visual_layers
+    )
+    presentation = {
+        "variant": "visual-reference-first" if reference_first else layout_mode,
+        "surfaceMode": "screenshot-led-reference" if reference_first else layout_mode,
+        "stageFirst": reference_first,
+        "reason": (
+            "Captured screenshot-backed stage is the primary first-viewport visual reference."
+            if reference_first
+            else "Renderer keeps the inferred layout order for this surface."
+        ),
+        "targetFirstViewport": "bounded-stage-reference" if reference_first else "inferred-layout",
+    }
     masthead_threshold = max(120, min(int(viewport_height * 0.22), max(_rect_dict(hero_section.get("rect")).get("y", 0) - 24, 120)))
     masthead_link_candidates = [
         {
@@ -2407,6 +2426,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "assetManifest": summary.get("assetManifest") or {},
         "sections": section_cards,
         "layoutMode": layout_mode,
+        "presentation": presentation,
         "masthead": {
             "brand": str(summary.get("title") or "Captured reference"),
             "links": masthead_links,
@@ -2818,6 +2838,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "  const shellRegions = ((data.shellRegions ?? []) as readonly BoundedLayer[]);",
             "  const visualStage = data.visualStage as VisualStage | undefined;",
             "  const stageReferenceSrc = visualStage?.referenceImage?.src;",
+            '  const stageFirst = Boolean(data.presentation?.stageFirst || data.presentation?.variant === "visual-reference-first");',
             "  const stageHeight = visualStage?.height ?? data.viewport?.height;",
             "  const stageCanvasStyle: CSSProperties | undefined = stageHeight ? { minHeight: `${stageHeight}px` } : undefined;",
             "  const renderFocusInput = () => {",
@@ -2960,7 +2981,7 @@ def _render_bounded_reference_page_tsx() -> str:
             "    );",
             "  };",
             "  return (",
-            '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}`}>',
+            '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}${stageFirst ? " bounded-shell--stage-first" : ""}`}>',
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
             '        {!centeredFocus ? (',
             '          <div className="bounded-brand-block">',
@@ -3276,6 +3297,8 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
     layout_mode = str(app_model.get("layoutMode") or "structured-grid")
     centered_focus = layout_mode == "centered-focus"
     app_shell_mode = layout_mode == "app-shell"
+    presentation = app_model.get("presentation", {}) if isinstance(app_model.get("presentation"), dict) else {}
+    stage_first = bool(presentation.get("stageFirst") or presentation.get("variant") == "visual-reference-first")
     shell_panels = app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []
     shell_regions = app_model.get("shellRegions", []) if isinstance(app_model.get("shellRegions", []), list) else []
     visual_stage = app_model.get("visualStage", {}) if isinstance(app_model.get("visualStage", {}), dict) else {}
@@ -3829,7 +3852,7 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             '<html lang="en">',
             head_markup,
             "<body>",
-            f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else (" bounded-shell--app" if app_shell_mode else " bounded-shell--document")}">',
+            f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else (" bounded-shell--app" if app_shell_mode else " bounded-shell--document")}{" bounded-shell--stage-first" if stage_first else ""}">',
             f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
             *(
                 []
@@ -4138,6 +4161,52 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  min-height: var(--bounded-document-min-height);",
             "  height: var(--bounded-document-min-height);",
             "  overflow: hidden;",
+            "}",
+            ".bounded-shell--stage-first {",
+            "  max-width: none;",
+            "  width: 100%;",
+            "  padding: 0;",
+            "  height: auto;",
+            "  overflow-y: visible;",
+            "}",
+            ".bounded-shell--stage-first > .bounded-stage {",
+            "  order: -2;",
+            "  width: 100%;",
+            "  min-height: 0;",
+            "  margin: 0;",
+            "  border: 0;",
+            "  border-radius: 0;",
+            "  background: transparent;",
+            "  box-shadow: none;",
+            "  backdrop-filter: none;",
+            "}",
+            ".bounded-shell--stage-first > .bounded-masthead,",
+            ".bounded-shell--stage-first > .bounded-hero {",
+            "  position: absolute !important;",
+            "  width: 1px !important;",
+            "  height: 1px !important;",
+            "  padding: 0 !important;",
+            "  margin: -1px !important;",
+            "  overflow: hidden !important;",
+            "  clip: rect(0 0 0 0);",
+            "  clip-path: inset(50%);",
+            "  white-space: nowrap;",
+            "  border: 0 !important;",
+            "  visibility: hidden !important;",
+            "  pointer-events: none !important;",
+            "}",
+            ".bounded-shell--stage-first > .bounded-layout {",
+            "  width: min(1280px, calc(100% - 40px));",
+            "  margin: 20px auto 0;",
+            "}",
+            ".bounded-shell--stage-first .bounded-stage-reference {",
+            "  width: 100%;",
+            "  height: auto;",
+            "  object-fit: contain;",
+            "}",
+            ".bounded-shell--stage-first .bounded-stage--reference .bounded-visual-layer {",
+            "  opacity: 0.08;",
+            "  border-color: rgba(255, 255, 255, 0.08);",
             "}",
             ".bounded-shell--focus .bounded-panel {",
             "  border: 0;",

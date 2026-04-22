@@ -321,13 +321,22 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         },
     ]
 
-    def capture_bundle(profile: dict[str, Any]) -> dict[str, Any]:
+    def capture_bundle(
+        profile: dict[str, Any],
+        *,
+        entries: list[dict[str, Any]] | None = None,
+        title: str = "Fixture App",
+        url: str = "https://fixture.example/app",
+        viewport_width: int = 960,
+        viewport_height: int = 640,
+    ) -> dict[str, Any]:
+        selected_entries = entries or style_entries
         return {
-            "url": "https://fixture.example/app",
-            "session_request": {"viewport_width": 960, "viewport_height": 640},
+            "url": url,
+            "session_request": {"viewport_width": viewport_width, "viewport_height": viewport_height},
             "static": {
-                "title": "Fixture App",
-                "final_url": "https://fixture.example/app",
+                "title": title,
+                "final_url": url,
                 "frame_policy": {"embeddable": False},
                 "platform": "generic",
                 "platform_adapter": {"platform": "generic"},
@@ -344,7 +353,7 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
                         "byteLength": 68,
                         "base64": tiny_png,
                     },
-                    "styles": {"available": True, "content": style_entries},
+                    "styles": {"available": True, "content": selected_entries},
                     "cssAnalysis": {
                         "available": True,
                         "content": {
@@ -424,6 +433,137 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
             raise AssertionError("visual repair collapsed screenshot-backed stage into compact generic layout")
         if not repaired_model.get("visualStage") or not repaired_model.get("visualLayers"):
             raise AssertionError("visual repair dropped visualStage/visualLayers anchors")
+
+    longform_entries = [
+        {
+            "tag": "header",
+            "text": "Fixture Corp COMPANY BUSINESS NEWS CAREERS",
+            "rect": {"x": 0, "y": 0, "width": 1440, "height": 80},
+            "styles": {
+                "display": "flex",
+                "backgroundColor": "rgb(255, 255, 255)",
+                "color": "rgb(0, 0, 0)",
+                "fontSize": "15px",
+                "fontFamily": "Inter, sans-serif",
+                "fontWeight": "700",
+            },
+        },
+        {
+            "tag": "main",
+            "text": "WHO WE ARE We believe in music and create a global lifestyle platform around artists and fans.",
+            "rect": {"x": 30, "y": 80, "width": 1380, "height": 1080},
+            "styles": {
+                "display": "block",
+                "backgroundColor": "rgb(246, 246, 246)",
+                "color": "rgb(10, 10, 10)",
+                "fontSize": "64px",
+                "fontFamily": "Inter, sans-serif",
+                "fontWeight": "800",
+            },
+        },
+        {
+            "tag": "section",
+            "text": "Leadership Founder profile and governance overview with portrait media and editorial copy.",
+            "rect": {"x": 162, "y": 1324, "width": 910, "height": 877},
+            "styles": {
+                "display": "grid",
+                "backgroundColor": "rgb(255, 255, 255)",
+                "color": "rgb(18, 18, 18)",
+                "fontSize": "22px",
+                "fontFamily": "Inter, sans-serif",
+            },
+        },
+        {
+            "tag": "section",
+            "text": "Company values Brand mission Global offices Artists labels and business groups.",
+            "rect": {"x": 162, "y": 2401, "width": 910, "height": 1048},
+            "styles": {
+                "display": "grid",
+                "backgroundColor": "rgb(248, 248, 248)",
+                "color": "rgb(12, 12, 12)",
+                "fontSize": "20px",
+                "fontFamily": "Inter, sans-serif",
+            },
+        },
+        {
+            "tag": "footer",
+            "text": "Family sites Privacy Terms Contact",
+            "rect": {"x": 0, "y": 3600, "width": 1440, "height": 240},
+            "styles": {
+                "display": "flex",
+                "backgroundColor": "rgb(18, 18, 18)",
+                "color": "rgb(255, 255, 255)",
+                "fontSize": "14px",
+                "fontFamily": "Inter, sans-serif",
+            },
+        },
+    ]
+    longform_profile = site_profile(
+        "<main><h1>Fixture Corp</h1><section>Who we are</section><section>Leadership</section><section>Values</section></main>"
+    )
+    longform_profile["primary_surface"] = "longform-content-surface"
+    longform_profile.setdefault("route_hints", {}).update(
+        {
+            "renderer_route": "bounded-rebuild",
+            "renderer_family": "document-next-app",
+        }
+    )
+    longform_bundle = capture_bundle(
+        longform_profile,
+        entries=longform_entries,
+        title="Fixture Corp",
+        url="https://fixture.example/company/info",
+        viewport_width=1440,
+        viewport_height=1200,
+    )
+    longform_scaffold = build_rebuild_scaffold(longform_bundle)
+    longform_artifacts = longform_scaffold.get("artifacts", {})
+    longform_summary = longform_artifacts["layout-summary.json"]
+    longform_model = longform_artifacts["app-model.json"]
+    longform_preview = longform_artifacts["app-preview.html"]
+    longform_tsx = longform_artifacts["next-app/components/BoundedReferencePage.tsx"]
+    longform_css = longform_artifacts["next-app/app/globals.css"]
+    longform_presentation = (
+        longform_model.get("presentation") if isinstance(longform_model.get("presentation"), dict) else {}
+    )
+    if longform_summary.get("renderer", {}).get("kind") != "role-inferred-next-app":
+        raise AssertionError("longform scaffold did not select role-inferred-next-app")
+    if longform_presentation.get("variant") != "visual-reference-first" or not longform_presentation.get("stageFirst"):
+        raise AssertionError(f"longform scaffold did not promote the screenshot reference first: {longform_presentation}")
+    if "bounded-shell--stage-first" not in longform_tsx or "stageFirst" not in longform_tsx:
+        raise AssertionError("longform scaffold TSX does not expose stage-first rendering")
+    if "bounded-shell--stage-first" not in longform_preview or "bounded-stage-reference" not in longform_preview:
+        raise AssertionError("longform scaffold preview does not render the stage-first screenshot reference")
+    if "order: -2" not in longform_css or "bounded-shell--stage-first > .bounded-stage" not in longform_css:
+        raise AssertionError("longform scaffold CSS does not visually promote the reference stage")
+    with tempfile.TemporaryDirectory(prefix="scaffold-quality-", dir=temp_parent) as temp_name:
+        persisted_longform = persist_rebuild_scaffold(Path(temp_name) / "longform", longform_scaffold)
+        longform_quality = _artifact_quality_signals(persisted_longform)
+        if not longform_quality.get("ready") or longform_quality.get("missing_required"):
+            raise AssertionError(f"longform scaffold quality gate failed: {longform_quality}")
+        repair_pass = build_repair_scaffold(
+            capture_bundle=longform_bundle,
+            rebuild_artifacts=persisted_longform,
+            self_verify={
+                "repair_plan": {
+                    "target_renderer": "role-inferred-app",
+                    "focus_checks": ["screenshot", "stage geometry"],
+                    "artifact_quality": longform_quality,
+                    "priority_findings": [],
+                    "recommended_actions": [],
+                }
+            },
+        )
+        repaired_model = (repair_pass.get("artifacts") or {}).get("app-model.json")
+        if not isinstance(repaired_model, dict):
+            raise AssertionError(f"longform repair did not emit app model: {repair_pass}")
+        repaired_presentation = (
+            repaired_model.get("presentation") if isinstance(repaired_model.get("presentation"), dict) else {}
+        )
+        if repaired_presentation.get("variant") == "compact-center-stage":
+            raise AssertionError("longform repair collapsed screenshot-backed stage into compact generic layout")
+        if not repaired_model.get("visualStage") or not repaired_model.get("visualLayers"):
+            raise AssertionError("longform repair dropped visualStage/visualLayers anchors")
 
     app_profile = site_profile("<div id='root'></div><script src='/react-dom.js'></script>")
     app_scaffold = build_rebuild_scaffold(capture_bundle(app_profile))
