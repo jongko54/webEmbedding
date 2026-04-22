@@ -202,11 +202,57 @@ def assert_site_profile_routing_semantics() -> None:
             "depths": {"frame-documents"},
             "plan_required": {"frame document summaries", "network manifest"},
         },
+        {
+            "name": "content hub longform",
+            "html": (
+                "<main><section><h1>Docs</h1><p>Intro</p></section>"
+                "<section><h2>News</h2><p>Updates</p></section>"
+                "<section><h2>Guides</h2><h3>Install</h3></section>"
+                "<section><h2>Community</h2><h3>Events</h3><ul>"
+                + "".join(f"<li><a href='/item-{index}'>Item {index}</a></li>" for index in range(24))
+                + "</ul></section></main>"
+            ),
+            "frame_policy": {"embeddable": False},
+            "surface": "longform-content-surface",
+            "mode": "rebuild",
+            "route": {
+                "acquisition_profile": "static-first",
+                "renderer_route": "bounded-rebuild",
+                "renderer_family": "document-next-app",
+            },
+            "depths": {"dom", "computed-styles", "interactions"},
+            "signals": {"longform": True},
+        },
+        {
+            "name": "exact portal density",
+            "html": (
+                "<main><section><h1>Portal</h1><p>Intro</p></section>"
+                "<section><h2>Languages</h2><p>Browse</p></section>"
+                "<section><h2>Projects</h2><h3>Reference</h3></section>"
+                "<section><h2>Community</h2><h3>Events</h3><ul>"
+                + "".join(f"<li><a href='/portal-{index}'>Portal {index}</a></li>" for index in range(24))
+                + "</ul></section></main>"
+            ),
+            "candidates": [{"kind": "direct-iframe", "url": "https://fixture.example/"}],
+            "surface": "static-document",
+            "mode": "embed",
+            "route": {
+                "acquisition_profile": "static-first",
+                "renderer_route": "exact-reuse",
+                "renderer_family": "document-next-app",
+            },
+            "depths": {"dom", "computed-styles", "interactions"},
+            "signals": {"longform": False},
+        },
     ]
     for case in cases:
         name = str(case["name"])
         candidates = case.get("candidates", [])
-        site_profile = profile(str(case["html"]), candidate_urls=candidates)
+        site_profile = profile(
+            str(case["html"]),
+            frame_policy=case.get("frame_policy"),
+            candidate_urls=candidates,
+        )
         route_hints = site_profile.get("route_hints", {})
         expected_surface = case["surface"]
         if site_profile.get("primary_surface") != expected_surface:

@@ -85,6 +85,28 @@ def classify_site_profile(
     section_count = _count(r"<section\b|<article\b|<main\b|<nav\b|<header\b|<footer\b", html)
     paragraph_count = _count(r"<p\b", html)
     heading_count = _count(r"<h[1-6]\b", html)
+    link_count = _count(r"<a\b", html)
+    list_item_count = _count(r"<li\b", html)
+
+    exact_candidate_kinds = [
+        str(item.get("kind") or "").lower()
+        for item in candidate_urls
+        if isinstance(item, dict) and item.get("kind")
+    ]
+    exact_candidate_present = any(
+        kind in {
+            "direct-iframe",
+            "spline-preview",
+            "spline-viewer",
+            "figma-embed",
+            "youtube-embed",
+            "vimeo-embed",
+            "codepen-embed",
+            "generic-embed",
+            "iframe-src",
+        }
+        for kind in exact_candidate_kinds
+    )
 
     runtime_frameworks = _runtime_frameworks(html)
     auth_detected = _bool_patterns(AUTH_PATTERNS, html)
@@ -94,6 +116,20 @@ def classify_site_profile(
     frame_blocked = frame_policy.get("embeddable") is False
     multi_frame = iframe_count > 1
     longform = section_count >= 6 or (paragraph_count >= 12 and heading_count >= 3)
+    if not longform and not exact_candidate_present:
+        content_hub_density = (
+            section_count >= 4
+            and heading_count >= 6
+            and paragraph_count >= 2
+            and (list_item_count >= 20 or link_count >= 40)
+        )
+        frame_blocked_content_density = (
+            frame_blocked
+            and heading_count >= 3
+            and section_count >= 4
+            and (paragraph_count >= 8 or link_count >= 40 or list_item_count >= 20)
+        )
+        longform = content_hub_density or frame_blocked_content_density
     app_shell = bool(runtime_frameworks) or script_count >= 15
     canvas_dominant = canvas_detected and (
         canvas_library_detected
@@ -134,26 +170,6 @@ def classify_site_profile(
         surface = "js-app-shell-surface"
         confidence = "medium"
         notes.append("JS runtime markers dominate the page shell.")
-
-    exact_candidate_kinds = [
-        str(item.get("kind") or "").lower()
-        for item in candidate_urls
-        if isinstance(item, dict) and item.get("kind")
-    ]
-    exact_candidate_present = any(
-        kind in {
-            "direct-iframe",
-            "spline-preview",
-            "spline-viewer",
-            "figma-embed",
-            "youtube-embed",
-            "vimeo-embed",
-            "codepen-embed",
-            "generic-embed",
-            "iframe-src",
-        }
-        for kind in exact_candidate_kinds
-    )
 
     acquisition_profile = "static-first"
     if surface in {"frame-blocked-app-surface", "js-app-shell-surface"}:
@@ -220,6 +236,8 @@ def classify_site_profile(
             "section_count": section_count,
             "paragraph_count": paragraph_count,
             "heading_count": heading_count,
+            "link_count": link_count,
+            "list_item_count": list_item_count,
             "runtime_frameworks": runtime_frameworks,
             "exact_candidate_present": exact_candidate_present,
             "exact_candidate_kinds": exact_candidate_kinds[:12],
