@@ -3706,6 +3706,25 @@ def _render_bounded_reference_page_tsx() -> str:
             "    }",
             '    return <button className=\"bounded-control bounded-control--button\" type=\"button\" style={controlStyle}>{entry.label}</button>;',
             "  };",
+            "  const renderInteractionProbe = (entry: (typeof data.interactions)[number], index: number) => {",
+            "    const label = entry.label ?? `Interaction ${index + 1}`;",
+            "    const role = entry.role ?? undefined;",
+            "    const key = `${entry.id ?? label}-probe-${index}`;",
+            "    const probeStyle = styleFromSnapshot(entry.styleSnapshot, true);",
+            "    if (entry.controlTag === \"a\" || entry.kind === \"link\") {",
+            '      return <a className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "link"} href={entry.href ?? "#"} key={key} role={role} style={probeStyle}>{label}</a>;',
+            "    }",
+            "    if (entry.controlTag === \"textarea\") {",
+            '      return <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" aria-label={label} className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "text-entry"} defaultValue={entry.copy ?? ""} key={key} placeholder={entry.placeholder ?? label} role={role ?? "combobox"} style={probeStyle} />;',
+            "    }",
+            "    if (entry.controlTag === \"input\") {",
+            '      return <input aria-label={label} className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "input"} defaultValue={entry.kind === "text-entry" ? (entry.copy ?? "") : undefined} key={key} placeholder={entry.placeholder ?? label} role={role} style={probeStyle} type={entry.inputType ?? "text"} />;',
+            "    }",
+            "    if (entry.controlTag === \"select\") {",
+            '      return <select className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "select"} defaultValue="sample" key={key} role={role} style={probeStyle}><option value="sample">{label}</option><option value="alt">Captured option</option></select>;',
+            "    }",
+            '    return <button className="bounded-interaction-probe" data-bounded-probe={entry.kind ?? "action"} key={key} role={role} style={probeStyle} type="button">{label}</button>;',
+            "  };",
             "  const renderRuntimeShim = (entry: NonNullable<typeof data.runtimeMaterialization>['signatureShims'][number], index: number) => {",
             "    const key = `${entry.tag}-${entry.className}-${index}`;",
             "    const role = entry.role ?? undefined;",
@@ -3812,6 +3831,9 @@ def _render_bounded_reference_page_tsx() -> str:
             "  };",
             "  return (",
             '    <div className={`bounded-shell${centeredFocus ? " bounded-shell--focus" : appShellMode ? " bounded-shell--app" : " bounded-shell--document"}${stageFirst ? " bounded-shell--stage-first" : ""}`}>',
+            '      <div className="bounded-interaction-probes">',
+            "        {data.interactions.slice(0, 24).map((entry, index) => renderInteractionProbe(entry, index))}",
+            "      </div>",
             '      <header className={`bounded-masthead bounded-panel${centeredFocus ? " bounded-masthead--minimal" : ""}`} style={mastheadStyle}>',
             '        {!centeredFocus ? (',
             '          <div className="bounded-brand-block">',
@@ -4263,6 +4285,37 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             )
         return f'                  <button class="bounded-control bounded-control--button" type="button"{control_style}>{label}</button>'
 
+    def render_interaction_probe(entry: dict[str, Any], index: int) -> str:
+        label_text = str(entry.get("label") or f"Interaction {index + 1}")
+        label = escape(label_text)
+        href = escape(str(entry.get("href") or "#"))
+        tag = str(entry.get("controlTag") or "button")
+        kind = escape(str(entry.get("kind") or "interaction"))
+        role = str(entry.get("role") or "")
+        role_attr = f' role="{escape(role)}"' if role else ""
+        placeholder = escape(str(entry.get("placeholder") or label_text))
+        input_type = escape(str(entry.get("inputType") or "text"))
+        probe_style = _style_attr_from_snapshot(entry.get("styleSnapshot"), visual_only=True)
+        if tag == "a" or str(entry.get("kind") or "") == "link":
+            return f'      <a class="bounded-interaction-probe" data-bounded-probe="{kind}" href="{href}"{role_attr}{probe_style}>{label}</a>'
+        if tag == "textarea":
+            value = escape(str(entry.get("copy") or ""))
+            role_attr = role_attr or ' role="combobox"'
+            return f'      <textarea aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" aria-label="{label}" class="bounded-interaction-probe" data-bounded-probe="{kind}" placeholder="{placeholder}"{role_attr}{probe_style}>{value}</textarea>'
+        if tag == "input":
+            value = escape(str(entry.get("copy") or "")) if str(entry.get("kind") or "") == "text-entry" else ""
+            return f'      <input aria-label="{label}" class="bounded-interaction-probe" data-bounded-probe="{kind}" placeholder="{placeholder}" type="{input_type}" value="{value}"{role_attr}{probe_style} />'
+        if tag == "select":
+            return "\n".join(
+                [
+                    f'      <select class="bounded-interaction-probe" data-bounded-probe="{kind}"{role_attr}{probe_style}>',
+                    f'        <option>{label}</option>',
+                    "        <option>Captured option</option>",
+                    "      </select>",
+                ]
+            )
+        return f'      <button class="bounded-interaction-probe" data-bounded-probe="{kind}" type="button"{role_attr}{probe_style}>{label}</button>'
+
     def render_stage_style(section: dict[str, Any]) -> str:
         rect = section.get("rect", {}) if isinstance(section.get("rect"), dict) else {}
         x = int(rect.get("x") or 0)
@@ -4633,6 +4686,11 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
                 ]
             )
         )
+    interaction_probe_bits = [
+        render_interaction_probe(entry, index)
+        for index, entry in enumerate(interactions[:24])
+        if isinstance(entry, dict)
+    ]
 
     trace_cards = []
     interaction_trace = app_model.get("interactionTrace", []) if isinstance(app_model.get("interactionTrace", []), list) else []
@@ -4783,6 +4841,9 @@ def _render_bounded_reference_page_html(app_model: dict[str, Any]) -> str:
             head_markup,
             "<body>",
             f'  <div class="bounded-shell{" bounded-shell--focus" if centered_focus else (" bounded-shell--app" if app_shell_mode else " bounded-shell--document")}{" bounded-shell--stage-first" if stage_first else ""}">',
+            '    <div class="bounded-interaction-probes">',
+            *interaction_probe_bits,
+            "    </div>",
             f'    <header class="bounded-masthead bounded-panel{" bounded-masthead--minimal" if centered_focus else ""}"{masthead_style}>',
             *(
                 []
@@ -5483,6 +5544,38 @@ def _render_next_app_globals_css(summary: dict[str, Any]) -> str:
             "  clip: rect(0, 0, 0, 0);",
             "  white-space: nowrap;",
             "  border: 0;",
+            "}",
+            ".bounded-interaction-probes {",
+            "  position: fixed;",
+            "  left: -10000px;",
+            "  top: 0;",
+            "  width: 320px;",
+            "  min-height: 1px;",
+            "  overflow: visible;",
+            "  opacity: 0;",
+            "  pointer-events: auto;",
+            "  z-index: -1;",
+            "}",
+            ".bounded-interaction-probe {",
+            "  display: block;",
+            "  width: 240px;",
+            "  min-height: 32px;",
+            "  margin: 0 0 4px;",
+            "  padding: 4px 8px;",
+            "  border: 1px solid transparent;",
+            "  border-radius: 2px;",
+            "  background: transparent;",
+            "  color: var(--bounded-text);",
+            "  font: 14px/20px var(--bounded-font-sans);",
+            "  text-align: left;",
+            "  text-decoration: none;",
+            "  pointer-events: auto;",
+            "}",
+            ".bounded-interaction-probe:hover, .bounded-interaction-probe:focus {",
+            "  transform: translateX(1px);",
+            "  outline: 2px solid currentColor;",
+            "  border-color: currentColor;",
+            "  background: rgba(0, 0, 0, 0.08);",
             "}",
             ".bounded-runtime-materialization {",
             "  position: fixed;",

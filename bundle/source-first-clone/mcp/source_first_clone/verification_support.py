@@ -1895,12 +1895,12 @@ def _normalize_root_locator(value: Any, *, kind: str = "") -> str:
     text = _clean_text(value)
     if not text:
         return ""
+    if kind == "document":
+        return "document"
     parsed = urlsplit(text)
     if not parsed.scheme and not parsed.netloc:
         return text
     path = parsed.path or "/"
-    if kind == "document":
-        return path
     if parsed.hostname in {"127.0.0.1", "localhost"}:
         return path
     host = _clean_text(parsed.hostname)
