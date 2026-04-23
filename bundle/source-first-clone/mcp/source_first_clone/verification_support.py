@@ -1001,19 +1001,31 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
     font_size_overlap = _set_overlap(ref_stats.get("font_sizes", set()), cand_stats.get("font_sizes", set()))
     font_size_similarity = _numeric_token_set_similarity(ref_stats.get("font_sizes", set()), cand_stats.get("font_sizes", set()))
     display_overlap = _set_overlap(ref_stats.get("displays", set()), cand_stats.get("displays", set()))
-    similarity_parts = [
-        score
-        for score in [
-            max(signature_overlap, signature_coverage),
-            sample_score,
-            max(tag_overlap, tag_coverage),
-            font_overlap,
-            max(font_size_overlap, font_size_similarity),
-            display_overlap,
-        ]
-        if score is not None
-    ]
-    similarity = sum(similarity_parts) / len(similarity_parts) if similarity_parts else 0.0
+    display_coverage = _set_balanced_coverage(ref_stats.get("displays", set()), cand_stats.get("displays", set()))
+    style_token_overlap = _set_overlap(ref_stats.get("style_tokens", set()), cand_stats.get("style_tokens", set()))
+    style_token_coverage = _set_balanced_coverage(ref_stats.get("style_tokens", set()), cand_stats.get("style_tokens", set()))
+    similarity = _weighted_similarity(
+        {
+            "signature": max(signature_overlap, signature_coverage),
+            "style_tokens": max(style_token_overlap, style_token_coverage),
+            "sample_count": sample_score,
+            "tag": max(tag_overlap, tag_coverage),
+            "font": font_overlap,
+            "font_size": max(font_size_overlap, font_size_similarity),
+            "display": max(display_overlap, display_coverage),
+        },
+        {
+            "signature": 0.05,
+            "style_tokens": 0.35,
+            "sample_count": 0.1,
+            "tag": 0.1,
+            "font": 0.15,
+            "font_size": 0.1,
+            "display": 0.15,
+        },
+    )
+    if similarity is None:
+        similarity = 0.0
     return {
         "name": "computed styles",
         "core": True,
@@ -1032,6 +1044,9 @@ def _styles_check(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[
             "font_size_overlap": font_size_overlap,
             "font_size_similarity": font_size_similarity,
             "display_overlap": display_overlap,
+            "display_coverage_overlap": display_coverage,
+            "style_token_overlap": style_token_overlap,
+            "style_token_coverage_overlap": style_token_coverage,
             "common_tags": sorted(set(ref_stats.get("tags", [])) & set(cand_stats.get("tags", [])))[:8],
         },
     }
@@ -1607,6 +1622,11 @@ def _dom_node_is_verification_chrome(node: dict[str, Any]) -> bool:
     )
 
 
+def _dom_node_is_nonvisual_document_chrome(node: dict[str, Any]) -> bool:
+    tag = _clean_text(node.get("tag"))
+    return tag in {"head", "meta", "link", "script", "title", "style", "noscript", "template", "source"}
+
+
 def _dom_stats(content: Any) -> dict[str, Any]:
     if not isinstance(content, dict):
         return {
@@ -1646,7 +1666,7 @@ def _dom_stats(content: Any) -> dict[str, Any]:
                     sample_texts.append(text[:80])
             return
         if node_type == "element":
-            if _dom_node_is_verification_chrome(node):
+            if _dom_node_is_verification_chrome(node) or _dom_node_is_nonvisual_document_chrome(node):
                 return
             node_count += 1
             tag = str(node.get("tag") or "").lower()
@@ -1695,6 +1715,7 @@ def _style_stats(content: Any) -> dict[str, Any]:
     entries = content if isinstance(content, list) else []
     tags: set[str] = set()
     signatures: set[str] = set()
+    style_tokens: set[str] = set()
     fonts: set[str] = set()
     sizes: set[str] = set()
     displays: set[str] = set()
@@ -1706,6 +1727,8 @@ def _style_stats(content: Any) -> dict[str, Any]:
             tags.add(tag)
         rect = entry.get("rect") if isinstance(entry.get("rect"), dict) else {}
         styles = entry.get("styles") if isinstance(entry.get("styles"), dict) else {}
+        for token_name, token_value in _style_tokens(styles):
+            style_tokens.add(f"{token_name}:{token_value}")
         signature = _clean_text(entry.get("styleSignature"))
         if not signature:
             signature_parts = [
@@ -1740,11 +1763,104 @@ def _style_stats(content: Any) -> dict[str, Any]:
         "sample_count": len(entries),
         "tags": sorted(tags),
         "signatures": sorted(signatures),
+        "style_tokens": sorted(style_tokens),
         "sample_signatures": sorted(signatures)[:8],
+        "sample_style_tokens": sorted(style_tokens)[:12],
         "fonts": sorted(fonts)[:8],
         "font_sizes": sorted(sizes)[:8],
         "displays": sorted(displays)[:8],
     }
+
+
+def _style_tokens(styles: dict[str, Any]) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    for name in (
+        "display",
+        "position",
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "lineHeight",
+        "letterSpacing",
+        "color",
+        "backgroundColor",
+        "borderRadius",
+        "borderColor",
+        "borderWidth",
+        "gap",
+        "textAlign",
+        "textTransform",
+    ):
+        if name not in styles:
+            continue
+        value = _style_token_value(name, styles.get(name))
+        if value:
+            tokens.append((name, value))
+    return tokens
+
+
+def _style_token_value(name: str, value: Any) -> str:
+    if name in {"color", "backgroundColor", "borderColor"}:
+        return _css_color_family(value)
+    if name == "fontFamily":
+        return (_clean_text(value).split(",")[0] or _clean_text(value)).strip()
+    if name == "fontWeight":
+        return _css_font_weight_bucket(value)
+    if name in {"fontSize", "lineHeight", "borderRadius", "borderWidth", "gap", "letterSpacing"}:
+        return _css_numeric_bucket(value)
+    return _clean_text(value)
+
+
+def _css_color_family(value: Any) -> str:
+    text = _clean_text(value).replace(" ", "")
+    if not text or text in {"none", "transparent"} or text.startswith("rgba(0,0,0,0"):
+        return "transparent"
+    channels = [float(match) for match in re.findall(r"\d+(?:\.\d+)?", text)[:3]]
+    if len(channels) < 3:
+        return text
+    average = sum(channels) / 3
+    if max(channels) - min(channels) < 12:
+        if average < 70:
+            return "neutral-dark"
+        if average > 220:
+            return "neutral-light"
+        return "neutral-mid"
+    dominant_index = max(range(3), key=lambda index: channels[index])
+    return ("red", "green", "blue")[dominant_index]
+
+
+def _css_font_weight_bucket(value: Any) -> str:
+    numeric = _css_numeric_value(value)
+    if numeric is None:
+        return _clean_text(value)
+    if numeric >= 650:
+        return "bold"
+    if numeric >= 550:
+        return "semibold"
+    if numeric >= 450:
+        return "medium"
+    if numeric >= 350:
+        return "regular"
+    return "light"
+
+
+def _css_numeric_bucket(value: Any) -> str:
+    numeric = _css_numeric_value(value)
+    if numeric is None:
+        return _clean_text(value)
+    if numeric <= 0:
+        return "0"
+    if numeric >= 48:
+        return "xxl"
+    if numeric >= 32:
+        return "xl"
+    if numeric >= 24:
+        return "lg"
+    if numeric >= 18:
+        return "md"
+    if numeric >= 14:
+        return "sm"
+    return "xs"
 
 
 def _dimension_bucket(value: Any) -> str:

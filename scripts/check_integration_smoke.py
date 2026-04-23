@@ -162,6 +162,8 @@ def assert_verification_similarity_semantics() -> None:
         raise AssertionError(f"style tag coverage did not account for runtime helpers: {style_check}")
     if not style_details.get("font_size_similarity", 0) > style_details.get("font_size_overlap", 0):
         raise AssertionError(f"numeric font-size similarity did not smooth near-token drift: {style_check}")
+    if not style_details.get("style_token_coverage_overlap", 0) > style_details.get("signature_coverage_overlap", 0):
+        raise AssertionError(f"style token coverage did not reduce brittle signature matching: {style_check}")
 
     def element(tag: str, children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {"type": "element", "tag": tag, "children": children or []}

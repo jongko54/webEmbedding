@@ -23,7 +23,7 @@ Recent local benchmark runs from this repo:
 
 | URL | Path | Score |
 | --- | --- | --- |
-| `https://developer.mozilla.org/en-US/` | iframe-blocked bounded rebuild | root `91`, visual `95`, mobile `89`, tablet `90`, breakpoint average `89.5` |
+| `https://developer.mozilla.org/en-US/` | iframe-blocked bounded rebuild | root `94`, visual `95`, mobile `94`, tablet `93`, breakpoint average `93.5` |
 | `https://www.mozilla.org/` | bounded rebuild | root `91`, visual `100` |
 | `https://www.example.com` | exact reuse | ready `yes` |
 
