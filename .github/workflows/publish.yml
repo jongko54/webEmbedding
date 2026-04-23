@@ -10,53 +10,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build:
-    if: vars.ENABLE_NPM_PUBLISH == 'true' || vars.ENABLE_PYPI_PUBLISH == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install Python build backend
-        run: python -m pip install --upgrade build
-
-      - name: Build Python distributions
-        run: python -m build
-
-      - name: Pack npm tarball
-        run: npm pack
-
-      - name: Upload Python distributions
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-dist
-          path: dist/*
-          if-no-files-found: error
-
-      - name: Upload npm tarball
-        uses: actions/upload-artifact@v7
-        with:
-          name: npm-tarball
-          path: web-embedding-*.tgz
-          if-no-files-found: error
-
   publish-npm:
     if: vars.ENABLE_NPM_PUBLISH == 'true'
-    needs: build
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -73,29 +28,50 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Download npm tarball
-        uses: actions/download-artifact@v8
-        with:
-          name: npm-tarball
-          path: ./artifacts
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check npm version
+        id: npm-version
+        shell: bash
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          echo "name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is not published yet."
+          fi
 
       - name: Publish package to npm
-        run: npm publish ./artifacts/web-embedding-*.tgz --access public
+        if: steps.npm-version.outputs.exists != 'true'
+        run: npm publish --access public --provenance
 
   publish-pypi:
     if: vars.ENABLE_PYPI_PUBLISH == 'true'
-    needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
 
     steps:
-      - name: Download Python distributions
-        uses: actions/download-artifact@v8
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          name: python-dist
-          path: dist
+          python-version: "3.11"
+
+      - name: Install Python build backend
+        run: python -m pip install --upgrade build
+
+      - name: Build Python distributions
+        run: python -m build
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
