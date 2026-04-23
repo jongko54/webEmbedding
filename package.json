@@ -16,7 +16,7 @@
     "access": "public"
   },
   "bin": {
-    "web-embedding": "./bin/web-embedding.mjs"
+    "web-embedding": "bin/web-embedding.mjs"
   },
   "files": [
     "bin",
