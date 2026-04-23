@@ -75,6 +75,27 @@ The package uses `playwright-core`; it does not download a browser by itself.
 
 Installing this project adds the `source-first-clone` plugin bundle, the `exact-clone-intake` skill, and the MCP server that exposes the URL inspection, capture, rebuild, and verification tools.
 
+### Install From npm
+
+```bash
+npm install -g web-embedding
+web-embedding install
+web-embedding doctor
+```
+
+If you already have an older local plugin installed, overwrite it with:
+
+```bash
+web-embedding install --force
+web-embedding doctor
+```
+
+You can also run the installer without a global install:
+
+```bash
+npx web-embedding install
+```
+
 ### Install From Release
 
 ```bash
