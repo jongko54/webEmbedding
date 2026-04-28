@@ -4,3 +4,7 @@ https://www.example.com
 https://www.wikipedia.org
 https://www.python.org
 https://www.google.com
+https://www.framer.com/
+https://threejs.org/examples/#webgl_animation_keyframes
+https://github.com/login
+https://testpages.eviltester.com/styled/iframes-test.html

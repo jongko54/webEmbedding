@@ -18,6 +18,32 @@ FRAMER_RUNTIME_RE = re.compile(r"(?:data-framer|__framer|framer-embed)", re.I)
 FRAMER_ASSET_HINT_RE = re.compile(r"framerusercontent", re.I)
 WEBFLOW_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)webflow\.io$", re.I)
 WEBFLOW_RUNTIME_RE = re.compile(r"(data-wf-site|data-wf-page|webflow\.js|cdn\.prod\.website-files\.com|assets\.website-files\.com)", re.I)
+SHOPIFY_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)myshopify\.com$", re.I)
+SHOPIFY_RUNTIME_RE = re.compile(
+    r"(?:cdn\.shopify\.com|window\.Shopify|Shopify\.(?:theme|shop|routes|analytics)|shopify-section|shopify-features|/cart\.js)",
+    re.I,
+)
+WORDPRESS_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)wordpress\.com$", re.I)
+WORDPRESS_RUNTIME_RE = re.compile(r"(?:/wp-content/|/wp-includes/|wp-json|wp-emoji-release|wp-admin/admin-ajax\.php)", re.I)
+WIX_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)(?:wixsite\.com|editorx\.io|wixstudio\.io)$", re.I)
+WIX_RUNTIME_RE = re.compile(r"(?:wixstatic\.com|static\.parastorage\.com|wix-code|wix-thunderbolt|_wixcid|wix-bi)", re.I)
+SQUARESPACE_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)squarespace\.com$", re.I)
+SQUARESPACE_RUNTIME_RE = re.compile(
+    r"(?:static1?\.squarespace\.com|images\.squarespace-cdn\.com|sqspcdn\.com|squarespace-context|Y\.Squarespace|squarespace-commerce)",
+    re.I,
+)
+SUPER_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)super\.site$", re.I)
+SUPER_RUNTIME_RE = re.compile(r"(?:sites\.super\.so|super-content|super\.site|super\.so/(?:api|cdn|static))", re.I)
+NOTION_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)notion\.site$", re.I)
+NOTION_RUNTIME_RE = re.compile(r"(?:notion-static\.com|notion\.site|notion\.so/(?:image|images)|__notion)", re.I)
+COMMON_PLATFORM_RULES: tuple[tuple[str, str, re.Pattern[str], tuple[str, ...], re.Pattern[str], str], ...] = (
+    ("shopify", "Shopify storefront", SHOPIFY_PUBLISH_HOST_RE, ("shopify",), SHOPIFY_RUNTIME_RE, "ecommerce"),
+    ("wordpress", "WordPress CMS", WORDPRESS_PUBLISH_HOST_RE, ("wordpress",), WORDPRESS_RUNTIME_RE, "cms"),
+    ("wix", "Wix site builder", WIX_PUBLISH_HOST_RE, ("wix",), WIX_RUNTIME_RE, "site-builder"),
+    ("squarespace", "Squarespace site builder", SQUARESPACE_PUBLISH_HOST_RE, ("squarespace",), SQUARESPACE_RUNTIME_RE, "site-builder"),
+    ("super", "Super/Notion site", SUPER_PUBLISH_HOST_RE, ("super",), SUPER_RUNTIME_RE, "document-builder"),
+    ("notion", "Notion public page", NOTION_PUBLISH_HOST_RE, ("notion",), NOTION_RUNTIME_RE, "document-builder"),
+)
 
 
 def _dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -88,6 +114,7 @@ def inspect_platform_adapter(
         "candidates": [],
         "notes": [],
     }
+    common_platform = _match_common_platform(final_url, generator, lowered_html)
 
     if "spline.design" in lowered_url or "spline.design" in lowered_html:
         adapter.update(_inspect_spline(final_url, html))
@@ -99,6 +126,8 @@ def inspect_platform_adapter(
         adapter.update(_inspect_framer(final_url, html, generator))
     elif _looks_like_webflow(final_url, generator, lowered_html):
         adapter.update(_inspect_webflow(final_url, html, generator))
+    elif common_platform:
+        adapter.update(_inspect_common_platform(final_url, generator, common_platform))
     else:
         adapter["notes"].append("No platform-specific adapter matched; generic candidate extraction remains active.")
 
@@ -122,7 +151,7 @@ def merge_platform_candidates(
 
 def _extract_generator(html: str) -> str | None:
     match = re.search(
-        r"<meta[^>]+(?:name|property)=[\"']generator[\"'][^>]+content=[\"']([^\"']+)",
+        r"<meta(?=[^>]+(?:name|property)=[\"']generator[\"'])(?=[^>]+content=[\"']([^\"']+))[^>]*>",
         html or "",
         re.I,
     )
@@ -161,6 +190,71 @@ def _looks_like_webflow(final_url: str, generator: str | None, lowered_html: str
         or bool(WEBFLOW_RUNTIME_RE.search(lowered_html))
         or bool(re.search(r"website-files\.com", lowered_html, re.I))
     )
+
+
+def _match_common_platform(final_url: str, generator: str | None, lowered_html: str) -> dict[str, Any] | None:
+    host = _host(final_url)
+    generator_text = (generator or "").lower()
+    matches: list[dict[str, Any]] = []
+    for platform, label, host_pattern, generator_tokens, runtime_pattern, category in COMMON_PLATFORM_RULES:
+        publish_host = _is_publish_host(host, host_pattern)
+        generator_signal = any(token in generator_text for token in generator_tokens)
+        runtime_signal = bool(runtime_pattern.search(lowered_html))
+        if publish_host or generator_signal or runtime_signal:
+            matches.append(
+                {
+                    "platform": platform,
+                    "label": label,
+                    "category": category,
+                    "publish_host": publish_host,
+                    "generator_signal": generator_signal,
+                    "runtime_signal": runtime_signal,
+                }
+            )
+
+    if not matches:
+        return None
+    strong_matches = [match for match in matches if match["publish_host"] or match["generator_signal"]]
+    if strong_matches:
+        return strong_matches[0]
+    if len(matches) == 1:
+        return matches[0]
+    super_match = next((match for match in matches if match["platform"] == "super" and match["runtime_signal"]), None)
+    return super_match
+
+
+def _inspect_common_platform(final_url: str, generator: str | None, match: dict[str, Any]) -> dict[str, Any]:
+    platform = str(match.get("platform") or "generic")
+    label = str(match.get("label") or platform)
+    category = str(match.get("category") or "platform")
+    notes = [f"{label} surface detected."]
+    source_signals: list[str] = [platform, category]
+
+    if match.get("publish_host"):
+        notes.append(f"{label}-managed host detected.")
+        _append_unique(source_signals, "published-host")
+    elif match.get("runtime_signal"):
+        notes.append(f"Custom domain appears to be backed by {label} runtime assets.")
+        _append_unique(source_signals, "custom-domain")
+
+    if generator and match.get("generator_signal"):
+        notes.append(f"Generator meta: {generator}")
+        _append_unique(source_signals, "generator")
+
+    if match.get("runtime_signal"):
+        notes.append(f"{label} runtime or asset markers were found in the page HTML.")
+        _append_unique(source_signals, "runtime")
+
+    if _looks_like_page_url(final_url):
+        notes.append("No platform-specific reusable source URL was inferred; keep bounded rebuild routing available.")
+
+    return {
+        "platform": platform,
+        "confidence": "high" if match.get("publish_host") or match.get("generator_signal") else "medium",
+        "source_signals": source_signals,
+        "candidates": [],
+        "notes": notes,
+    }
 
 
 def _inspect_spline(final_url: str, html: str) -> dict[str, Any]:

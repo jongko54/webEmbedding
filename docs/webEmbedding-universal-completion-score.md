@@ -54,7 +54,7 @@ That does **not** mean the universal engine is complete.
 
 ## Current estimate
 
-Current estimate: **88 / 100**
+Current estimate: **90 / 100**
 
 ### Breakdown
 
@@ -62,7 +62,7 @@ Current estimate: **88 / 100**
 - Deep capture: `24 / 25`
 - Reconstruction and repair: `23 / 25`
 - CLI and benchmark visibility: `12 / 15`
-- Corpus coverage and regression evidence: `5 / 10`
+- Corpus coverage and regression evidence: `7 / 10`
 
 ## Interpretation bands
 
@@ -77,7 +77,7 @@ Current estimate: **88 / 100**
 
 - best bounded runtime benchmark: `88 / 100`
 - harder bounded rebuild sample: `66 / 100`
-- universal benchmark corpus: `4 / 4` sites classified successfully, with `2` exact-reuse and `2` bounded-rebuild outcomes
+- universal benchmark corpus: `8 / 8` sites classified successfully across `6` primary surface classes, with `4` exact-reuse, `2` bounded-rebuild, `1` platform-source-or-bounded-rebuild, and `1` runtime-first-bounded-rebuild outcome
 - benchmark regression workflow now validates the committed corpus expectations on pull requests and pushes to `main`
 - exact-reuse succeeds on allowed surfaces such as `wikipedia.org` and platform-backed surfaces such as `artsupportservices.com`
 - universal routing baseline exists through `site_profile` and `route_hints`
@@ -100,7 +100,7 @@ The remaining gaps are still generic, not cosmetic:
 - HAR export exists, but replay-grade network parity still needs work
 - app-shell / dashboard renderer family is present in bounded form, but it still needs richer panel/state reconstruction
 - canvas / WebGL visual fallback family is present in bounded form, but it still needs richer visual reconstruction
-- broader corpus coverage beyond the current regression gate
+- broader corpus coverage beyond the current regression gate, especially for standalone JS app shells and frame-blocked app surfaces
 
 ## Practical reading
 

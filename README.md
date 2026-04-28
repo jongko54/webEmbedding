@@ -122,6 +122,37 @@ python3 python/web_embedding/installer.py doctor --target-home ./.tmp/home
 python3 python/web_embedding/installer.py uninstall --target-home ./.tmp/home
 ```
 
+## Opt-in Telemetry
+
+Telemetry is disabled by default. On an interactive first install, `web-embedding install` asks once and defaults to `No`. Non-interactive installs such as CI and `curl | bash` do not prompt. If you opt in, `web-embedding` sends a small anonymous command-completion event to a JSON POST endpoint you control. It does not send target URLs, local paths, captured HTML, screenshots, storage state, environment variables, API keys, or command output.
+
+Enable it during install:
+
+```bash
+web-embedding install --telemetry --telemetry-endpoint https://your-collector.example/events
+```
+
+Or manage it later:
+
+```bash
+web-embedding telemetry enable --endpoint https://your-collector.example/events
+web-embedding telemetry status
+web-embedding telemetry disable
+web-embedding telemetry reset-id
+```
+
+Each event contains an anonymous install id, package version, command name, success/failure status, OS/runtime basics, and coarse option flags such as `breakpoint_count` or `install_source`.
+
+Environment controls:
+
+```bash
+WEB_EMBEDDING_TELEMETRY=1
+WEB_EMBEDDING_NO_TELEMETRY=1
+WEB_EMBEDDING_TELEMETRY_PROMPT=0
+WEB_EMBEDDING_TELEMETRY_ENDPOINT=https://your-collector.example/events
+WEB_EMBEDDING_TELEMETRY_LOG=./telemetry.jsonl
+```
+
 ## Quick Start
 
 Inspect a URL and get route hints:
@@ -163,6 +194,7 @@ node ./bin/web-embedding.mjs install
 node ./bin/web-embedding.mjs doctor
 node ./bin/web-embedding.mjs uninstall
 node ./bin/web-embedding.mjs paths
+node ./bin/web-embedding.mjs telemetry status
 ```
 
 ```bash

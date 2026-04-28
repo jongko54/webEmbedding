@@ -14,8 +14,12 @@ APP_RUNTIME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("vue", re.compile(r"data-v-|vue(?:\.runtime)?", re.I)),
     ("svelte", re.compile(r"svelte", re.I)),
     ("angular", re.compile(r"ng-version|angular", re.I)),
-    ("shopify", re.compile(r"shopify|cdn\.shopify\.com", re.I)),
-    ("wordpress", re.compile(r"wp-content|wp-includes|wordpress", re.I)),
+    ("shopify", re.compile(r"Shopify\.|window\.Shopify|shopify-section|shopify-features|cdn\.shopify\.com|myshopify\.com", re.I)),
+    ("wordpress", re.compile(r"wp-content|wp-includes|wp-json|wordpress", re.I)),
+    ("wix", re.compile(r"wixstatic\.com|static\.parastorage\.com|wix-code|wix-thunderbolt|wixsite\.com", re.I)),
+    ("squarespace", re.compile(r"static1?\.squarespace\.com|squarespace-cdn\.com|sqspcdn\.com|squarespace-context", re.I)),
+    ("super", re.compile(r"super\.site|sites\.super\.so|super-content|super\.so/(?:api|cdn|static)", re.I)),
+    ("notion", re.compile(r"notion-static\.com|notion\.site|notion\.so/(?:image|images)", re.I)),
 )
 
 AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (

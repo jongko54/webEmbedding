@@ -1,15 +1,28 @@
 {
   "summary": {
     "exact": {
-      "total": 4,
-      "status_counts.ok": 4,
+      "total": 8,
+      "status_counts.ok": 8,
       "surface_counts.static-document": 3,
       "surface_counts.longform-content-surface": 1,
-      "renderer_route_counts.exact-reuse": 2,
+      "surface_counts.platform-managed-surface": 1,
+      "surface_counts.canvas-or-webgl-surface": 1,
+      "surface_counts.authenticated-app-surface": 1,
+      "surface_counts.multi-frame-document-surface": 1,
+      "renderer_route_counts.exact-reuse": 4,
       "renderer_route_counts.bounded-rebuild": 2,
-      "renderer_family_counts.document-next-app": 4,
+      "renderer_route_counts.platform-source-or-bounded-rebuild": 1,
+      "renderer_route_counts.runtime-first-bounded-rebuild": 1,
+      "renderer_family_counts.document-next-app": 5,
+      "renderer_family_counts.visual-fallback-next-app": 1,
+      "renderer_family_counts.app-shell-dashboard-next-app": 1,
+      "renderer_family_counts.frame-aware-document-next-app": 1,
       "acquisition_profile_counts.static-first": 4,
-      "route_quality_counts.complete": 4
+      "acquisition_profile_counts.platform-aware-source-first": 1,
+      "acquisition_profile_counts.visual-runtime-capture": 1,
+      "acquisition_profile_counts.session-aware-browser-capture": 1,
+      "acquisition_profile_counts.frame-aware-capture": 1,
+      "route_quality_counts.complete": 8
     },
     "absent_or_zero": [
       "status_counts.error",
@@ -58,6 +71,46 @@
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "bounded-rebuild",
         "route.renderer_family": "document-next-app"
+      }
+    },
+    "https://www.framer.com/": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "platform-managed-surface",
+        "route.acquisition_profile": "platform-aware-source-first",
+        "route.renderer_route": "platform-source-or-bounded-rebuild",
+        "route.renderer_family": "document-next-app"
+      }
+    },
+    "https://threejs.org/examples/#webgl_animation_keyframes": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "canvas-or-webgl-surface",
+        "route.acquisition_profile": "visual-runtime-capture",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "visual-fallback-next-app"
+      }
+    },
+    "https://github.com/login": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "authenticated-app-surface",
+        "route.acquisition_profile": "session-aware-browser-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app"
+      }
+    },
+    "https://testpages.eviltester.com/styled/iframes-test.html": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "multi-frame-document-surface",
+        "route.acquisition_profile": "frame-aware-capture",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "frame-aware-document-next-app"
       }
     }
   }

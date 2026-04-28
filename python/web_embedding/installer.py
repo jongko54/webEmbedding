@@ -4,18 +4,30 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 PLUGIN_NAME = "source-first-clone"
+PACKAGE_NAME = "web-embedding"
+PACKAGE_VERSION = "0.3.2"
+TELEMETRY_SCHEMA_VERSION = 1
+TELEMETRY_CONFIG_DIR = ".web-embedding"
+TELEMETRY_CONFIG_FILE = "telemetry.json"
+DEFAULT_TELEMETRY_ENDPOINT = ""
+TELEMETRY_PROMPT_ENV = "WEB_EMBEDDING_TELEMETRY_PROMPT"
 MARKETPLACE_ENTRY = {
     "name": PLUGIN_NAME,
     "source": {
@@ -43,12 +55,368 @@ class InstallPaths:
     marketplace_path: Path
 
 
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+FALSE_VALUES = {"0", "false", "no", "n", "off"}
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
 def default_bundle_dir() -> Path:
     return repo_root() / "bundle" / PLUGIN_NAME
+
+
+def parse_bool_env(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    lowered = value.strip().lower()
+    if lowered in TRUE_VALUES:
+        return True
+    if lowered in FALSE_VALUES:
+        return False
+    return None
+
+
+def telemetry_config_path(home_root: Path) -> Path:
+    return home_root / TELEMETRY_CONFIG_DIR / TELEMETRY_CONFIG_FILE
+
+
+def load_telemetry_config(home_root: Path) -> dict[str, Any]:
+    path = telemetry_config_path(home_root)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_telemetry_config(home_root: Path, payload: dict[str, Any], dry_run: bool = False) -> None:
+    path = telemetry_config_path(home_root)
+    if dry_run:
+        print(f"[dry-run] write telemetry config: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+
+
+def telemetry_endpoint(config: dict[str, Any]) -> str:
+    env_endpoint = os.environ.get("WEB_EMBEDDING_TELEMETRY_ENDPOINT")
+    if env_endpoint:
+        return env_endpoint.strip()
+    configured = config.get("endpoint")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return DEFAULT_TELEMETRY_ENDPOINT
+
+
+def telemetry_log_path() -> Path | None:
+    raw_path = os.environ.get("WEB_EMBEDDING_TELEMETRY_LOG")
+    if not raw_path:
+        return None
+    return Path(raw_path).expanduser().resolve()
+
+
+def telemetry_is_enabled(config: dict[str, Any]) -> bool:
+    disabled_override = parse_bool_env(os.environ.get("WEB_EMBEDDING_NO_TELEMETRY"))
+    if disabled_override is True:
+        return False
+    env_enabled = parse_bool_env(os.environ.get("WEB_EMBEDDING_TELEMETRY"))
+    if env_enabled is not None:
+        return env_enabled
+    return config.get("enabled") is True
+
+
+def telemetry_timeout_seconds() -> float:
+    raw_timeout = os.environ.get("WEB_EMBEDDING_TELEMETRY_TIMEOUT_SECONDS")
+    if not raw_timeout:
+        return 1.5
+    try:
+        return max(0.1, min(10.0, float(raw_timeout)))
+    except ValueError:
+        return 1.5
+
+
+def utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def debug_telemetry(message: str) -> None:
+    if parse_bool_env(os.environ.get("WEB_EMBEDDING_TELEMETRY_DEBUG")) is True:
+        print(f"telemetry: {message}", file=sys.stderr)
+
+
+def package_version() -> str:
+    package_json = repo_root() / "package.json"
+    if package_json.exists():
+        try:
+            payload = json.loads(package_json.read_text())
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and isinstance(payload.get("version"), str):
+            return payload["version"]
+    return PACKAGE_VERSION
+
+
+def ensure_anonymous_id(home_root: Path, config: dict[str, Any]) -> tuple[str, bool]:
+    anonymous_id = config.get("anonymous_id")
+    if isinstance(anonymous_id, str) and anonymous_id.strip():
+        return anonymous_id.strip(), False
+    anonymous_id = str(uuid.uuid4())
+    config["anonymous_id"] = anonymous_id
+    write_telemetry_config(home_root, config)
+    return anonymous_id, True
+
+
+def safe_telemetry_value(value: Any) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:160]
+    if isinstance(value, list):
+        return [safe_telemetry_value(item) for item in value[:20]]
+    if isinstance(value, dict):
+        return {
+            str(key)[:80]: safe_telemetry_value(nested)
+            for key, nested in list(value.items())[:30]
+        }
+    return str(type(value).__name__)
+
+
+def configure_telemetry(
+    home_root: Path,
+    *,
+    enabled: bool | None = None,
+    endpoint: str | None = None,
+    reset_id: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    config = load_telemetry_config(home_root)
+    if enabled is not None:
+        config["enabled"] = enabled
+    if endpoint is not None:
+        if endpoint.strip():
+            config["endpoint"] = endpoint.strip()
+        else:
+            config.pop("endpoint", None)
+    if reset_id or (config.get("enabled") is True and not isinstance(config.get("anonymous_id"), str)):
+        config["anonymous_id"] = str(uuid.uuid4())
+    write_telemetry_config(home_root, config, dry_run=dry_run)
+    return config
+
+
+def mark_telemetry_prompted(home_root: Path, *, enabled: bool, endpoint: str | None = None) -> None:
+    config = configure_telemetry(home_root, enabled=enabled, endpoint=endpoint)
+    config["prompted_at"] = utc_now_iso()
+    write_telemetry_config(home_root, config)
+
+
+def telemetry_prompt_was_answered(config: dict[str, Any]) -> bool:
+    return isinstance(config.get("enabled"), bool) or isinstance(config.get("prompted_at"), str)
+
+
+def can_prompt_for_telemetry(args: argparse.Namespace, home_root: Path) -> bool:
+    if args.telemetry or args.no_telemetry or args.dry_run:
+        return False
+    if parse_bool_env(os.environ.get("WEB_EMBEDDING_NO_TELEMETRY")) is True:
+        return False
+    if parse_bool_env(os.environ.get("WEB_EMBEDDING_TELEMETRY")) is not None:
+        return False
+
+    prompt_override = parse_bool_env(os.environ.get(TELEMETRY_PROMPT_ENV))
+    if prompt_override is False:
+        return False
+
+    config = load_telemetry_config(home_root)
+    if telemetry_prompt_was_answered(config):
+        return False
+    if prompt_override is True:
+        return True
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def prompt_for_telemetry(home_root: Path, endpoint: str | None = None) -> None:
+    print()
+    print("Help improve webEmbedding by sending anonymous command-completion telemetry?")
+    print("It never sends target URLs, local paths, captured HTML, screenshots, storage state,")
+    print("environment variables, API keys, or command output. You can disable it any time with:")
+    print("  web-embedding telemetry disable")
+    resolved_endpoint = endpoint or telemetry_endpoint(load_telemetry_config(home_root))
+    if resolved_endpoint:
+        print(f"Telemetry endpoint: {resolved_endpoint}")
+    else:
+        print("No telemetry endpoint is configured yet, so no events will be sent until one is set.")
+    try:
+        answer = input("Enable anonymous telemetry? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+    enabled = answer in {"y", "yes"}
+    mark_telemetry_prompted(
+        home_root,
+        enabled=enabled,
+        endpoint=resolved_endpoint if enabled and resolved_endpoint else endpoint,
+    )
+    print("Telemetry enabled." if enabled else "Telemetry disabled.")
+
+
+def telemetry_status_payload(home_root: Path) -> dict[str, Any]:
+    config = load_telemetry_config(home_root)
+    endpoint = telemetry_endpoint(config)
+    log_path = telemetry_log_path()
+    return {
+        "config_path": str(telemetry_config_path(home_root)),
+        "enabled": telemetry_is_enabled(config),
+        "configured_enabled": config.get("enabled") is True,
+        "prompted": telemetry_prompt_was_answered(config),
+        "prompted_at": config.get("prompted_at"),
+        "anonymous_id": config.get("anonymous_id"),
+        "endpoint_configured": bool(endpoint),
+        "endpoint": endpoint if endpoint else None,
+        "log_path": str(log_path) if log_path else None,
+        "env_override": os.environ.get("WEB_EMBEDDING_TELEMETRY") is not None,
+        "env_disabled": parse_bool_env(os.environ.get("WEB_EMBEDDING_NO_TELEMETRY")) is True,
+    }
+
+
+def telemetry_home_root(args: argparse.Namespace) -> Path:
+    target_home = getattr(args, "target_home", None)
+    if isinstance(target_home, str) and target_home:
+        return Path(target_home).expanduser().resolve()
+    return Path.home().resolve()
+
+
+def telemetry_properties_for_args(
+    args: argparse.Namespace,
+    *,
+    exit_code: int,
+    error_type: str | None = None,
+) -> dict[str, Any]:
+    command = getattr(args, "command", None)
+    properties: dict[str, Any] = {
+        "command": command,
+        "success": exit_code == 0,
+        "exit_code": exit_code,
+    }
+    if error_type:
+        properties["error_type"] = error_type
+
+    if command in {"install", "uninstall", "doctor", "paths", "telemetry"}:
+        properties["target_home_custom"] = bool(getattr(args, "target_home", None))
+
+    if command == "install":
+        if getattr(args, "bundle_archive", None):
+            install_source = "archive"
+        elif getattr(args, "bundle_dir", None):
+            install_source = "directory"
+        else:
+            install_source = "bundled"
+        properties.update(
+            {
+                "install_source": install_source,
+                "force": bool(getattr(args, "force", False)),
+                "dry_run": bool(getattr(args, "dry_run", False)),
+            }
+        )
+    elif command in {"inspect", "capture", "reproduce", "clone"}:
+        properties.update(
+            {
+                "breakpoint_count": len(getattr(args, "breakpoints", []) or []),
+                "full_json": bool(getattr(args, "full_json", False)),
+                "skip_runtime_trace": bool(getattr(args, "skip_runtime_trace", False)),
+                "skip_html": bool(getattr(args, "skip_html", False)),
+                "skip_screenshot": bool(getattr(args, "skip_screenshot", False)),
+                "not_exact": bool(getattr(args, "not_exact", False)),
+                "output_dir_set": bool(getattr(args, "output_dir", None)),
+                "has_user_data_dir": bool(getattr(args, "user_data_dir", None)),
+                "has_storage_state_path": bool(getattr(args, "storage_state_path", None)),
+                "has_storage_state_output_path": bool(
+                    getattr(args, "storage_state_output_path", None)
+                ),
+            }
+        )
+    elif command == "benchmark":
+        properties.update(
+            {
+                "capture": bool(getattr(args, "capture", False)),
+                "skip_runtime_trace": bool(getattr(args, "skip_runtime_trace", False)),
+                "url_count": len(getattr(args, "url", []) or []),
+                "urls_file_set": bool(getattr(args, "urls_file", None)),
+                "corpus_name_set": bool(getattr(args, "corpus_name", None)),
+            }
+        )
+    elif command == "telemetry":
+        properties.update(
+            {
+                "action": getattr(args, "telemetry_action", None),
+                "endpoint_argument_set": bool(getattr(args, "endpoint", None)),
+                "reset_id": bool(getattr(args, "reset_id", False)),
+            }
+        )
+    return {key: safe_telemetry_value(value) for key, value in properties.items()}
+
+
+def emit_telemetry_event(
+    home_root: Path,
+    event: str,
+    properties: dict[str, Any],
+) -> None:
+    config = load_telemetry_config(home_root)
+    if not telemetry_is_enabled(config):
+        return
+
+    endpoint = telemetry_endpoint(config)
+    log_path = telemetry_log_path()
+    if not endpoint and not log_path:
+        debug_telemetry("enabled, but no endpoint or log sink is configured")
+        return
+
+    try:
+        anonymous_id, _created = ensure_anonymous_id(home_root, config)
+        payload = {
+            "schema_version": TELEMETRY_SCHEMA_VERSION,
+            "event": event,
+            "anonymous_id": anonymous_id,
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "app": {
+                "name": PACKAGE_NAME,
+                "version": package_version(),
+                "plugin": PLUGIN_NAME,
+            },
+            "runtime": {
+                "os": platform.system(),
+                "os_release": platform.release(),
+                "machine": platform.machine(),
+                "python": platform.python_version(),
+            },
+            "properties": safe_telemetry_value(properties),
+        }
+
+        if log_path:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+        if endpoint:
+            body = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(
+                endpoint,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"{PACKAGE_NAME}/{package_version()}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=telemetry_timeout_seconds()) as response:
+                response.read(64)
+    except Exception as exc:
+        debug_telemetry(str(exc))
 
 
 def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
@@ -200,12 +568,24 @@ def remove_plugin_dir(paths: InstallPaths, dry_run: bool) -> None:
 
 
 def command_install(args: argparse.Namespace) -> int:
+    if args.telemetry and args.no_telemetry:
+        raise ValueError("Use either --telemetry or --no-telemetry, not both.")
+
     paths = build_paths(args.target_home)
     bundle_source, temp_root = resolve_bundle_source(args.bundle_dir, args.bundle_archive)
 
     try:
         copy_bundle(bundle_source, paths.plugin_root, force=args.force, dry_run=args.dry_run)
         install_marketplace_entry(paths, dry_run=args.dry_run)
+        if args.telemetry or args.no_telemetry or args.telemetry_endpoint is not None:
+            configure_telemetry(
+                paths.home_root,
+                enabled=True if args.telemetry else False if args.no_telemetry else None,
+                endpoint=args.telemetry_endpoint,
+                dry_run=args.dry_run,
+            )
+        if can_prompt_for_telemetry(args, paths.home_root):
+            prompt_for_telemetry(paths.home_root, endpoint=args.telemetry_endpoint)
     finally:
         if temp_root:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -220,6 +600,8 @@ def command_uninstall(args: argparse.Namespace) -> int:
     paths = build_paths(args.target_home)
     remove_plugin_dir(paths, dry_run=args.dry_run)
     uninstall_marketplace_entry(paths, dry_run=args.dry_run)
+    if args.no_telemetry:
+        configure_telemetry(paths.home_root, enabled=False, dry_run=args.dry_run)
     print(f"Removed {PLUGIN_NAME} from {paths.home_root}")
     return 0
 
@@ -797,6 +1179,38 @@ def command_benchmark(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def command_telemetry(args: argparse.Namespace) -> int:
+    paths = build_paths(args.target_home)
+    if args.telemetry_action == "enable":
+        configure_telemetry(
+            paths.home_root,
+            enabled=True,
+            endpoint=args.endpoint,
+            reset_id=args.reset_id,
+        )
+        status = telemetry_status_payload(paths.home_root)
+        print(json.dumps(status, indent=2))
+        return 0
+    if args.telemetry_action == "disable":
+        configure_telemetry(
+            paths.home_root,
+            enabled=False,
+            reset_id=args.reset_id,
+        )
+        status = telemetry_status_payload(paths.home_root)
+        print(json.dumps(status, indent=2))
+        return 0
+    if args.telemetry_action == "reset-id":
+        configure_telemetry(paths.home_root, reset_id=True)
+        status = telemetry_status_payload(paths.home_root)
+        print(json.dumps(status, indent=2))
+        return 0
+    if args.telemetry_action == "status":
+        print(json.dumps(telemetry_status_payload(paths.home_root), indent=2))
+        return 0
+    raise ValueError(f"Unknown telemetry action: {args.telemetry_action}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install or inspect the source-first clone plugin.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -807,11 +1221,15 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--bundle-archive", help="Use a release tarball instead of a bundle directory.")
     install_parser.add_argument("--force", action="store_true", help="Overwrite an existing install.")
     install_parser.add_argument("--dry-run", action="store_true", help="Print actions without writing files.")
+    install_parser.add_argument("--telemetry", action="store_true", help="Opt in to anonymous usage telemetry.")
+    install_parser.add_argument("--no-telemetry", action="store_true", help="Opt out of anonymous usage telemetry.")
+    install_parser.add_argument("--telemetry-endpoint", help="JSON POST endpoint for opt-in telemetry events.")
     install_parser.set_defaults(func=command_install)
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove the installed plugin.")
     uninstall_parser.add_argument("--target-home", help="Override the home root used for removal.")
     uninstall_parser.add_argument("--dry-run", action="store_true", help="Print actions without writing files.")
+    uninstall_parser.add_argument("--no-telemetry", action="store_true", help="Disable telemetry during removal.")
     uninstall_parser.set_defaults(func=command_uninstall)
 
     doctor_parser = subparsers.add_parser("doctor", help="Check the install state.")
@@ -914,17 +1332,48 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--skip-runtime-trace", action="store_true", help="When capturing, skip deep runtime trace and keep the benchmark static-only.")
     benchmark_parser.set_defaults(func=command_benchmark)
 
+    telemetry_parser = subparsers.add_parser("telemetry", help="Manage opt-in telemetry settings.")
+    telemetry_subparsers = telemetry_parser.add_subparsers(dest="telemetry_action", required=True)
+
+    telemetry_status_parser = telemetry_subparsers.add_parser("status", help="Print telemetry status.")
+    telemetry_status_parser.add_argument("--target-home", help="Override the home root used for telemetry config.")
+    telemetry_status_parser.set_defaults(func=command_telemetry)
+
+    telemetry_enable_parser = telemetry_subparsers.add_parser("enable", help="Enable anonymous telemetry.")
+    telemetry_enable_parser.add_argument("--target-home", help="Override the home root used for telemetry config.")
+    telemetry_enable_parser.add_argument("--endpoint", help="JSON POST endpoint for telemetry events.")
+    telemetry_enable_parser.add_argument("--reset-id", action="store_true", help="Generate a new anonymous install id.")
+    telemetry_enable_parser.set_defaults(func=command_telemetry)
+
+    telemetry_disable_parser = telemetry_subparsers.add_parser("disable", help="Disable telemetry.")
+    telemetry_disable_parser.add_argument("--target-home", help="Override the home root used for telemetry config.")
+    telemetry_disable_parser.add_argument("--reset-id", action="store_true", help="Generate a new anonymous install id while disabling.")
+    telemetry_disable_parser.set_defaults(func=command_telemetry)
+
+    telemetry_reset_parser = telemetry_subparsers.add_parser("reset-id", help="Generate a new anonymous install id.")
+    telemetry_reset_parser.add_argument("--target-home", help="Override the home root used for telemetry config.")
+    telemetry_reset_parser.set_defaults(func=command_telemetry)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    exit_code = 1
+    error_type: str | None = None
     try:
-        return args.func(args)
+        exit_code = args.func(args)
     except Exception as exc:  # pragma: no cover - thin CLI wrapper
+        error_type = type(exc).__name__
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        exit_code = 1
+    emit_telemetry_event(
+        telemetry_home_root(args),
+        f"{args.command}_completed",
+        telemetry_properties_for_args(args, exit_code=exit_code, error_type=error_type),
+    )
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -31,10 +31,10 @@ The repo already does these well:
 - app-shell / dashboard-like surfaces now route to a dedicated shell-oriented bounded rebuild mode instead of the same compact landing-page compression
 - canvas/WebGL-like surfaces now route to an explicit bounded visual-fallback family with stage-first constraints
 - verification still treats frame/shadow interaction parity as a bounded signal, not full replay parity
-- benchmark corpus runs can now be repeated against a small generic corpus file for route/depth regression checks
+- benchmark corpus runs can now be repeated against a generic corpus that covers static, longform, platform-managed, visual/canvas, authenticated app, and multi-frame surfaces
 - benchmark reports also surface `route_quality_counts`, `renderer_family_counts`, and `depth_presence_counts` for generic regression checks
 
-The `site_profile` layer now exists, but it still needs broader coverage for shell-like app surfaces, richer benchmark feedback, and more adapter-specific routing signals.
+The `site_profile` layer now exists, but it still needs broader coverage for standalone JS and frame-blocked app shells, richer benchmark feedback, and more adapter-specific routing signals.
 
 ## New Universal Layer
 

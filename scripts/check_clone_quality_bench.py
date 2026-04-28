@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -303,7 +303,8 @@ def print_clone_output_row(url: str, payload: dict[str, Any]) -> None:
 
 
 def run_case(url: str, output_root: Path, *, wait_seconds: int, timeout_seconds: int, breakpoints: list[str]) -> int:
-    case_dir = output_root / f"{slugify_url(url)}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    case_dir = output_root / f"{slugify_url(url)}-{timestamp}"
     if case_dir.exists():
         shutil.rmtree(case_dir)
     case_dir.mkdir(parents=True, exist_ok=True)
