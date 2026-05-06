@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "updated": "2026-05-06",
+  "route_regression": {
+    "command": "npm run check:benchmark-routes:local",
+    "report_path": ".tmp/universal-route-benchmark/universal-route-report.json",
+    "expectations": "docs/universal-benchmark-expectations.json",
+    "corpus": "docs/universal-benchmark-corpus.txt",
+    "expected": {
+      "total": 30,
+      "status_ok": 30,
+      "route_quality_complete": 30,
+      "deterministic_fixtures": [
+        "fixture://public-app-gate",
+        "fixture://static-marketing",
+        "fixture://static-docs",
+        "fixture://longform-article",
+        "fixture://content-hub",
+        "fixture://platform-notion",
+        "fixture://platform-shopify",
+        "fixture://platform-framer",
+        "fixture://js-app-shell-react",
+        "fixture://js-app-shell-next",
+        "fixture://dashboard-table",
+        "fixture://frame-blocked-app",
+        "fixture://auth-app-shell",
+        "fixture://auth-oauth-shell",
+        "fixture://canvas-webgl",
+        "fixture://canvas-overlay",
+        "fixture://multi-frame-doc",
+        "fixture://shadow-dom-widget",
+        "fixture://native-app-qr-gate",
+        "fixture://iframe-exact-candidate",
+        "fixture://video-embed",
+        "fixture://frame-blocked-longform"
+      ],
+      "positive_evidence_limits": [
+        "public-web-app-gate"
+      ],
+      "positive_failure_codes": [
+        "network-replay-limited",
+        "auth-session-missing",
+        "public-app-gate",
+        "native-app-target-required",
+        "canvas-visual-fallback"
+      ]
+    }
+  },
+  "clone_quality_checkpoints": [
+    {
+      "label": "MDN clone benchmark",
+      "url": "https://developer.mozilla.org/en-US/",
+      "command": "python3 scripts/check_clone_quality_bench.py https://developer.mozilla.org/en-US/ --output-root ./.tmp/clone-quality-bench --wait-seconds 1 --timeout-seconds 35 --breakpoints mobile tablet",
+      "path": "iframe-blocked bounded rebuild",
+      "scores": {
+        "root": 94,
+        "visual": 95,
+        "mobile": 94,
+        "tablet": 94,
+        "breakpoint_average": 94
+      },
+      "minimums": {
+        "root": 90,
+        "visual": 90,
+        "breakpoint_average": 90
+      }
+    },
+    {
+      "label": "Mozilla clone benchmark",
+      "url": "https://www.mozilla.org/",
+      "command": "python3 scripts/check_clone_quality_bench.py https://www.mozilla.org/ --output-root ./.tmp/clone-quality-bench --wait-seconds 1 --timeout-seconds 35 --no-breakpoints",
+      "path": "bounded rebuild",
+      "scores": {
+        "root": 94,
+        "visual": 100
+      },
+      "minimums": {
+        "root": 90,
+        "visual": 90
+      }
+    },
+    {
+      "label": "Python.org harder bounded rebuild sample",
+      "url": "https://www.python.org",
+      "command": "python3 scripts/check_clone_quality_bench.py https://www.python.org --output-root ./.tmp/clone-quality-bench --wait-seconds 1 --timeout-seconds 35 --no-breakpoints",
+      "path": "harder bounded rebuild",
+      "scores": {
+        "root": 90,
+        "visual": 100
+      },
+      "minimums": {
+        "root": 85,
+        "visual": 90
+      }
+    },
+    {
+      "label": "example.com exact reuse",
+      "url": "https://www.example.com",
+      "command": "python3 scripts/check_clone_quality_bench.py https://www.example.com --output-root ./.tmp/clone-quality-bench --wait-seconds 1 --timeout-seconds 35 --no-breakpoints",
+      "path": "exact reuse",
+      "ready_for_exact_reuse": true
+    }
+  ]
+}

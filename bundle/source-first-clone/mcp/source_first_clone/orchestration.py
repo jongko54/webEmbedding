@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .capture_bundle import capture_reference_bundle
+from .failure_taxonomy import classify_pipeline_failure
 from .reproduction import build_reproduction_bundle
 
 
@@ -60,6 +63,81 @@ def _exact_reuse_ready(exact_reuse: Any) -> bool:
     return False
 
 
+def _write_pipeline_run_manifest(
+    *,
+    url: str,
+    output_dir: str | None,
+    capture_bundle: dict[str, Any],
+    reproduction: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not output_dir:
+        return None
+    output_root = Path(output_dir).expanduser().resolve()
+    static = capture_bundle.get("static", {}) if isinstance(capture_bundle.get("static"), dict) else {}
+    site_profile = static.get("site_profile", {}) if isinstance(static.get("site_profile"), dict) else {}
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    captures = runtime.get("captures", {}) if isinstance(runtime.get("captures"), dict) else {}
+    network_capture = captures.get("network", {}) if isinstance(captures.get("network"), dict) else {}
+    network_summary = {}
+    if isinstance(network_capture.get("content"), dict):
+        network_summary = network_capture["content"].get("summary", {})
+    failure_classification = classify_pipeline_failure(
+        {
+            "site_profile": site_profile,
+            "route": site_profile.get("route_hints") if isinstance(site_profile.get("route_hints"), dict) else {},
+            "policy": capture_bundle.get("policy", {}),
+            "runtime": runtime,
+            "captures": captures,
+            "capture_summary": {
+                "network": network_summary,
+                "dom": captures.get("dom", {}) if isinstance(captures.get("dom"), dict) else {},
+            },
+            "evidence_limitations": reproduction.get("evidence_limitations"),
+            "artifacts": (capture_bundle.get("bundle", {}) or {}).get("artifacts", {}),
+        }
+    )
+    capture_persisted = (capture_bundle.get("bundle", {}) or {}).get("persisted", {})
+    reproduction_persisted = reproduction.get("persisted", {}) if isinstance(reproduction.get("persisted"), dict) else {}
+    manifest = {
+        "schema_version": 1,
+        "run_id": output_root.name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "input": {
+            "url": url,
+            "final_url": static.get("final_url"),
+        },
+        "policy": capture_bundle.get("policy", {}),
+        "route_hints": (site_profile.get("route_hints") if isinstance(site_profile.get("route_hints"), dict) else {}),
+        "site_profile": {
+            "primary_surface": site_profile.get("primary_surface"),
+            "confidence": site_profile.get("confidence"),
+            "signals": site_profile.get("signals"),
+        },
+        "result": {
+            "coverage": reproduction.get("coverage"),
+            "next_action": reproduction.get("next_action"),
+            "exact_ready": _exact_reuse_ready(reproduction.get("exact_reuse")),
+        },
+        "failure_classification": failure_classification,
+        "artifacts": {
+            "capture": capture_persisted,
+            "reproduction": reproduction_persisted,
+        },
+        "redaction_status": {
+            "session_storage_state": "sensitive-artifact" if ((capture_bundle.get("bundle", {}) or {}).get("artifacts", {}) or {}).get("storage_state_exported") else "not-exported",
+            "har_headers": "review-required",
+            "cookies": "review-required",
+            "query_strings": "review-required",
+            "form_bodies": "review-required",
+        },
+    }
+    output_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_root / "pipeline-run-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest["path"] = str(manifest_path)
+    return manifest
+
+
 def clone_reference_url(
     url: str,
     timeout_seconds: int = 20,
@@ -100,6 +178,12 @@ def clone_reference_url(
         capture_bundle=capture_bundle,
         output_dir=output_dir,
     )
+    pipeline_run_manifest = _write_pipeline_run_manifest(
+        url=url,
+        output_dir=output_dir,
+        capture_bundle=capture_bundle,
+        reproduction=reproduction,
+    )
     exact_reuse = reproduction.get("exact_reuse")
     return {
         "url": url,
@@ -108,6 +192,7 @@ def clone_reference_url(
         "coverage": reproduction.get("coverage"),
         "exact_ready": _exact_reuse_ready(exact_reuse),
         "exact_reuse": exact_reuse,
+        "pipeline_run_manifest": pipeline_run_manifest,
         "capture_bundle": compact_capture_bundle(capture_bundle),
         "reproduction": reproduction,
     }

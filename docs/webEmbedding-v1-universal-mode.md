@@ -30,11 +30,18 @@ The repo already does these well:
 - persisted standard `har.json` export baseline alongside `har-like.json`
 - app-shell / dashboard-like surfaces now route to a dedicated shell-oriented bounded rebuild mode instead of the same compact landing-page compression
 - canvas/WebGL-like surfaces now route to an explicit bounded visual-fallback family with stage-first constraints
+- reproduction results and prompts now include a compact evidence limitation summary that separates captured artifacts from inferred or missing evidence
+- app-gated public shells now stay on runtime-first bounded rebuild even when the page exposes iframe/embed-like public shell candidates
+- auth-gated evidence distinguishes user-supplied session input from storage state that was only exported by a fresh capture
 - verification still treats frame/shadow interaction parity as a bounded signal, not full replay parity
-- benchmark corpus runs can now be repeated against a generic corpus that covers static, longform, platform-managed, visual/canvas, authenticated app, and multi-frame surfaces
-- benchmark reports also surface `route_quality_counts`, `renderer_family_counts`, and `depth_presence_counts` for generic regression checks
+- benchmark corpus runs can now be repeated against a 30-case generic corpus that covers static, longform, platform-managed, visual/canvas, authenticated app, JS app-shell, frame-blocked app, multi-frame, shadow DOM, exact-candidate, and deterministic public/native app-gate surfaces
+- benchmark reports also surface `route_quality_counts`, `renderer_family_counts`, `critical_depth_counts`, `evidence_limit_counts`, `app_gate_signal_counts`, `pipeline_status_counts`, `failure_code_counts`, and `depth_presence_counts` for generic regression checks, with exact/minimum/contains expectation validation
+- capture summaries now expose HAR/network `replay_readiness` so replay-grade claims can be separated from partial or missing network evidence
+- production readiness gates now validate corpus breadth, typed failure/action coverage, CI wiring, operational runbook docs, and policy/safety guardrail docs
+- clone quality benchmark now has threshold options for score, visual score, breakpoint average, and readiness, with a lightweight CI score gate for a stable bounded-rebuild sample
+- blocked policy mode now stops reproduction before exact reuse or bounded rebuild artifacts are emitted
 
-The `site_profile` layer now exists, but it still needs broader coverage for standalone JS and frame-blocked app shells, richer benchmark feedback, and more adapter-specific routing signals.
+The `site_profile` layer now exists, but it still needs richer live benchmark samples, adapter-specific routing signals, and app-state reconstruction from authenticated target evidence.
 
 ## New Universal Layer
 
@@ -93,9 +100,10 @@ Current blockers:
 
 - frame documents are detected and counted, but frame-local interaction/state parity is still shallow
 - open shadow roots are detected and traversed, and root-aware parity now includes frame/surface identity signals, but full shadow-aware replay and diffing are still partial
-- HAR export baseline exists, but richer initiator/body/timing parity is still missing
+- HAR export and replay-readiness classification exist, but richer initiator/body/timing parity is still missing
 - sampled computed styles, not a full-tree style graph
 - no app-state serialization beyond bounded interaction replay
+- app-first or native-app-required services can expose only public app-promo, login, QR, store, or deep-link shells unless the user supplies authenticated session capture or target-state screenshots
 - no canvas/WebGL introspection beyond screenshots
 
 ### 2. Renderer families

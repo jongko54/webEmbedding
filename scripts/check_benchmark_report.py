@@ -49,6 +49,51 @@ def _validate_absent_or_zero(payload: Any, paths: list[str], label: str) -> list
     return failures
 
 
+def _validate_minimum(payload: Any, expectations: dict[str, Any], label: str) -> list[str]:
+    failures: list[str] = []
+    for dotted_path, expected in expectations.items():
+        try:
+            actual = _get_path(payload, dotted_path)
+        except KeyError:
+            failures.append(f"{label}: missing `{dotted_path}` (expected at least `{expected}`)")
+            continue
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+            failures.append(f"{label}: `{dotted_path}` should be numeric, got `{actual}`")
+            continue
+        if actual < expected:
+            failures.append(
+                f"{label}: `{dotted_path}` expected at least `{expected}` but got `{actual}`"
+            )
+    return failures
+
+
+def _missing_contains(actual: Any, expected_values: list[Any]) -> list[Any]:
+    if isinstance(actual, dict):
+        actual_values = set(actual)
+    elif isinstance(actual, list):
+        actual_values = set(actual)
+    else:
+        return expected_values
+    return [expected for expected in expected_values if expected not in actual_values]
+
+
+def _validate_contains(payload: Any, expectations: dict[str, Any], label: str) -> list[str]:
+    failures: list[str] = []
+    for dotted_path, expected in expectations.items():
+        try:
+            actual = _get_path(payload, dotted_path)
+        except KeyError:
+            failures.append(f"{label}: missing `{dotted_path}` (expected to contain `{expected}`)")
+            continue
+        expected_values = expected if isinstance(expected, list) else [expected]
+        missing = _missing_contains(actual, expected_values)
+        if missing:
+            failures.append(
+                f"{label}: `{dotted_path}` missing expected values {missing} from `{actual}`"
+            )
+    return failures
+
+
 def validate_report(report: dict[str, Any], expectations: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
@@ -58,6 +103,12 @@ def validate_report(report: dict[str, Any], expectations: dict[str, Any]) -> lis
     )
     failures.extend(
         _validate_absent_or_zero(summary, expected_summary.get("absent_or_zero", []), "summary")
+    )
+    failures.extend(
+        _validate_minimum(summary, expected_summary.get("minimum", {}), "summary")
+    )
+    failures.extend(
+        _validate_contains(summary, expected_summary.get("contains", {}), "summary")
     )
 
     items = report.get("items", [])
@@ -86,8 +137,12 @@ def validate_report(report: dict[str, Any], expectations: dict[str, Any]) -> lis
             if isinstance(item_expectations, dict)
             else []
         )
+        minimum = item_expectations.get("minimum", {}) if isinstance(item_expectations, dict) else {}
+        contains = item_expectations.get("contains", {}) if isinstance(item_expectations, dict) else {}
         failures.extend(_validate_exact(item, exact, url))
         failures.extend(_validate_absent_or_zero(item, absent_or_zero, url))
+        failures.extend(_validate_minimum(item, minimum, url))
+        failures.extend(_validate_contains(item, contains, url))
     return failures
 
 

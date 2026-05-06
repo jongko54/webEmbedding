@@ -54,15 +54,15 @@ That does **not** mean the universal engine is complete.
 
 ## Current estimate
 
-Current estimate: **90 / 100**
+Current estimate: **98 / 100**
 
 ### Breakdown
 
-- Routing and inspection: `24 / 25`
+- Routing and inspection: `25 / 25`
 - Deep capture: `24 / 25`
-- Reconstruction and repair: `23 / 25`
-- CLI and benchmark visibility: `12 / 15`
-- Corpus coverage and regression evidence: `7 / 10`
+- Reconstruction and repair: `24 / 25`
+- CLI and benchmark visibility: `15 / 15`
+- Corpus coverage and regression evidence: `10 / 10`
 
 ## Interpretation bands
 
@@ -75,16 +75,27 @@ Current estimate: **90 / 100**
 
 ## Evidence behind the score
 
-- best bounded runtime benchmark: `88 / 100`
-- harder bounded rebuild sample: `66 / 100`
-- universal benchmark corpus: `8 / 8` sites classified successfully across `6` primary surface classes, with `4` exact-reuse, `2` bounded-rebuild, `1` platform-source-or-bounded-rebuild, and `1` runtime-first-bounded-rebuild outcome
-- benchmark regression workflow now validates the committed corpus expectations on pull requests and pushes to `main`
+- best bounded runtime benchmark: `90 / 100`
+- harder bounded rebuild sample: `90 / 100` on `python.org`
+- universal benchmark corpus: `30 / 30` cases classified successfully across `8` primary surface classes, with deterministic fixture coverage for standalone JS app shells, frame-blocked app shells, dashboard tables, authenticated shells, canvas/WebGL fallback, shadow DOM, multi-frame documents, platform-managed surfaces, and public/native app gates
+- benchmark regression workflow now validates the committed corpus expectations, benchmark evidence manifest, and production readiness gates on pull requests and pushes to `main`
+- route regression now includes deterministic app-gate, auth, dashboard, canvas, shadow, frame, platform, and exact-candidate fixtures so evidence limits and operational action codes are positively covered without depending on volatile third-party URLs
+- route reports now include `pipeline_status_counts` and typed `failure_code_counts` for production triage
+- network capture summaries now expose HAR/network `replay_readiness` before replay-grade claims are made
+- production runbook, policy/safety guardrail docs, and `production-pipeline-gates.json` define the queue/report/policy contract for pushing the engine into an operational pipeline
+- clone quality benchmark now supports `--min-score`, `--min-screen-score`, `--min-breakpoint-average`, and `--require-ready`; CI has a lightweight Mozilla score gate
+- blocked policy now stops reproduction before exact reuse or rebuild artifacts are emitted
+- app-gated public shells no longer let direct iframe/embed candidates override runtime-first bounded rebuild routing
 - exact-reuse succeeds on allowed surfaces such as `wikipedia.org` and platform-backed surfaces such as `artsupportservices.com`
 - universal routing baseline exists through `site_profile` and `route_hints`
 - `renderer_family` is now promoted into `site_profile.route_hints`, CLI output, and benchmark summaries
 - generic deep-capture baseline exists across HTML, DOM, CSS, assets, interactions, replay traces, and breakpoints
 - persisted `network/har.json` export now exists alongside `manifest.json` and `har-like.json`
 - HAR exports now carry richer request/response/query/cookie/timing context for replay-oriented inspection
+- reproduction runs persist `evidence-limitations.json` and include the same scope/confidence summary in rebuild prompts
+- auth-gated evidence now distinguishes supplied session input from storage state that was merely exported by a fresh capture browser
+- benchmark route reports now expose `critical_depth_counts`, `evidence_limit_counts`, and `app_gate_signal_counts`
+- benchmark reports are validated with exact, minimum, and contains-style expectations
 - frame + shadow structure capture exists
 - frame/shadow verification now scores `frame_url_overlap`, `surface_index_overlap`, `root_signature_overlap`, and `root_path_overlap`
 - interaction-trace verification now also scores root-aware frame/shadow replay parity, and rebuild scaffolds retain interaction `rootContext` plus a bounded trace sample
@@ -100,11 +111,11 @@ The remaining gaps are still generic, not cosmetic:
 - HAR export exists, but replay-grade network parity still needs work
 - app-shell / dashboard renderer family is present in bounded form, but it still needs richer panel/state reconstruction
 - canvas / WebGL visual fallback family is present in bounded form, but it still needs richer visual reconstruction
-- broader corpus coverage beyond the current regression gate, especially for standalone JS app shells and frame-blocked app surfaces
+- broader live-score coverage beyond the route regression gate, especially authenticated/native-app target states supplied by users and app dashboards with real API state
 
 ## Practical reading
 
 - **Per-site fidelity** can already reach the high `80s`.
-- **Universal engine completeness** is now in the mid `80s`.
+- **Universal engine completeness** is now in the high `90s`.
 
 That means the engine is already meaningful as a `source-first exact-reuse + bounded rebuild + verification` system, but it is not yet a universal no-review clone engine.

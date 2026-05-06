@@ -12,6 +12,212 @@ from pathlib import Path
 from typing import Any
 
 
+FIXTURE_CASES = {
+    "fixture://public-app-gate": {
+        "title": "Public app gate fixture",
+        "final_url": "https://fixture.example/product/1",
+        "html": "<main><a>앱에서 보기</a><a href='intent://product/1'>Open app</a><p>로그인 후 시세를 확인하세요</p><iframe src='https://fixture.example/promo'></iframe></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [{"kind": "direct-iframe", "url": "https://fixture.example/promo"}],
+        "source_signals": [],
+    },
+    "fixture://static-marketing": {
+        "title": "Static marketing fixture",
+        "final_url": "https://fixture.example/marketing",
+        "html": "<main><header><h1>Launch faster</h1><a href='/pricing'>Pricing</a></header><section><p>Simple public landing page.</p></section></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://static-docs": {
+        "title": "Static docs fixture",
+        "final_url": "https://fixture.example/docs",
+        "html": "<main><article><h1>Docs</h1><p>Install.</p><p>Configure.</p><p>Deploy.</p></article><nav><a>API</a><a>Guide</a></nav></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://longform-article": {
+        "title": "Longform article fixture",
+        "final_url": "https://fixture.example/article",
+        "html": "<main><article><h1>Research report</h1><section><h2>Intro</h2><p>A</p><p>B</p><p>C</p></section><section><h2>Method</h2><p>D</p><p>E</p><p>F</p></section><section><h2>Findings</h2><p>G</p><p>H</p><p>I</p></section><section><h2>Appendix</h2><p>J</p><p>K</p><p>L</p></section></article></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://content-hub": {
+        "title": "Content hub fixture",
+        "final_url": "https://fixture.example/hub",
+        "html": "<main><section><h1>Hub</h1><p>Collections</p></section><section><h2>A</h2><ul>"
+        + "".join("<li><a>Item</a></li>" for _ in range(24))
+        + "</ul></section><section><h2>B</h2><p>More links</p></section><section><h2>C</h2><p>More links</p></section></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://platform-notion": {
+        "title": "Platform Notion fixture",
+        "final_url": "https://fixture.example/notion",
+        "html": "<main><div class='notion-page'>Knowledge base</div><script src='https://notion-static.com/app.js'></script></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "notion"},
+        "candidate_urls": [],
+        "source_signals": ["source"],
+    },
+    "fixture://platform-shopify": {
+        "title": "Platform Shopify fixture",
+        "final_url": "https://fixture.example/store",
+        "html": "<main><section class='shopify-section'><h1>Product</h1><button>Add to cart</button></section><script>window.Shopify={}</script></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "shopify"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://platform-framer": {
+        "title": "Platform Framer fixture",
+        "final_url": "https://fixture.example/framer",
+        "html": "<main><section><h1>Framer site</h1></section><script src='https://framerusercontent.com/site.js'></script></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "framer"},
+        "candidate_urls": [],
+        "source_signals": ["remix"],
+    },
+    "fixture://js-app-shell-react": {
+        "title": "React app shell fixture",
+        "final_url": "https://fixture.example/app",
+        "html": "<main id='root'><nav>Home</nav><section>Workspace</section></main><script src='/react-dom.js'></script><script>window.__APP__=true</script>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://js-app-shell-next": {
+        "title": "Next app shell fixture",
+        "final_url": "https://fixture.example/next",
+        "html": "<div id='__next'><aside>Projects</aside><main>Board</main></div><script src='/_next/static/app.js'></script>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://dashboard-table": {
+        "title": "Dashboard table fixture",
+        "final_url": "https://fixture.example/dashboard",
+        "html": "<div id='root'><header>Admin</header><aside>Filters</aside><main><table><tr><th>Name</th></tr><tr><td>Alpha</td></tr></table></main></div><script src='/react-dom.js'></script>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://frame-blocked-app": {
+        "title": "Frame blocked app fixture",
+        "final_url": "https://fixture.example/blocked-app",
+        "html": "<div id='root'><main>Blocked workspace</main></div><script src='/react-dom.js'></script>",
+        "frame_policy": {"embeddable": False, "reason": "CSP frame-ancestors blocks reuse."},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://auth-app-shell": {
+        "title": "Authenticated app shell fixture",
+        "final_url": "https://fixture.example/account",
+        "html": "<main id='root'><form><input type='password'><button>Sign in</button></form></main><script src='/react-dom.js'></script>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://auth-oauth-shell": {
+        "title": "OAuth shell fixture",
+        "final_url": "https://fixture.example/oauth",
+        "html": "<main id='root'><h1>Account</h1><a>Login with OAuth</a><p>Okta authorization required.</p></main><script src='/_next/static/app.js'></script>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://canvas-webgl": {
+        "title": "Canvas WebGL fixture",
+        "final_url": "https://fixture.example/webgl",
+        "html": "<main><canvas id='stage'></canvas><script src='/three.js'></script><p>webgl animation</p></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://canvas-overlay": {
+        "title": "Canvas overlay fixture",
+        "final_url": "https://fixture.example/canvas-overlay",
+        "html": "<main><canvas></canvas><canvas></canvas><section><button>Play</button><p>Realtime stage</p></section></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://multi-frame-doc": {
+        "title": "Multi frame doc fixture",
+        "final_url": "https://fixture.example/frames",
+        "html": "<main><h1>Frames</h1><iframe src='/a'></iframe><iframe src='/b'></iframe><p>Reference frames.</p></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://shadow-dom-widget": {
+        "title": "Shadow DOM widget fixture",
+        "final_url": "https://fixture.example/shadow",
+        "html": "<main><custom-widget></custom-widget><script>customElements.define('custom-widget', class extends HTMLElement{connectedCallback(){this.attachShadow({mode:'open'})}})</script></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://native-app-qr-gate": {
+        "title": "Native app QR gate fixture",
+        "final_url": "https://fixture.example/qr",
+        "html": "<main><h1>Continue in app</h1><p>Scan the QR code to download the app.</p><a href='itms-apps://fixture/app'>Open in app</a></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+    "fixture://iframe-exact-candidate": {
+        "title": "Iframe exact candidate fixture",
+        "final_url": "https://fixture.example/embed",
+        "html": "<main><h1>Embeddable</h1><iframe src='https://player.fixture.example/view'></iframe></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [{"kind": "direct-iframe", "url": "https://player.fixture.example/view"}],
+        "source_signals": [],
+    },
+    "fixture://video-embed": {
+        "title": "Video embed fixture",
+        "final_url": "https://fixture.example/video",
+        "html": "<main><h1>Video</h1><iframe src='https://www.youtube.com/embed/abc'></iframe><p>Demo video.</p></main>",
+        "frame_policy": {"embeddable": True},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [{"kind": "youtube-embed", "url": "https://www.youtube.com/embed/abc"}],
+        "source_signals": [],
+    },
+    "fixture://frame-blocked-longform": {
+        "title": "Frame blocked longform fixture",
+        "final_url": "https://fixture.example/blocked-doc",
+        "html": "<main><section><h1>Blocked report</h1><p>A</p><p>B</p><p>C</p></section><section><h2>Details</h2><p>D</p><p>E</p><p>F</p></section><section><h2>More</h2><p>G</p><p>H</p><p>I</p></section><section><h2>Links</h2><ul>"
+        + "".join("<li><a>Link</a></li>" for _ in range(20))
+        + "</ul></section></main>",
+        "frame_policy": {"embeddable": False, "reason": "X-Frame-Options denies embedding."},
+        "platform_adapter": {"platform": "generic"},
+        "candidate_urls": [],
+        "source_signals": [],
+    },
+}
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -22,8 +228,35 @@ def load_api() -> Any:
         sys.path.insert(0, str(capture_root))
     from source_first_clone.acquisition import inspect_reference
     from source_first_clone.capture_bundle import capture_reference_bundle
+    from source_first_clone.failure_taxonomy import classify_pipeline_failure, network_replay_readiness
+    from source_first_clone.site_profile import classify_site_profile
 
-    return inspect_reference, capture_reference_bundle
+    return inspect_reference, capture_reference_bundle, classify_site_profile, classify_pipeline_failure, network_replay_readiness
+
+
+def inspect_fixture(url: str, classify_site_profile: Any) -> dict[str, Any]:
+    fixture = FIXTURE_CASES.get(url)
+    if not fixture:
+        raise ValueError(f"Unknown benchmark fixture URL: {url}")
+    profile = classify_site_profile(
+        final_url=str(fixture["final_url"]),
+        html=str(fixture["html"]),
+        headers={},
+        frame_policy=fixture["frame_policy"],
+        platform_adapter=fixture["platform_adapter"],
+        candidate_urls=fixture["candidate_urls"],
+    )
+    return {
+        "url": url,
+        "final_url": fixture["final_url"],
+        "status": 200,
+        "title": fixture["title"],
+        "platform": fixture["platform_adapter"].get("platform", "generic"),
+        "frame_policy": fixture["frame_policy"],
+        "source_signals": fixture["source_signals"],
+        "candidate_urls": fixture["candidate_urls"],
+        "site_profile": profile,
+    }
 
 
 def load_urls(args: argparse.Namespace) -> list[str]:
@@ -45,6 +278,28 @@ def load_urls(args: argparse.Namespace) -> list[str]:
     return deduped
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item]
+
+
+def route_visibility(profile: dict[str, Any]) -> dict[str, Any]:
+    route_hints = profile.get("route_hints", {}) if isinstance(profile.get("route_hints"), dict) else {}
+    signals = profile.get("signals", {}) if isinstance(profile.get("signals"), dict) else {}
+    return {
+        "primary_surface": profile.get("primary_surface"),
+        "confidence": profile.get("confidence"),
+        "acquisition_profile": route_hints.get("acquisition_profile"),
+        "renderer_route": route_hints.get("renderer_route"),
+        "renderer_family": route_hints.get("renderer_family"),
+        "critical_depths": _string_list(route_hints.get("critical_depths")),
+        "evidence_limit": route_hints.get("evidence_limit"),
+        "app_gate_detected": bool(signals.get("app_gate_detected")),
+        "app_gate_signals": _string_list(signals.get("app_gate_signals")),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark universal route classification across multiple URLs.")
     parser.add_argument("--url", action="append", default=[], help="URL to include. Repeat for multiple URLs.")
@@ -59,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     urls = load_urls(args)
     output_root = Path(args.out).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    inspect_reference, capture_reference_bundle = load_api()
+    inspect_reference, capture_reference_bundle, classify_site_profile, classify_pipeline_failure, network_replay_readiness = load_api()
 
     items: list[dict[str, Any]] = []
     surface_counter: Counter[str] = Counter()
@@ -70,12 +325,22 @@ def main(argv: list[str] | None = None) -> int:
     status_counter: Counter[str] = Counter()
     profile_warning_counter: Counter[str] = Counter()
     depth_presence_counter: Counter[str] = Counter()
+    critical_depth_counter: Counter[str] = Counter()
+    evidence_limit_counter: Counter[str] = Counter()
+    app_gate_signal_counter: Counter[str] = Counter()
     route_quality_counter: Counter[str] = Counter()
+    pipeline_status_counter: Counter[str] = Counter()
+    failure_code_counter: Counter[str] = Counter()
 
     for index, url in enumerate(urls, start=1):
         item: dict[str, Any] = {"url": url, "index": index}
         try:
-            inspect_payload = inspect_reference(url, timeout_seconds=args.timeout_seconds)
+            fixture_case = url in FIXTURE_CASES
+            inspect_payload = (
+                inspect_fixture(url, classify_site_profile)
+                if fixture_case
+                else inspect_reference(url, timeout_seconds=args.timeout_seconds)
+            )
             profile = inspect_payload.get("site_profile", {}) if isinstance(inspect_payload.get("site_profile"), dict) else {}
             route_hints = profile.get("route_hints", {}) if isinstance(profile.get("route_hints"), dict) else {}
             item["inspect"] = {
@@ -87,13 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                 "candidate_sample": (inspect_payload.get("candidate_urls") or [])[:10],
                 "site_profile": profile,
             }
-            item["route"] = {
-                "primary_surface": profile.get("primary_surface"),
-                "confidence": profile.get("confidence"),
-                "acquisition_profile": route_hints.get("acquisition_profile"),
-                "renderer_route": route_hints.get("renderer_route"),
-                "renderer_family": route_hints.get("renderer_family"),
-            }
+            item["route"] = route_visibility(profile)
             profile_warnings: list[str] = []
             if not profile.get("primary_surface"):
                 profile_warnings.append("missing_primary_surface")
@@ -114,7 +373,17 @@ def main(argv: list[str] | None = None) -> int:
             route_counter[str(route_hints.get("renderer_route") or "unknown")] += 1
             renderer_family_counter[str(route_hints.get("renderer_family") or "unknown")] += 1
             acquisition_counter[str(route_hints.get("acquisition_profile") or "unknown")] += 1
-            if args.capture:
+            critical_depth_counter.update(item["route"].get("critical_depths") or [])
+            evidence_limit = item["route"].get("evidence_limit")
+            if evidence_limit:
+                evidence_limit_counter[str(evidence_limit)] += 1
+            app_gate_signal_counter.update(item["route"].get("app_gate_signals") or [])
+            if args.capture and fixture_case:
+                item["capture"] = {
+                    "skipped": True,
+                    "reason": "deterministic benchmark fixture does not execute network/runtime capture",
+                }
+            elif args.capture:
                 capture_dir = output_root / f"case-{index:02d}"
                 capture_payload = capture_reference_bundle(
                     url=url,
@@ -207,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                             "har_entry_count": network_summary.get("harEntryCount"),
                             "har_like_page_count": network_summary.get("harLikePageCount"),
                             "har_like_entry_count": network_summary.get("harLikeEntryCount"),
+                            "replay_readiness": network_replay_readiness(network_summary),
                         },
                         "interactions": {
                             "available": interactions_capture.get("available"),
@@ -232,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
             item["status"] = "error"
             item["error"] = str(exc)
             status_counter["error"] += 1
+        failure_classification = classify_pipeline_failure({"benchmark_item": item})
+        item["failure_classification"] = failure_classification
+        pipeline_status_counter[str(failure_classification.get("status") or "unknown")] += 1
+        failure_code_counter.update(failure_classification.get("codes") or [])
         items.append(item)
 
     report = {
@@ -257,7 +531,12 @@ def main(argv: list[str] | None = None) -> int:
             "policy_mode_counts": dict(policy_counter),
             "profile_warning_counts": dict(profile_warning_counter),
             "depth_presence_counts": dict(depth_presence_counter),
+            "critical_depth_counts": dict(critical_depth_counter),
+            "evidence_limit_counts": dict(evidence_limit_counter),
+            "app_gate_signal_counts": dict(app_gate_signal_counter),
             "route_quality_counts": dict(route_quality_counter),
+            "pipeline_status_counts": dict(pipeline_status_counter),
+            "failure_code_counts": dict(failure_code_counter),
         },
         "items": items,
     }

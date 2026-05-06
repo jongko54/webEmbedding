@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "updated": "2026-05-06",
+  "readiness_target": "production pipeline candidate",
+  "priorities": [
+    {
+      "id": 1,
+      "name": "corpus expansion",
+      "gate": "universal route corpus has at least 30 cases and at least 20 deterministic fixtures"
+    },
+    {
+      "id": 2,
+      "name": "failure classification",
+      "gate": "route reports include pipeline_status_counts and failure_code_counts"
+    },
+    {
+      "id": 3,
+      "name": "HAR/network replay readiness",
+      "gate": "capture summaries expose network replay_readiness status before replay claims"
+    },
+    {
+      "id": 4,
+      "name": "app-shell/dashboard reconstruction",
+      "gate": "app-shell/dashboard fixtures route to app-shell-dashboard-next-app and expose manual review when runtime evidence is missing"
+    },
+    {
+      "id": 5,
+      "name": "CI score gates",
+      "gate": "benchmark regression CI validates route expectations, evidence metadata, and production readiness"
+    },
+    {
+      "id": 6,
+      "name": "operational pipeline",
+      "gate": "production runbook defines job states, retry policy, artifact manifest, and preview/report handoff"
+    },
+    {
+      "id": 7,
+      "name": "policy and safety guardrails",
+      "gate": "policy guardrail document defines permission, license, robots/ToS, session, PII, and exact-vs-rebuild controls"
+    }
+  ],
+  "corpus": {
+    "minimum_total": 30,
+    "minimum_deterministic_fixtures": 20,
+    "required_surfaces": [
+      "static-document",
+      "longform-content-surface",
+      "platform-managed-surface",
+      "canvas-or-webgl-surface",
+      "authenticated-app-surface",
+      "multi-frame-document-surface",
+      "js-app-shell-surface",
+      "frame-blocked-app-surface"
+    ],
+    "required_routes": [
+      "exact-reuse",
+      "bounded-rebuild",
+      "platform-source-or-bounded-rebuild",
+      "runtime-first-bounded-rebuild",
+      "visual-fallback-rebuild"
+    ],
+    "required_renderer_families": [
+      "document-next-app",
+      "visual-fallback-next-app",
+      "app-shell-dashboard-next-app",
+      "frame-aware-document-next-app"
+    ],
+    "required_critical_depths": [
+      "dom",
+      "computed-styles",
+      "interactions",
+      "runtime-html",
+      "network",
+      "session-state",
+      "frame-documents",
+      "canvas-surface",
+      "app-gate-evidence",
+      "native-app-deep-links",
+      "shadow-dom"
+    ]
+  },
+  "failure_taxonomy": {
+    "required_positive_codes": [
+      "network-replay-limited",
+      "auth-session-missing",
+      "public-app-gate",
+      "native-app-target-required",
+      "canvas-visual-fallback"
+    ],
+    "blocked_codes_must_be_absent": [
+      "route-inspection-error",
+      "missing-primary-surface",
+      "missing-renderer-route",
+      "blocked-by-policy"
+    ]
+  },
+  "network_replay": {
+    "required_statuses": [
+      "ready",
+      "partial",
+      "limited",
+      "needs-retry-or-session"
+    ],
+    "required_fields": [
+      "request_count",
+      "response_count",
+      "failure_count",
+      "har_entry_count",
+      "reasons",
+      "next_action"
+    ]
+  },
+  "operations": {
+    "job_states": [
+      "queued",
+      "running",
+      "retry_wait",
+      "succeeded",
+      "failed",
+      "blocked",
+      "needs_session",
+      "manual_review"
+    ],
+    "retry_policy": {
+      "max_attempts": 2,
+      "retryable_codes": [
+        "network-replay-limited",
+        "network-request-failures"
+      ],
+      "non_retryable_codes": [
+        "blocked-by-policy",
+        "public-app-gate",
+        "native-app-target-required"
+      ]
+    },
+    "required_artifacts": [
+      "capture.json",
+      "network/manifest.json",
+      "network/har.json",
+      "reproduction/evidence-limitations.json",
+      "reproduction/plan.json",
+      "reproduction/self-verify/summary.json",
+      "pipeline-run-manifest.json"
+    ]
+  },
+  "policy_guardrails": {
+    "required_controls": [
+      "permission_or_license_review",
+      "blocked_policy_enforcement",
+      "robots_and_tos_review",
+      "session_secret_handling",
+      "pii_redaction_review",
+      "exact_reuse_vs_bounded_rebuild_labeling",
+      "native_app_fidelity_disclaimer"
+    ]
+  }
+}

@@ -3422,6 +3422,86 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
                 ],
             },
         ]
+    widget_counts: Counter[str] = Counter()
+    widget_samples: list[dict[str, Any]] = []
+    for card in interaction_cards[:32]:
+        label = str(card.get("label") or card.get("copy") or "").lower()
+        role = str(card.get("role") or "").lower()
+        control_tag = str(card.get("controlTag") or "").lower()
+        kind = str(card.get("kind") or "").lower()
+        widget_kind = "action"
+        if control_tag in {"input", "select", "textarea"} or any(token in label for token in ("filter", "search", "sort")):
+            widget_kind = "filter"
+        elif role == "tab" or "tab" in label:
+            widget_kind = "tab"
+        elif role in {"dialog", "alertdialog"} or any(token in label for token in ("modal", "dialog", "drawer")):
+            widget_kind = "overlay"
+        elif kind in {"link", "button"}:
+            widget_kind = kind
+        widget_counts[widget_kind] += 1
+        if len(widget_samples) < 12:
+            widget_samples.append(
+                {
+                    "id": card.get("id"),
+                    "kind": widget_kind,
+                    "label": card.get("label"),
+                    "role": card.get("role"),
+                    "controlTag": card.get("controlTag"),
+                    "states": card.get("states"),
+                    "rootContext": card.get("rootContext"),
+                }
+            )
+    if app_shell_mode and not widget_counts:
+        for panel in shell_panels:
+            if not isinstance(panel, dict):
+                continue
+            role = str(panel.get("role") or "panel")
+            widget_counts[role] += len(panel.get("items", []) if isinstance(panel.get("items", []), list) else []) or 1
+            if len(widget_samples) < 12:
+                widget_samples.append(
+                    {
+                        "id": panel.get("id"),
+                        "kind": role,
+                        "label": panel.get("title"),
+                        "states": ["panel inferred"],
+                    }
+                )
+    structural_counts: Counter[str] = Counter()
+    for section in section_cards:
+        role = str(section.get("role") or "content")
+        tag = str(section.get("tag") or "").lower()
+        if tag == "table" or any(token in str(section.get("title") or "").lower() for token in ("table", "grid", "rows")):
+            structural_counts["table"] += 1
+        elif any(token in str(section.get("title") or "").lower() for token in ("chart", "graph", "metric", "kpi")):
+            structural_counts["chart"] += 1
+        else:
+            structural_counts[role] += 1
+    app_state = {
+        "route": {
+            "sourceUrl": summary.get("source_url"),
+            "finalUrl": summary.get("final_url"),
+            "surfaceClass": surface_class,
+        },
+        "selectedRegions": [
+            role
+            for role in (
+                *(region.get("role") for region in shell_regions if isinstance(region, dict)),
+                *(panel.get("role") for panel in shell_panels if isinstance(panel, dict) and panel.get("items")),
+            )
+            if role
+        ],
+        "sampledControls": widget_samples,
+        "widgetCounts": dict(widget_counts),
+        "structuralCounts": dict(structural_counts),
+        "traceState": {
+            "stepCount": len(trace_cards),
+            "scrollSamples": [
+                card.get("label")
+                for card in trace_cards
+                if isinstance(card, dict) and "scrollY=" in str(card.get("label") or "")
+            ][:6],
+        },
+    }
     shell_state = {
         "emphasis": "workspace" if any(panel.get("role") == "workspace" for panel in shell_panels if isinstance(panel, dict)) else "navigation",
         "focusRegion": "workspace" if app_shell_mode else None,
@@ -3506,6 +3586,15 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
         "interactionTrace": trace_cards,
         "shellRegions": shell_regions,
         "shellPanels": shell_panels,
+        "shellModel": {
+            "version": 1,
+            "mode": "dashboard" if app_shell_mode else "document",
+            "panels": shell_panels,
+            "regions": shell_regions,
+            "widgets": widget_samples,
+            "widgetCounts": dict(widget_counts),
+            "structuralCounts": dict(structural_counts),
+        },
         "shellTopology": {
             "primaryRegion": "workspace" if app_shell_mode else None,
             "regionOrder": [
@@ -3533,6 +3622,7 @@ def _build_app_model(summary: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         "shellState": shell_state,
+        "appState": app_state,
         "shellSummary": {
             "kind": "app-shell-dashboard-next-app",
             "panelCount": len(shell_panels),
@@ -6701,6 +6791,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "panelCount": len(app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []),
         "panelRoles": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
     }
+    summary["shellModel"] = app_model.get("shellModel") or {}
     summary["shellTopology"] = app_model.get("shellTopology") or {
         "primaryRegion": "workspace" if app_model.get("layoutMode") == "app-shell" else None,
         "regionOrder": [panel.get("role") for panel in (app_model.get("shellPanels", []) if isinstance(app_model.get("shellPanels", []), list) else []) if isinstance(panel, dict)],
@@ -6709,6 +6800,7 @@ def build_rebuild_scaffold(capture_bundle: dict[str, Any]) -> dict[str, Any]:
         "emphasis": "workspace" if app_model.get("layoutMode") == "app-shell" else "navigation",
         "focusRegion": "workspace" if app_model.get("layoutMode") == "app-shell" else None,
     }
+    summary["appState"] = app_model.get("appState") or {}
     summary["layoutMode"] = app_model.get("layoutMode")
     summary["layoutTokens"] = app_model.get("layoutTokens") or {}
     if (summary.get("visual_fallback") or {}).get("available"):

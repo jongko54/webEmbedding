@@ -59,3 +59,6 @@ jobs:
 
       - name: Run integration smoke
         run: python3 scripts/check_integration_smoke.py
+
+      - name: Run exact reuse score gate
+        run: npm run check:clone-score-gate:local

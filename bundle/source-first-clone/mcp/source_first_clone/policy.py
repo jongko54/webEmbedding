@@ -24,11 +24,26 @@ def classify_clone_mode(
     primary_surface = str(site_profile.get("primary_surface") or "").lower()
     route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
     acquisition_profile = str(route_hints.get("acquisition_profile") or "").lower()
+    evidence_limit = str(route_hints.get("evidence_limit") or "").lower()
+    signals = site_profile.get("signals", {}) if isinstance(site_profile.get("signals"), dict) else {}
+    public_app_gate = (
+        primary_surface == "authenticated-app-surface"
+        and (
+            evidence_limit == "public-web-app-gate"
+            or bool(signals.get("app_gate_detected"))
+        )
+    )
 
     if blocked_license and not reusable_license:
         return {
             "mode": "blocked",
             "reason": "The provided license text suggests the reference should not be cloned exactly without permission.",
+        }
+
+    if public_app_gate:
+        return {
+            "mode": "rebuild",
+            "reason": "The public web page is app-gated, so exact/embed reuse is bounded to the captured shell and must not claim private or native app UI fidelity.",
         }
 
     if candidate_kinds & {"direct-iframe", "spline-preview", "spline-viewer", "iframe-src", "generic-embed", "figma-embed", "youtube-embed", "vimeo-embed", "codepen-embed"}:

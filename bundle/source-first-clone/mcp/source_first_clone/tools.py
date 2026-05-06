@@ -184,7 +184,7 @@ TOOLS = [
     },
     {
         "name": "trace_runtime_sources",
-        "description": "Use a browser runtime to trace preview, embed, and scene URLs that do not exist in static HTML, with optional session-aware capture when Playwright is available.",
+        "description": "Use a browser runtime to trace preview, embed, and scene URLs for a single viewport, with optional session-aware capture when Playwright is available.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -198,7 +198,6 @@ TOOLS = [
                 "capture_screenshot": {"type": "boolean"},
                 "viewport_width": {"type": "integer", "minimum": 320, "maximum": 3840},
                 "viewport_height": {"type": "integer", "minimum": 240, "maximum": 3840},
-                "breakpoint_profiles": {"type": "array", "items": {"type": "string", "enum": ["desktop", "tablet", "mobile"]}},
             },
             "required": ["url"],
         },

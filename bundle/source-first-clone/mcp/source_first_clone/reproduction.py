@@ -151,6 +151,267 @@ def _prompt_root_surface(root_context: Any) -> str:
     return " / ".join(parts)
 
 
+APP_LIMITED_SURFACES = {
+    "authenticated-app-surface",
+    "frame-blocked-app-surface",
+    "js-app-shell-surface",
+}
+
+ARTIFACT_LABELS = {
+    "html": "runtime HTML",
+    "screenshot": "viewport screenshot",
+    "dom_snapshot": "DOM snapshot",
+    "computed_styles": "computed styles",
+    "css_analysis": "CSS analysis",
+    "network_manifest": "network manifest",
+    "assets": "asset inventory",
+    "interaction_states": "interaction states",
+    "interaction_trace": "interaction replay trace",
+    "storage_state_exported": "exported session storage state",
+}
+
+CRITICAL_DEPTH_ARTIFACTS = {
+    "dom": "dom_snapshot",
+    "computed-styles": "computed_styles",
+    "runtime-html": "html",
+    "network": "network_manifest",
+    "interactions": "interaction_states",
+    "session-state": "storage_state_exported",
+    "canvas-surface": "screenshot",
+}
+
+NATIVE_APP_GATE_SIGNALS = {
+    "app_store_badge",
+    "play_store_badge",
+    "open_in_app",
+    "app_download",
+    "qr_app_link",
+    "deep_link",
+    "app_link_meta",
+}
+
+
+def _unique_limited(items: list[str], limit: int) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = _prompt_clean_text(item, 180)
+        if cleaned and cleaned not in seen:
+            unique.append(cleaned)
+            seen.add(cleaned)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _capture_artifact_flags(capture_bundle: dict[str, Any]) -> dict[str, bool]:
+    bundle = capture_bundle.get("bundle", {}) if isinstance(capture_bundle, dict) else {}
+    artifacts = bundle.get("artifacts", {}) if isinstance(bundle.get("artifacts"), dict) else {}
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    captures = runtime.get("captures", {}) if isinstance(runtime.get("captures"), dict) else {}
+
+    flags = {key: bool(artifacts.get(key)) for key in ARTIFACT_LABELS}
+    capture_key_map = {
+        "html": "html",
+        "screenshot": "screenshot",
+        "dom_snapshot": "dom",
+        "computed_styles": "styles",
+        "css_analysis": "cssAnalysis",
+        "network_manifest": "network",
+        "assets": "assets",
+        "interaction_states": "interactions",
+        "interaction_trace": "interactionTrace",
+    }
+    for artifact_key, capture_key in capture_key_map.items():
+        capture = captures.get(capture_key, {}) if isinstance(captures.get(capture_key), dict) else {}
+        flags[artifact_key] = flags[artifact_key] or bool(capture.get("available"))
+
+    session = runtime.get("session", {}) if isinstance(runtime.get("session"), dict) else {}
+    flags["storage_state_exported"] = flags["storage_state_exported"] or bool(session.get("storageStateExported"))
+    return flags
+
+
+def _has_session_input(capture_bundle: dict[str, Any]) -> bool:
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    session = runtime.get("session", {}) if isinstance(runtime.get("session"), dict) else {}
+    session_request = capture_bundle.get("session_request", {}) if isinstance(capture_bundle.get("session_request"), dict) else {}
+    return bool(
+        session.get("storageStateApplied")
+        or session.get("storageStatePath")
+        or session.get("userDataDir")
+        or session_request.get("storage_state_path")
+        or session_request.get("user_data_dir")
+    )
+
+
+def _build_evidence_limitations(capture_bundle: dict[str, Any]) -> dict[str, Any]:
+    static = capture_bundle.get("static", {}) if isinstance(capture_bundle.get("static"), dict) else {}
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    bundle = capture_bundle.get("bundle", {}) if isinstance(capture_bundle.get("bundle"), dict) else {}
+    site_profile = static.get("site_profile", {}) if isinstance(static.get("site_profile"), dict) else {}
+    route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+    signals = site_profile.get("signals", {}) if isinstance(site_profile.get("signals"), dict) else {}
+    raw_critical_depths = route_hints.get("critical_depths", [])
+    if not isinstance(raw_critical_depths, list):
+        raw_critical_depths = []
+    critical_depths = [str(depth) for depth in raw_critical_depths if isinstance(depth, str)]
+    raw_app_gate_signals = signals.get("app_gate_signals", [])
+    if not isinstance(raw_app_gate_signals, list):
+        raw_app_gate_signals = []
+    app_gate_signals = [str(signal) for signal in raw_app_gate_signals if isinstance(signal, str)]
+    artifact_flags = _capture_artifact_flags(capture_bundle)
+    session_input = _has_session_input(capture_bundle)
+    primary_surface = str(site_profile.get("primary_surface") or "unknown").lower()
+    profile_confidence = str(site_profile.get("confidence") or "unknown")
+
+    app_gated = bool(
+        signals.get("app_gate_detected")
+        or route_hints.get("evidence_limit")
+        or "app-gate-evidence" in critical_depths
+    )
+    auth_gated = bool(
+        signals.get("auth_detected")
+        or signals.get("app_login_gate_detected")
+        or primary_surface == "authenticated-app-surface"
+        or "session-state" in critical_depths
+    )
+    native_app_required = bool(
+        signals.get("app_deep_link_detected")
+        or "native-app-deep-links" in critical_depths
+        or (signals.get("app_gate_detected") and any(signal in NATIVE_APP_GATE_SIGNALS for signal in app_gate_signals))
+    )
+    app_like = bool(signals.get("app_shell") or primary_surface in APP_LIMITED_SURFACES)
+
+    directly_captured: list[str] = []
+    if static:
+        directly_captured.append("static inspect metadata")
+    if runtime.get("available"):
+        directly_captured.append("runtime browser trace")
+    directly_captured.extend(
+        label
+        for key, label in ARTIFACT_LABELS.items()
+        if artifact_flags.get(key)
+    )
+
+    inferred_or_missing: list[str] = []
+    if site_profile:
+        inferred_or_missing.append(f"site_profile inferred {primary_surface} ({profile_confidence} confidence)")
+    if app_gate_signals:
+        inferred_or_missing.append(f"app-gate signals inferred from public HTML: {', '.join(app_gate_signals[:6])}")
+    if route_hints.get("evidence_limit"):
+        inferred_or_missing.append(f"evidence limit: {route_hints.get('evidence_limit')}")
+    if route_hints.get("evidence_note"):
+        inferred_or_missing.append(str(route_hints.get("evidence_note")))
+    site_profile_notes = site_profile.get("notes", [])
+    if not isinstance(site_profile_notes, list):
+        site_profile_notes = []
+    for note in site_profile_notes[:2]:
+        inferred_or_missing.append(str(note))
+
+    missing_depths = [
+        depth
+        for depth in critical_depths
+        if CRITICAL_DEPTH_ARTIFACTS.get(depth) and not artifact_flags.get(CRITICAL_DEPTH_ARTIFACTS[depth])
+    ]
+    missing_artifacts = [
+        str(item)
+        for item in bundle.get("missing_artifacts", [])
+        if isinstance(item, str)
+    ]
+    if missing_depths:
+        inferred_or_missing.append(f"critical evidence not captured: {', '.join(missing_depths[:6])}")
+    if native_app_required:
+        inferred_or_missing.append("native app or deep-linked app state is not captured by browser-only evidence")
+    if auth_gated and artifact_flags.get("storage_state_exported") and not session_input:
+        inferred_or_missing.append("exported storage state came from the capture browser and does not prove a supplied authenticated session")
+    if missing_artifacts:
+        inferred_or_missing.append(f"missing capture artifacts: {', '.join(missing_artifacts[:5])}")
+
+    recommendations: list[str] = []
+    if app_gated or native_app_required:
+        recommendations.append(
+            "Provide user screenshots from the target app/authenticated state before claiming product, account, checkout, or trading UI fidelity."
+        )
+    if auth_gated and not session_input:
+        recommendations.append("Run authenticated session capture with storage_state or user_data_dir for session-only DOM and network evidence.")
+    if not artifact_flags.get("screenshot"):
+        recommendations.append("Capture viewport screenshots for the exact state being reproduced.")
+    if app_like and not artifact_flags.get("network_manifest"):
+        recommendations.append("Capture runtime network evidence for API-driven app state.")
+    if not recommendations:
+        recommendations.append("Treat this as bounded public-web evidence, not private backend, payment, booking, or native-app logic.")
+
+    core_ready = all(
+        artifact_flags.get(key)
+        for key in ("dom_snapshot", "computed_styles", "network_manifest", "screenshot")
+    )
+    if app_gated or native_app_required:
+        confidence = "limited"
+        scope = "captured-public-app-gate"
+        summary = (
+            "Public web evidence appears app-gated or native-app-led; rebuild output should be scoped to the captured shell "
+            "unless user-provided screenshots or authenticated session capture are supplied."
+        )
+    elif auth_gated and not session_input:
+        confidence = "limited"
+        scope = "unauthenticated-public-shell"
+        summary = "Authentication signals were detected without captured session state, so private app screens are missing evidence."
+    elif auth_gated:
+        confidence = "medium"
+        scope = "bounded-authenticated-web-capture"
+        summary = "Session-aware evidence is present, but private app state and server behavior remain bounded reconstruction inputs."
+    elif app_like and not core_ready:
+        confidence = "medium"
+        scope = "partial-app-shell-capture"
+        summary = "App-shell evidence is partial; avoid claims beyond the captured shell, layout, and sampled interactions."
+    elif core_ready:
+        confidence = "high"
+        scope = "bounded-public-web-capture"
+        summary = "Core public-web visual, DOM, style, and network evidence was captured for bounded reproduction."
+    else:
+        confidence = "medium"
+        scope = "bounded-public-web-capture"
+        summary = "Public-web evidence is available but incomplete; exact private app or backend behavior is out of scope."
+
+    return {
+        "confidence": confidence,
+        "scope": scope,
+        "summary": summary,
+        "flags": {
+            "app_gated": app_gated,
+            "auth_gated": auth_gated,
+            "native_app_required": native_app_required,
+            "session_input": session_input,
+            "storage_state_exported": bool(artifact_flags.get("storage_state_exported")),
+        },
+        "directly_captured": _unique_limited(directly_captured, 8),
+        "inferred_or_missing": _unique_limited(inferred_or_missing, 8),
+        "recommendations": _unique_limited(recommendations, 4),
+    }
+
+
+def _prompt_evidence_limitations(evidence_limitations: dict[str, Any] | None) -> list[str]:
+    if not isinstance(evidence_limitations, dict) or not evidence_limitations:
+        return []
+    lines = [
+        f"Evidence confidence: {evidence_limitations.get('confidence')} ({evidence_limitations.get('scope')})",
+        f"Evidence summary: {evidence_limitations.get('summary')}",
+    ]
+    directly_captured = evidence_limitations.get("directly_captured", [])
+    if isinstance(directly_captured, list) and directly_captured:
+        lines.append("Directly captured evidence:")
+        lines.extend(f"- {item}" for item in directly_captured[:6])
+    inferred_or_missing = evidence_limitations.get("inferred_or_missing", [])
+    if isinstance(inferred_or_missing, list) and inferred_or_missing:
+        lines.append("Inferred or missing evidence:")
+        lines.extend(f"- {item}" for item in inferred_or_missing[:6])
+    recommendations = evidence_limitations.get("recommendations", [])
+    if isinstance(recommendations, list) and recommendations:
+        lines.append("Recommended evidence before stronger claims:")
+        lines.extend(f"- {item}" for item in recommendations[:4])
+    return lines
+
+
 def collect_reuse_candidates(capture_bundle: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -372,7 +633,7 @@ def _collect_dom_texts(node: dict[str, Any] | None, bucket: list[str], limit: in
             break
 
 
-def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
+def build_rebuild_prompt(capture_bundle: dict[str, Any], evidence_limitations: dict[str, Any] | None = None) -> str:
     static = capture_bundle.get("static", {})
     meta = static.get("meta", {}) if isinstance(static, dict) else {}
     runtime = capture_bundle.get("runtime", {})
@@ -385,6 +646,8 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
     interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
     interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
     breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
+    if not isinstance(evidence_limitations, dict):
+        evidence_limitations = _build_evidence_limitations(capture_bundle)
 
     prompt_lines = [
         "Rebuild this reference as faithfully as possible using the captured structure and styling summary.",
@@ -634,6 +897,8 @@ def build_rebuild_prompt(capture_bundle: dict[str, Any]) -> str:
             if descriptor:
                 prompt_lines.append(f"- {descriptor}")
 
+    prompt_lines.extend(_prompt_evidence_limitations(evidence_limitations))
+
     prompt_lines.extend(
         [
             "If an exact iframe, preview, or source reuse path is unavailable, rebuild the page but do not claim it is exact.",
@@ -872,6 +1137,7 @@ def build_reproduction_bundle(
         site_profile=static.get("site_profile"),
         capture_bundle=capture_bundle,
     )
+    evidence_limitations = _build_evidence_limitations(capture_bundle)
 
     result: dict[str, Any] = {
         "policy_mode": policy.get("mode"),
@@ -884,10 +1150,19 @@ def build_reproduction_bundle(
         "coverage": "approximate",
         "next_action": "rebuild",
         "note": "This reproduction bundle prefers exact reuse when a trusted preview, viewer, or embed URL is found. When that path is unavailable it falls back to a bounded rebuild scaffold plus a practical Next app starter.",
-        "rebuild_prompt": build_rebuild_prompt(capture_bundle),
+        "evidence_limitations": evidence_limitations,
+        "rebuild_prompt": build_rebuild_prompt(capture_bundle, evidence_limitations=evidence_limitations),
     }
 
-    if exact_candidate:
+    if policy.get("mode") == "blocked":
+        result["coverage"] = "blocked"
+        result["next_action"] = "stop"
+        result["policy_blocked"] = {
+            "reason": policy.get("reason") or "Policy blocked reproduction.",
+            "candidate_count": len(candidates),
+        }
+        result["note"] = "Policy blocked reproduction. Do not emit exact reuse or bounded rebuild artifacts without updated permission evidence."
+    elif exact_candidate:
         snippets = build_embed_snippets(exact_candidate["url"], title)
         result["exact_reuse"] = {
             "platform": exact_candidate["platform"],
@@ -986,6 +1261,12 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
         rebuild_prompt_path.write_text(rebuild_prompt.rstrip() + "\n")
         persisted["rebuild_prompt"] = str(rebuild_prompt_path)
 
+    evidence_limitations = result.get("evidence_limitations")
+    if isinstance(evidence_limitations, dict) and evidence_limitations:
+        evidence_path = reproduction_dir / "evidence-limitations.json"
+        evidence_path.write_text(json.dumps(evidence_limitations, indent=2, ensure_ascii=False) + "\n")
+        persisted["evidence_limitations"] = str(evidence_path)
+
     rebuild_scaffold = result.get("rebuild_scaffold")
     if isinstance(rebuild_scaffold, dict):
         persisted["rebuild_scaffold"] = persist_rebuild_scaffold(reproduction_dir, rebuild_scaffold)
@@ -1005,18 +1286,15 @@ def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dic
         persisted["embed_tsx"] = str(nextjs_path)
 
         prompt_path = reproduction_dir / "prompt.txt"
-        prompt_path.write_text(
-            "\n".join(
-                [
-                    "Use the original exact reuse target instead of rebuilding this reference.",
-                    f"Platform: {exact_reuse.get('platform')}",
-                    f"Kind: {exact_reuse.get('kind')}",
-                    f"URL: {exact_reuse.get('url')}",
-                    f"Verification: {((exact_reuse.get('verification') or {}).get('status'))}",
-                ]
-            )
-            + "\n"
-        )
+        prompt_lines = [
+            "Use the original exact reuse target instead of rebuilding this reference.",
+            f"Platform: {exact_reuse.get('platform')}",
+            f"Kind: {exact_reuse.get('kind')}",
+            f"URL: {exact_reuse.get('url')}",
+            f"Verification: {((exact_reuse.get('verification') or {}).get('status'))}",
+        ]
+        prompt_lines.extend(_prompt_evidence_limitations(result.get("evidence_limitations")))
+        prompt_path.write_text("\n".join(prompt_lines) + "\n")
         persisted["prompt"] = str(prompt_path)
 
         verification = exact_reuse.get("verification")

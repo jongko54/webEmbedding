@@ -255,6 +255,50 @@ def assert_site_profile_routing_semantics() -> None:
             "plan_stage": "renderer",
         },
         {
+            "name": "app-first public gate",
+            "html": "<main><a>앱에서 보기</a><a href='intent://product/1'>Open app</a><p>로그인 후 시세를 확인하세요</p></main>",
+            "surface": "authenticated-app-surface",
+            "mode": "rebuild",
+            "route": {
+                "acquisition_profile": "session-aware-browser-capture",
+                "renderer_route": "runtime-first-bounded-rebuild",
+                "renderer_family": "app-shell-dashboard-next-app",
+            },
+            "depths": {"runtime-html", "network", "session-state", "app-gate-evidence", "native-app-deep-links"},
+            "signals": {"app_gate_detected": True, "app_deep_link_detected": True, "app_login_gate_detected": True},
+            "plan_required": {"shell topology / panel summary", "session context or storage state"},
+            "plan_stage": "renderer",
+        },
+        {
+            "name": "app-first public gate with iframe candidate",
+            "html": "<main><a>앱에서 보기</a><a href='intent://product/1'>Open app</a><p>로그인 후 시세를 확인하세요</p><iframe src='https://fixture.example/promo'></iframe></main>",
+            "candidates": [{"kind": "direct-iframe", "url": "https://fixture.example/promo"}],
+            "surface": "authenticated-app-surface",
+            "mode": "rebuild",
+            "route": {
+                "acquisition_profile": "session-aware-browser-capture",
+                "renderer_route": "runtime-first-bounded-rebuild",
+                "renderer_family": "app-shell-dashboard-next-app",
+            },
+            "depths": {"runtime-html", "network", "session-state", "app-gate-evidence", "native-app-deep-links"},
+            "signals": {"app_gate_detected": True, "app_deep_link_detected": True, "app_login_gate_detected": True},
+            "plan_required": {"shell topology / panel summary", "session context or storage state"},
+            "plan_stage": "renderer",
+        },
+        {
+            "name": "public app download badges",
+            "html": "<main><h1>Public page</h1><p>Download on the App Store</p><p>Get it on Google Play</p></main>",
+            "surface": "static-document",
+            "mode": "rebuild",
+            "route": {
+                "acquisition_profile": "static-first",
+                "renderer_route": "bounded-rebuild",
+                "renderer_family": "document-next-app",
+            },
+            "depths": {"dom", "computed-styles", "interactions"},
+            "signals": {"app_promo_detected": True, "app_gate_detected": False},
+        },
+        {
             "name": "visual canvas",
             "html": "<canvas></canvas><script>three.js webgl</script>",
             "surface": "canvas-or-webgl-surface",
@@ -1046,6 +1090,10 @@ def assert_rebuild_scaffold_visual_semantics() -> None:
         raise AssertionError("app scaffold did not select app-shell-dashboard-next-app")
     if not app_model.get("shellRegions"):
         raise AssertionError("app scaffold did not derive shellRegions")
+    if not isinstance(app_model.get("shellModel"), dict) or not app_model["shellModel"].get("widgetCounts"):
+        raise AssertionError("app scaffold did not derive shellModel widget counts")
+    if not isinstance(app_model.get("appState"), dict) or not app_model["appState"].get("selectedRegions"):
+        raise AssertionError("app scaffold did not derive appState selected regions")
     if "bounded-shell-region" not in preview or "bounded-shell-panel-grid" not in preview:
         raise AssertionError("app scaffold preview did not render shell region geometry")
     with tempfile.TemporaryDirectory(prefix="scaffold-quality-", dir=temp_parent) as temp_name:
@@ -1154,6 +1202,11 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
     reproduction = payload.get("reproduction")
     if not isinstance(reproduction, dict):
         raise AssertionError("clone summary is missing reproduction")
+    pipeline_manifest = payload.get("pipeline_run_manifest")
+    if not isinstance(pipeline_manifest, dict):
+        raise AssertionError("clone summary is missing pipeline_run_manifest")
+    if (pipeline_manifest.get("failure_classification") or {}).get("status") not in {"ready", "manual-review", "needs-session"}:
+        raise AssertionError(f"pipeline run manifest has invalid failure classification: {pipeline_manifest}")
     plan = reproduction.get("plan")
     if not isinstance(plan, dict):
         raise AssertionError("clone summary is missing reproduction.plan")
@@ -1174,11 +1227,17 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
         raise AssertionError("capture_depth.network.request_count was not populated")
     if int(network_depth.get("har_entry_count") or 0) < 1:
         raise AssertionError("capture_depth.network.har_entry_count was not populated")
+    replay_readiness = network_depth.get("replay_readiness")
+    if not isinstance(replay_readiness, dict) or replay_readiness.get("status") not in {"ready", "partial", "limited", "needs-retry-or-session"}:
+        raise AssertionError(f"capture_depth.network.replay_readiness was not populated: {replay_readiness}")
+    if "next_action" not in replay_readiness:
+        raise AssertionError(f"network replay readiness is missing next_action: {replay_readiness}")
 
     expected_files = [
         output_dir / "capture.json",
         output_dir / "network" / "har.json",
         output_dir / "network" / "har-like.json",
+        output_dir / "pipeline-run-manifest.json",
         output_dir / "reproduction" / "embed.html",
         output_dir / "reproduction" / "embed.tsx",
         output_dir / "reproduction" / "exact-reuse-verification.json",
@@ -1196,12 +1255,261 @@ def assert_clone_summary(payload: dict[str, Any], output_dir: Path) -> None:
         raise AssertionError("persisted exact-reuse verification status did not match CLI payload")
 
 
+def assert_app_gate_evidence_reporting() -> None:
+    from benchmark_routes import route_visibility  # noqa: PLC0415
+    from source_first_clone.reproduction import build_reproduction_bundle, persist_reproduction_bundle  # noqa: PLC0415
+    from source_first_clone.site_profile import classify_site_profile  # noqa: PLC0415
+
+    site_profile = classify_site_profile(
+        final_url="https://fixture.example/product/1",
+        html="<main><a>앱에서 보기</a><a href='intent://product/1'>Open app</a><p>로그인 후 시세를 확인하세요</p></main>",
+        headers={},
+        frame_policy={"embeddable": True},
+        platform_adapter={"platform": "generic"},
+        candidate_urls=[],
+    )
+    result = build_reproduction_bundle(
+        {
+            "url": "https://fixture.example/product/1",
+            "static": {
+                "title": "App gated product",
+                "final_url": "https://fixture.example/product/1",
+                "platform": "generic",
+                "candidate_urls": [],
+                "site_profile": site_profile,
+            },
+            "policy": {"mode": "rebuild"},
+            "runtime": {
+                "available": True,
+                "captures": {
+                    "screenshot": {"available": True},
+                    "dom": {"available": True, "content": {"tag": "main", "text": "앱에서 보기"}},
+                },
+            },
+            "bundle": {"artifacts": {"screenshot": "runtime.png"}, "missing_artifacts": ["storage-state.json"]},
+        }
+    )
+    route_summary = route_visibility(site_profile)
+    if route_summary.get("evidence_limit") != "public-web-app-gate":
+        raise AssertionError(f"benchmark route summary missed app gate evidence limit: {route_summary}")
+    if "native-app-deep-links" not in (route_summary.get("critical_depths") or []):
+        raise AssertionError(f"benchmark route summary missed app gate critical depths: {route_summary}")
+    if "deep_link" not in (route_summary.get("app_gate_signals") or []):
+        raise AssertionError(f"benchmark route summary missed app gate signals: {route_summary}")
+
+    evidence_limitations = result.get("evidence_limitations")
+    if not isinstance(evidence_limitations, dict):
+        raise AssertionError("reproduction result is missing evidence_limitations")
+    if evidence_limitations.get("confidence") != "limited":
+        raise AssertionError(f"expected limited evidence confidence, got {evidence_limitations.get('confidence')}")
+    flags = evidence_limitations.get("flags")
+    if not isinstance(flags, dict) or not flags.get("app_gated") or not flags.get("native_app_required"):
+        raise AssertionError(f"app gate evidence flags were incomplete: {flags}")
+    inferred = "\n".join(str(item) for item in evidence_limitations.get("inferred_or_missing", []))
+    if "public-web-app-gate" not in inferred:
+        raise AssertionError(f"app gate evidence limit was not reported: {inferred}")
+    if "Evidence confidence: limited" not in str(result.get("rebuild_prompt") or ""):
+        raise AssertionError("rebuild prompt did not include limited evidence confidence")
+    with tempfile.TemporaryDirectory(prefix="evidence-limitations-") as temp_name:
+        persisted = persist_reproduction_bundle(Path(temp_name), result)
+        evidence_path = Path(str(persisted.get("evidence_limitations") or ""))
+        if not evidence_path.is_file():
+            raise AssertionError(f"persisted evidence limitations artifact is missing: {persisted}")
+        persisted_evidence = load_json(evidence_path)
+        if persisted_evidence.get("scope") != evidence_limitations.get("scope"):
+            raise AssertionError("persisted evidence limitations artifact did not match result payload")
+
+    auth_profile = classify_site_profile(
+        final_url="https://fixture.example/account",
+        html="<main><input type='password'><script src='/react-dom.js'></script></main>",
+        headers={},
+        frame_policy={"embeddable": True},
+        platform_adapter={"platform": "generic"},
+        candidate_urls=[],
+    )
+    auth_result = build_reproduction_bundle(
+        {
+            "url": "https://fixture.example/account",
+            "static": {
+                "title": "Auth gated account",
+                "final_url": "https://fixture.example/account",
+                "platform": "generic",
+                "candidate_urls": [],
+                "site_profile": auth_profile,
+            },
+            "policy": {"mode": "rebuild"},
+            "runtime": {
+                "available": True,
+                "session": {"storageStateExported": True, "storageStateApplied": False},
+                "captures": {
+                    "screenshot": {"available": True},
+                    "dom": {"available": True, "content": {"tag": "main", "text": "Sign in"}},
+                },
+            },
+            "bundle": {
+                "artifacts": {"screenshot": "runtime.png", "storage_state_exported": True},
+                "missing_artifacts": [],
+            },
+        }
+    )
+    auth_evidence = auth_result.get("evidence_limitations")
+    if not isinstance(auth_evidence, dict):
+        raise AssertionError("auth evidence limitations were missing")
+    if auth_evidence.get("confidence") != "limited" or auth_evidence.get("scope") != "unauthenticated-public-shell":
+        raise AssertionError(f"export-only storage state should not raise auth confidence: {auth_evidence}")
+    auth_flags = auth_evidence.get("flags") if isinstance(auth_evidence.get("flags"), dict) else {}
+    if auth_flags.get("session_input") is not False or auth_flags.get("storage_state_exported") is not True:
+        raise AssertionError(f"auth evidence flags did not distinguish exported state from supplied session: {auth_flags}")
+    auth_inferred = "\n".join(str(item) for item in auth_evidence.get("inferred_or_missing", []))
+    if "does not prove a supplied authenticated session" not in auth_inferred:
+        raise AssertionError(f"auth evidence did not explain export-only storage state: {auth_inferred}")
+
+
+def assert_blocked_policy_stops_reproduction() -> None:
+    from source_first_clone.reproduction import build_reproduction_bundle  # noqa: PLC0415
+    from source_first_clone.site_profile import classify_site_profile  # noqa: PLC0415
+
+    site_profile = classify_site_profile(
+        final_url="https://fixture.example/blocked",
+        html="<main><h1>Blocked exact candidate</h1><iframe src='https://fixture.example/embed'></iframe></main>",
+        headers={},
+        frame_policy={"embeddable": True},
+        platform_adapter={"platform": "generic"},
+        candidate_urls=[{"kind": "direct-iframe", "url": "https://fixture.example/embed"}],
+    )
+    with tempfile.TemporaryDirectory(prefix="blocked-policy-") as temp_name:
+        result = build_reproduction_bundle(
+            {
+                "url": "https://fixture.example/blocked",
+                "static": {
+                    "title": "Blocked exact candidate",
+                    "final_url": "https://fixture.example/blocked",
+                    "platform": "generic",
+                    "frame_policy": {"embeddable": True},
+                    "candidate_urls": [{"kind": "direct-iframe", "url": "https://fixture.example/embed"}],
+                    "site_profile": site_profile,
+                },
+                "policy": {
+                    "mode": "blocked",
+                    "reason": "The provided license text suggests the reference should not be cloned exactly without permission.",
+                },
+                "runtime": {"available": False, "captures": {}},
+                "bundle": {"artifacts": {}, "missing_artifacts": []},
+            },
+            output_dir=temp_name,
+        )
+        if result.get("coverage") != "blocked" or result.get("next_action") != "stop":
+            raise AssertionError(f"blocked policy did not stop reproduction: {result}")
+        if result.get("exact_reuse") is not None or "rebuild_scaffold" in result:
+            raise AssertionError("blocked policy emitted exact reuse or rebuild artifacts")
+        persisted = result.get("persisted") if isinstance(result.get("persisted"), dict) else {}
+        blocked_root = Path(temp_name) / "reproduction"
+        if (blocked_root / "embed.html").exists() or (blocked_root / "rebuild").exists():
+            raise AssertionError(f"blocked policy persisted reusable artifacts: {persisted}")
+
+
+def assert_network_redaction_semantics() -> None:
+    from source_first_clone.capture_bundle import persist_capture_bundle  # noqa: PLC0415
+
+    network_content = {
+        "summary": {
+            "requestCount": 1,
+            "responseCount": 1,
+            "failureCount": 0,
+            "harEntryCount": 1,
+        },
+        "requests": [
+            {
+                "url": "https://fixture.example/api?email=alice@example.com&token=secret-token",
+                "headers": [
+                    {"name": "authorization", "value": "Bearer secret-token"},
+                    {"name": "cookie", "value": "session=abc"},
+                ],
+                "queryString": [
+                    {"name": "email", "value": "alice@example.com"},
+                    {"name": "token", "value": "secret-token"},
+                ],
+                "postData": {"text": "password=bad"},
+            }
+        ],
+        "responses": [
+            {
+                "url": "https://fixture.example/api",
+                "headers": [{"name": "set-cookie", "value": "session=def"}],
+            }
+        ],
+        "har": {
+            "log": {
+                "version": "1.2",
+                "creator": {"name": "test", "version": "1"},
+                "pages": [],
+                "entries": [
+                    {
+                        "request": {
+                            "url": "https://fixture.example/api",
+                            "headers": [{"name": "authorization", "value": "Bearer secret-token"}],
+                            "queryString": [{"name": "email", "value": "alice@example.com"}],
+                            "postData": {"text": "password=bad"},
+                        },
+                        "response": {
+                            "status": 200,
+                            "headers": [{"name": "set-cookie", "value": "session=def"}],
+                        },
+                    }
+                ],
+            },
+            "summary": {"pageCount": 0, "entryCount": 1},
+        },
+    }
+    bundle_payload = {
+        "schema_version": 1,
+        "url": "https://fixture.example/redaction",
+        "static": {"final_url": "https://fixture.example/redaction", "frame_policy": {}},
+        "policy": {"mode": "rebuild"},
+        "runtime": {
+            "available": True,
+            "captures": {
+                "network": {
+                    "available": True,
+                    "requestCount": 1,
+                    "responseCount": 1,
+                    "failureCount": 0,
+                    "frameUrlCount": 0,
+                    "content": network_content,
+                }
+            },
+            "session": {"storageStateExported": False},
+        },
+        "bundle": {"artifacts": {}, "missing_artifacts": [], "captured_artifacts": {}},
+    }
+    with tempfile.TemporaryDirectory(prefix="network-redaction-") as temp_name:
+        persist_capture_bundle(Path(temp_name), bundle_payload)
+        persisted_text = "\n".join(
+            path.read_text()
+            for path in [
+                Path(temp_name) / "capture.json",
+                Path(temp_name) / "runtime" / "trace.json",
+                Path(temp_name) / "network" / "manifest.json",
+                Path(temp_name) / "network" / "har.json",
+            ]
+            if path.is_file()
+        )
+    for raw_secret in ("alice@example.com", "secret-token", "session=abc", "session=def", "password=bad"):
+        if raw_secret in persisted_text:
+            raise AssertionError(f"sensitive network value was not redacted: {raw_secret}")
+    if "[REDACTED]" not in persisted_text:
+        raise AssertionError("network redaction marker was not persisted")
+
+
 def main() -> int:
     root = repo_root()
     assert_exact_ready_semantics(root)
     assert_verification_similarity_semantics()
     assert_fetch_url_decodes_compressed_html()
     assert_site_profile_routing_semantics()
+    assert_app_gate_evidence_reporting()
+    assert_blocked_policy_stops_reproduction()
+    assert_network_redaction_semantics()
     assert_rebuild_scaffold_visual_semantics()
     temp_root = root / ".tmp" / "integration-smoke"
     if temp_root.exists():

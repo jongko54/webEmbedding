@@ -664,11 +664,18 @@ def compact_site_profile(profile: dict[str, Any] | None) -> dict[str, Any] | Non
             "renderer_route": route_hints.get("renderer_route"),
             "renderer_family": route_hints.get("renderer_family"),
             "critical_depths": route_hints.get("critical_depths"),
+            "evidence_limit": route_hints.get("evidence_limit"),
+            "evidence_note": route_hints.get("evidence_note"),
         },
         "signals": {
             "frame_blocked": signals.get("frame_blocked"),
             "app_shell": signals.get("app_shell"),
             "auth_detected": signals.get("auth_detected"),
+            "app_gate_detected": signals.get("app_gate_detected"),
+            "app_deep_link_detected": signals.get("app_deep_link_detected"),
+            "app_promo_detected": signals.get("app_promo_detected"),
+            "app_login_gate_detected": signals.get("app_login_gate_detected"),
+            "app_gate_signals": signals.get("app_gate_signals"),
             "canvas_detected": signals.get("canvas_detected"),
             "shadow_dom_detected": signals.get("shadow_dom_detected"),
             "multi_frame": signals.get("multi_frame"),
@@ -678,6 +685,64 @@ def compact_site_profile(profile: dict[str, Any] | None) -> dict[str, Any] | Non
             "exact_candidate_kinds": signals.get("exact_candidate_kinds"),
         },
         "notes": profile.get("notes"),
+    }
+
+
+def compact_network_replay_readiness(network_summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(network_summary, dict):
+        return {"status": "limited", "reasons": ["no network summary"], "next_action": "run runtime capture with network tracing"}
+    request_count = int(network_summary.get("requestCount") or network_summary.get("request_count") or 0)
+    response_count = int(network_summary.get("responseCount") or network_summary.get("response_count") or 0)
+    failure_count = int(network_summary.get("failureCount") or network_summary.get("failure_count") or 0)
+    har_entry_count = int(
+        network_summary.get("harEntryCount")
+        or network_summary.get("har_entry_count")
+        or network_summary.get("harLikeEntryCount")
+        or network_summary.get("har_like_entry_count")
+        or 0
+    )
+    status_counts = network_summary.get("responseStatusCounts") or network_summary.get("response_status_counts") or {}
+    if not isinstance(status_counts, dict):
+        status_counts = {}
+    auth_error_count = sum(int(status_counts.get(code) or 0) for code in ("401", "403"))
+    rate_limit_count = int(status_counts.get("429") or 0)
+    reasons: list[str] = []
+    if request_count <= 0:
+        reasons.append("no captured requests")
+    if har_entry_count <= 0:
+        reasons.append("no HAR entries")
+    elif request_count and har_entry_count < request_count:
+        reasons.append("HAR entries do not cover every request")
+    if request_count and response_count < request_count:
+        reasons.append("responses do not cover every request")
+    if failure_count:
+        reasons.append("failed requests were captured")
+    if auth_error_count:
+        reasons.append("auth/permission responses were captured")
+    if rate_limit_count:
+        reasons.append("rate-limit responses were captured")
+    if request_count <= 0 or har_entry_count <= 0:
+        status = "limited"
+        next_action = "rerun capture with runtime network tracing before claiming replay parity"
+    elif failure_count or auth_error_count or rate_limit_count:
+        status = "needs-retry-or-session"
+        next_action = "retry with supplied session, longer wait, or explicit network allowlist"
+    elif reasons:
+        status = "partial"
+        next_action = "review HAR gaps before using responses as replay-grade evidence"
+    else:
+        status = "ready"
+        next_action = "network evidence is sufficient for replay-oriented inspection"
+    return {
+        "status": status,
+        "request_count": request_count,
+        "response_count": response_count,
+        "failure_count": failure_count,
+        "har_entry_count": har_entry_count,
+        "auth_error_count": auth_error_count,
+        "rate_limit_count": rate_limit_count,
+        "reasons": reasons,
+        "next_action": next_action,
     }
 
 
@@ -740,6 +805,7 @@ def compact_capture_depth(captures: dict[str, Any] | None) -> dict[str, Any] | N
             "har_entry_count": network_summary.get("harEntryCount"),
             "har_like_entry_count": network_summary.get("harLikeEntryCount"),
             "har_like_page_count": network_summary.get("harLikePageCount"),
+            "replay_readiness": compact_network_replay_readiness(network_summary),
         }
     return {
         "html": {

@@ -28,6 +28,17 @@ AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"oauth|auth0|okta|clerk|supabase", re.I),
 )
 
+APP_GATE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("app_store_badge", re.compile(r"app store|download on the app store", re.I)),
+    ("play_store_badge", re.compile(r"google play|play store|get it on google play", re.I)),
+    ("open_in_app", re.compile(r"open in app|view in app|continue in app|use the app|앱에서\s*보기|앱으로\s*보기|앱에서\s*열기", re.I)),
+    ("app_download", re.compile(r"download (?:the )?app|app download|install (?:the )?app|앱\s*다운로드|앱\s*설치", re.I)),
+    ("login_gate", re.compile(r"login required|sign in required|after login|로그인\s*후|로그인이\s*필요|로그인하고", re.I)),
+    ("qr_app_link", re.compile(r"(?:qr code|qrcode|scan (?:the )?qr|qr\s*코드)[\s\S]{0,120}(?:app|download|앱)", re.I)),
+    ("deep_link", re.compile(r"intent://|market://|itms-apps://|android-app://|ios-app://|applinks?:", re.I)),
+    ("app_link_meta", re.compile(r"al:(?:ios|android):|apple-itunes-app|app-argument", re.I)),
+)
+
 CANVAS_LIBRARY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bwebgl\b", re.I),
     re.compile(r"\bthree(?:\.js)?\b", re.I),
@@ -61,6 +72,14 @@ def _runtime_frameworks(html: str) -> list[str]:
         if pattern.search(html or ""):
             frameworks.append(name)
     return frameworks
+
+
+def _matched_named_patterns(patterns: tuple[tuple[str, re.Pattern[str]], ...], html: str) -> list[str]:
+    matches: list[str] = []
+    for name, pattern in patterns:
+        if pattern.search(html or ""):
+            matches.append(name)
+    return matches
 
 
 def classify_site_profile(
@@ -113,7 +132,16 @@ def classify_site_profile(
     )
 
     runtime_frameworks = _runtime_frameworks(html)
-    auth_detected = _bool_patterns(AUTH_PATTERNS, html)
+    app_gate_signals = _matched_named_patterns(APP_GATE_PATTERNS, html)
+    app_deep_link_detected = any(signal in {"deep_link", "app_link_meta"} for signal in app_gate_signals)
+    app_promo_detected = any(
+        signal in {"app_store_badge", "play_store_badge", "open_in_app", "app_download", "qr_app_link"}
+        for signal in app_gate_signals
+    )
+    app_login_gate_detected = "login_gate" in app_gate_signals
+    strong_app_gate_signals = {"open_in_app", "login_gate", "qr_app_link", "deep_link", "app_link_meta"}
+    app_gate_detected = any(signal in strong_app_gate_signals for signal in app_gate_signals)
+    auth_detected = _bool_patterns(AUTH_PATTERNS, html) or app_login_gate_detected
     canvas_library_detected = _bool_patterns(CANVAS_LIBRARY_PATTERNS, html)
     canvas_detected = canvas_count > 0 or canvas_library_detected
     shadow_dom_detected = _bool_patterns(SHADOW_PATTERNS, html)
@@ -154,6 +182,10 @@ def classify_site_profile(
         surface = "canvas-or-webgl-surface"
         confidence = "high"
         notes.append("Canvas/WebGL-style runtime was detected.")
+    elif app_gate_detected:
+        surface = "authenticated-app-surface"
+        confidence = "high" if app_deep_link_detected or app_login_gate_detected else "medium"
+        notes.append("App download, deep-link, QR, or login-gate signals suggest the public web page is a limited app/auth-gated surface.")
     elif auth_detected and app_shell:
         surface = "authenticated-app-surface"
         confidence = "high"
@@ -188,7 +220,7 @@ def classify_site_profile(
         acquisition_profile = "platform-aware-source-first"
 
     renderer_route = "bounded-rebuild"
-    if exact_candidate_present:
+    if exact_candidate_present and not app_gate_detected:
         renderer_route = "exact-reuse"
     elif platform_managed:
         renderer_route = "platform-source-or-bounded-rebuild"
@@ -200,6 +232,8 @@ def classify_site_profile(
     critical_depths = ["dom", "computed-styles", "interactions"]
     if frame_blocked or app_shell:
         critical_depths.extend(["runtime-html", "network"])
+    if app_gate_detected:
+        critical_depths.extend(["runtime-html", "network", "session-state", "app-gate-evidence", "native-app-deep-links"])
     if shadow_dom_detected:
         critical_depths.append("shadow-dom")
     if multi_frame:
@@ -217,6 +251,19 @@ def classify_site_profile(
     elif surface == "multi-frame-document-surface":
         renderer_family = "frame-aware-document-next-app"
 
+    route_hints: dict[str, Any] = {
+        "acquisition_profile": acquisition_profile,
+        "renderer_route": renderer_route,
+        "renderer_family": renderer_family,
+        "critical_depths": list(dict.fromkeys(critical_depths)),
+    }
+    if app_gate_detected:
+        route_hints["evidence_limit"] = "public-web-app-gate"
+        route_hints["evidence_note"] = (
+            "Public HTML may only expose app promotion, login, QR, store, or deep-link entry points; "
+            "the product/trading UI may require an authenticated browser session or native app evidence."
+        )
+
     return {
         "version": 1,
         "host": host,
@@ -228,6 +275,10 @@ def classify_site_profile(
             "frame_blocked": frame_blocked,
             "app_shell": app_shell,
             "auth_detected": auth_detected,
+            "app_gate_detected": app_gate_detected,
+            "app_deep_link_detected": app_deep_link_detected,
+            "app_promo_detected": app_promo_detected,
+            "app_login_gate_detected": app_login_gate_detected,
             "canvas_detected": canvas_detected,
             "canvas_dominant": canvas_dominant,
             "shadow_dom_detected": shadow_dom_detected,
@@ -243,15 +294,11 @@ def classify_site_profile(
             "link_count": link_count,
             "list_item_count": list_item_count,
             "runtime_frameworks": runtime_frameworks,
+            "app_gate_signals": app_gate_signals,
             "exact_candidate_present": exact_candidate_present,
             "exact_candidate_kinds": exact_candidate_kinds[:12],
         },
-        "route_hints": {
-            "acquisition_profile": acquisition_profile,
-            "renderer_route": renderer_route,
-            "renderer_family": renderer_family,
-            "critical_depths": list(dict.fromkeys(critical_depths)),
-        },
+        "route_hints": route_hints,
         "notes": notes,
         "meta": {
             "title": meta.get("og:title") or meta.get("title"),

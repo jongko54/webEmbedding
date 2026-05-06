@@ -1,5 +1,6 @@
 # Generic universal benchmark corpus
-# Keep the list small, public, and diverse so route/depth regressions are easy to spot.
+# Keep the list small and diverse so route/depth regressions are easy to spot.
+# fixture:// entries are deterministic local route fixtures for cases that public URLs do not cover reliably.
 https://www.example.com
 https://www.wikipedia.org
 https://www.python.org
@@ -8,3 +9,25 @@ https://www.framer.com/
 https://threejs.org/examples/#webgl_animation_keyframes
 https://github.com/login
 https://testpages.eviltester.com/styled/iframes-test.html
+fixture://public-app-gate
+fixture://static-marketing
+fixture://static-docs
+fixture://longform-article
+fixture://content-hub
+fixture://platform-notion
+fixture://platform-shopify
+fixture://platform-framer
+fixture://js-app-shell-react
+fixture://js-app-shell-next
+fixture://dashboard-table
+fixture://frame-blocked-app
+fixture://auth-app-shell
+fixture://auth-oauth-shell
+fixture://canvas-webgl
+fixture://canvas-overlay
+fixture://multi-frame-doc
+fixture://shadow-dom-widget
+fixture://native-app-qr-gate
+fixture://iframe-exact-candidate
+fixture://video-embed
+fixture://frame-blocked-longform

@@ -1,35 +1,89 @@
 {
   "summary": {
     "exact": {
-      "total": 8,
-      "status_counts.ok": 8,
-      "surface_counts.static-document": 3,
-      "surface_counts.longform-content-surface": 1,
-      "surface_counts.platform-managed-surface": 1,
-      "surface_counts.canvas-or-webgl-surface": 1,
-      "surface_counts.authenticated-app-surface": 1,
-      "surface_counts.multi-frame-document-surface": 1,
-      "renderer_route_counts.exact-reuse": 4,
-      "renderer_route_counts.bounded-rebuild": 2,
-      "renderer_route_counts.platform-source-or-bounded-rebuild": 1,
-      "renderer_route_counts.runtime-first-bounded-rebuild": 1,
-      "renderer_family_counts.document-next-app": 5,
-      "renderer_family_counts.visual-fallback-next-app": 1,
-      "renderer_family_counts.app-shell-dashboard-next-app": 1,
-      "renderer_family_counts.frame-aware-document-next-app": 1,
-      "acquisition_profile_counts.static-first": 4,
-      "acquisition_profile_counts.platform-aware-source-first": 1,
-      "acquisition_profile_counts.visual-runtime-capture": 1,
-      "acquisition_profile_counts.session-aware-browser-capture": 1,
-      "acquisition_profile_counts.frame-aware-capture": 1,
-      "route_quality_counts.complete": 8
+      "total": 30,
+      "status_counts.ok": 30,
+      "route_quality_counts.complete": 30
+    },
+    "minimum": {
+      "surface_counts.static-document": 8,
+      "surface_counts.longform-content-surface": 3,
+      "surface_counts.platform-managed-surface": 4,
+      "surface_counts.canvas-or-webgl-surface": 3,
+      "surface_counts.authenticated-app-surface": 5,
+      "surface_counts.multi-frame-document-surface": 2,
+      "surface_counts.js-app-shell-surface": 3,
+      "surface_counts.frame-blocked-app-surface": 1,
+      "renderer_route_counts.exact-reuse": 6,
+      "renderer_route_counts.bounded-rebuild": 8,
+      "renderer_route_counts.platform-source-or-bounded-rebuild": 4,
+      "renderer_route_counts.runtime-first-bounded-rebuild": 9,
+      "renderer_route_counts.visual-fallback-rebuild": 2,
+      "renderer_family_counts.document-next-app": 15,
+      "renderer_family_counts.visual-fallback-next-app": 3,
+      "renderer_family_counts.app-shell-dashboard-next-app": 9,
+      "renderer_family_counts.frame-aware-document-next-app": 2,
+      "acquisition_profile_counts.static-first": 12,
+      "acquisition_profile_counts.platform-aware-source-first": 4,
+      "acquisition_profile_counts.visual-runtime-capture": 3,
+      "acquisition_profile_counts.session-aware-browser-capture": 5,
+      "acquisition_profile_counts.frame-aware-capture": 2,
+      "acquisition_profile_counts.browser-deep-capture": 4,
+      "critical_depth_counts.runtime-html": 15,
+      "critical_depth_counts.network": 15,
+      "critical_depth_counts.session-state": 8,
+      "critical_depth_counts.canvas-surface": 4,
+      "critical_depth_counts.frame-documents": 2,
+      "critical_depth_counts.app-gate-evidence": 2,
+      "critical_depth_counts.native-app-deep-links": 2,
+      "critical_depth_counts.shadow-dom": 1,
+      "evidence_limit_counts.public-web-app-gate": 2,
+      "pipeline_status_counts.ready": 13,
+      "pipeline_status_counts.manual-review": 12,
+      "pipeline_status_counts.needs-session": 5,
+      "failure_code_counts.network-replay-limited": 15,
+      "failure_code_counts.auth-session-missing": 5,
+      "failure_code_counts.public-app-gate": 2,
+      "failure_code_counts.native-app-target-required": 2,
+      "failure_code_counts.canvas-visual-fallback": 2
+    },
+    "contains": {
+      "critical_depth_counts": [
+        "dom",
+        "computed-styles",
+        "interactions",
+        "runtime-html",
+        "network",
+        "session-state",
+        "app-gate-evidence",
+        "native-app-deep-links",
+        "shadow-dom"
+      ],
+      "app_gate_signal_counts": [
+        "open_in_app",
+        "login_gate",
+        "deep_link",
+        "qr_app_link"
+      ],
+      "failure_code_counts": [
+        "network-replay-limited",
+        "auth-session-missing",
+        "public-app-gate",
+        "native-app-target-required",
+        "canvas-visual-fallback"
+      ]
     },
     "absent_or_zero": [
       "status_counts.error",
       "profile_warning_counts.missing_primary_surface",
       "profile_warning_counts.missing_acquisition_profile",
       "profile_warning_counts.missing_renderer_route",
-      "profile_warning_counts.missing_critical_depths"
+      "profile_warning_counts.missing_critical_depths",
+      "pipeline_status_counts.blocked",
+      "failure_code_counts.route-inspection-error",
+      "failure_code_counts.missing-primary-surface",
+      "failure_code_counts.missing-renderer-route",
+      "failure_code_counts.blocked-by-policy"
     ]
   },
   "items": {
@@ -40,7 +94,8 @@
         "route.primary_surface": "static-document",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "exact-reuse",
-        "route.renderer_family": "document-next-app"
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
       }
     },
     "https://www.wikipedia.org": {
@@ -50,7 +105,14 @@
         "route.primary_surface": "static-document",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "exact-reuse",
-        "route.renderer_family": "document-next-app"
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      },
+      "contains": {
+        "route.app_gate_signals": [
+          "app_store_badge",
+          "play_store_badge"
+        ]
       }
     },
     "https://www.python.org": {
@@ -60,7 +122,17 @@
         "route.primary_surface": "longform-content-surface",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "bounded-rebuild",
-        "route.renderer_family": "document-next-app"
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
       }
     },
     "https://www.google.com": {
@@ -70,7 +142,18 @@
         "route.primary_surface": "static-document",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "bounded-rebuild",
-        "route.renderer_family": "document-next-app"
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
       }
     },
     "https://www.framer.com/": {
@@ -80,7 +163,19 @@
         "route.primary_surface": "platform-managed-surface",
         "route.acquisition_profile": "platform-aware-source-first",
         "route.renderer_route": "platform-source-or-bounded-rebuild",
-        "route.renderer_family": "document-next-app"
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "canvas-surface",
+          "session-state"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
       }
     },
     "https://threejs.org/examples/#webgl_animation_keyframes": {
@@ -90,7 +185,13 @@
         "route.primary_surface": "canvas-or-webgl-surface",
         "route.acquisition_profile": "visual-runtime-capture",
         "route.renderer_route": "exact-reuse",
-        "route.renderer_family": "visual-fallback-next-app"
+        "route.renderer_family": "visual-fallback-next-app",
+        "failure_classification.status": "ready"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "canvas-surface"
+        ]
       }
     },
     "https://github.com/login": {
@@ -100,7 +201,19 @@
         "route.primary_surface": "authenticated-app-surface",
         "route.acquisition_profile": "session-aware-browser-capture",
         "route.renderer_route": "runtime-first-bounded-rebuild",
-        "route.renderer_family": "app-shell-dashboard-next-app"
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "needs-session"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state"
+        ],
+        "failure_classification.codes": [
+          "auth-session-missing",
+          "network-replay-limited"
+        ]
       }
     },
     "https://testpages.eviltester.com/styled/iframes-test.html": {
@@ -110,7 +223,412 @@
         "route.primary_surface": "multi-frame-document-surface",
         "route.acquisition_profile": "frame-aware-capture",
         "route.renderer_route": "exact-reuse",
-        "route.renderer_family": "frame-aware-document-next-app"
+        "route.renderer_family": "frame-aware-document-next-app",
+        "failure_classification.status": "ready"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "frame-documents",
+          "session-state"
+        ]
+      }
+    },
+    "fixture://public-app-gate": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "authenticated-app-surface",
+        "route.acquisition_profile": "session-aware-browser-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "needs-session",
+        "route.evidence_limit": "public-web-app-gate",
+        "route.app_gate_detected": true
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state",
+          "app-gate-evidence",
+          "native-app-deep-links"
+        ],
+        "route.app_gate_signals": [
+          "open_in_app",
+          "login_gate",
+          "deep_link"
+        ],
+        "failure_classification.codes": [
+          "public-app-gate",
+          "native-app-target-required",
+          "auth-session-missing",
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://static-marketing": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://static-docs": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://longform-article": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "longform-content-surface",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://content-hub": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://platform-notion": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "platform-managed-surface",
+        "route.acquisition_profile": "platform-aware-source-first",
+        "route.renderer_route": "platform-source-or-bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://platform-shopify": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "platform-managed-surface",
+        "route.acquisition_profile": "platform-aware-source-first",
+        "route.renderer_route": "platform-source-or-bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://platform-framer": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "platform-managed-surface",
+        "route.acquisition_profile": "platform-aware-source-first",
+        "route.renderer_route": "platform-source-or-bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://js-app-shell-react": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "js-app-shell-surface",
+        "route.acquisition_profile": "browser-deep-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://js-app-shell-next": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "js-app-shell-surface",
+        "route.acquisition_profile": "browser-deep-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://dashboard-table": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "js-app-shell-surface",
+        "route.acquisition_profile": "browser-deep-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://frame-blocked-app": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "frame-blocked-app-surface",
+        "route.acquisition_profile": "browser-deep-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://auth-app-shell": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "authenticated-app-surface",
+        "route.acquisition_profile": "session-aware-browser-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "needs-session"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state"
+        ],
+        "failure_classification.codes": [
+          "auth-session-missing",
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://auth-oauth-shell": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "authenticated-app-surface",
+        "route.acquisition_profile": "session-aware-browser-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "needs-session"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state"
+        ],
+        "failure_classification.codes": [
+          "auth-session-missing",
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://canvas-webgl": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "canvas-or-webgl-surface",
+        "route.acquisition_profile": "visual-runtime-capture",
+        "route.renderer_route": "visual-fallback-rebuild",
+        "route.renderer_family": "visual-fallback-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "canvas-surface"
+        ],
+        "failure_classification.codes": [
+          "canvas-visual-fallback"
+        ]
+      }
+    },
+    "fixture://canvas-overlay": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "canvas-or-webgl-surface",
+        "route.acquisition_profile": "visual-runtime-capture",
+        "route.renderer_route": "visual-fallback-rebuild",
+        "route.renderer_family": "visual-fallback-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "canvas-surface"
+        ],
+        "failure_classification.codes": [
+          "canvas-visual-fallback"
+        ]
+      }
+    },
+    "fixture://multi-frame-doc": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "multi-frame-document-surface",
+        "route.acquisition_profile": "frame-aware-capture",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "frame-aware-document-next-app",
+        "failure_classification.status": "ready"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "frame-documents"
+        ]
+      }
+    },
+    "fixture://shadow-dom-widget": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "shadow-dom"
+        ]
+      }
+    },
+    "fixture://native-app-qr-gate": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "authenticated-app-surface",
+        "route.acquisition_profile": "session-aware-browser-capture",
+        "route.renderer_route": "runtime-first-bounded-rebuild",
+        "route.renderer_family": "app-shell-dashboard-next-app",
+        "failure_classification.status": "needs-session",
+        "route.evidence_limit": "public-web-app-gate",
+        "route.app_gate_detected": true
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network",
+          "session-state",
+          "app-gate-evidence",
+          "native-app-deep-links"
+        ],
+        "route.app_gate_signals": [
+          "open_in_app",
+          "app_download",
+          "qr_app_link",
+          "deep_link"
+        ],
+        "failure_classification.codes": [
+          "public-app-gate",
+          "native-app-target-required",
+          "auth-session-missing",
+          "network-replay-limited"
+        ]
+      }
+    },
+    "fixture://iframe-exact-candidate": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://video-embed": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "static-document",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "exact-reuse",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "ready"
+      }
+    },
+    "fixture://frame-blocked-longform": {
+      "exact": {
+        "status": "ok",
+        "route_quality": "complete",
+        "route.primary_surface": "longform-content-surface",
+        "route.acquisition_profile": "static-first",
+        "route.renderer_route": "bounded-rebuild",
+        "route.renderer_family": "document-next-app",
+        "failure_classification.status": "manual-review"
+      },
+      "contains": {
+        "route.critical_depths": [
+          "runtime-html",
+          "network"
+        ],
+        "failure_classification.codes": [
+          "network-replay-limited"
+        ]
       }
     }
   }

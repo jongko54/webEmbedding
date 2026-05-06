@@ -40,6 +40,15 @@ jobs:
             --report ./.tmp/universal-benchmark/universal-route-report.json \
             --expectations docs/universal-benchmark-expectations.json
 
+      - name: Validate benchmark evidence
+        run: |
+          python scripts/check_benchmark_evidence.py
+
+      - name: Validate production readiness gates
+        run: |
+          python scripts/check_production_readiness.py \
+            --report ./.tmp/universal-benchmark/universal-route-report.json
+
       - name: Upload benchmark report
         if: always()
         uses: actions/upload-artifact@v7

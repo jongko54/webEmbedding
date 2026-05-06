@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from .acquisition import discover_embed_candidates, inspect_reference, trace_runtime_sources
 from .constants import BREAKPOINT_PROFILES, CAPTURE_SCHEMA_VERSION
+from .failure_taxonomy import network_replay_readiness
 from .policy import classify_clone_mode
+
+
+SENSITIVE_NETWORK_KEY_RE = re.compile(
+    r"(authorization|cookie|set-cookie|password|passwd|token|secret|session|api[_-]?key|access[_-]?key|email|code)",
+    re.I,
+)
+REDACTED_VALUE = "[REDACTED]"
 
 
 def capture_reference_bundle(
@@ -32,6 +41,12 @@ def capture_reference_bundle(
     source_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     static = inspect_reference(url, timeout_seconds=timeout_seconds)
+    site_profile = static.get("site_profile", {}) if isinstance(static.get("site_profile"), dict) else {}
+    route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+    critical_depths = route_hints.get("critical_depths", []) if isinstance(route_hints.get("critical_depths"), list) else []
+    critical_depth_set = {str(depth) for depth in critical_depths if isinstance(depth, str)}
+    capture_html = bool(capture_html or "runtime-html" in critical_depth_set)
+    capture_screenshot = bool(capture_screenshot or critical_depth_set.intersection({"canvas-surface", "app-gate-evidence"}))
     candidates = discover_embed_candidates(url, timeout_seconds=timeout_seconds)["candidates"]
     merged_source_signals = list(
         dict.fromkeys(
@@ -329,6 +344,7 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
     policy_path.write_text(json.dumps(bundle_payload["policy"], indent=2) + "\n")
     persisted["files"]["policy"] = str(policy_path)
 
+    _redact_sensitive_network_artifacts(bundle_payload)
     runtime = bundle_payload.get("runtime", {})
     runtime_capture = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
 
@@ -443,6 +459,7 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "har_like_path": str(har_like_path) if har_like_path else None,
             "har_summary": har_standard.get("summary") if har_standard else None,
             "har_like_summary": har_like.get("summary") if har_like else None,
+            "replay_readiness": network_replay_readiness(network_summary),
             "path": str(network_path),
         }
 
@@ -550,3 +567,40 @@ def _standardize_har_like(har_like: dict[str, Any]) -> dict[str, Any]:
             "redirectCount": summary.get("redirectCount"),
         },
     }
+
+
+def _is_sensitive_name(value: Any) -> bool:
+    return isinstance(value, str) and bool(SENSITIVE_NETWORK_KEY_RE.search(value))
+
+
+def _redact_sensitive_network_artifacts(bundle_payload: dict[str, Any]) -> None:
+    runtime = bundle_payload.get("runtime", {}) if isinstance(bundle_payload.get("runtime"), dict) else {}
+    captures = runtime.get("captures", {}) if isinstance(runtime.get("captures"), dict) else {}
+    network_capture = captures.get("network", {}) if isinstance(captures.get("network"), dict) else {}
+    if isinstance(network_capture.get("content"), dict):
+        _redact_sensitive_capture_payload(network_capture["content"])
+
+
+def _redact_sensitive_capture_payload(value: Any, *, parent_sensitive: bool = False) -> Any:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _redact_sensitive_capture_payload(item, parent_sensitive=parent_sensitive)
+        return value
+    if not isinstance(value, dict):
+        return value
+
+    entry_name = value.get("name") or value.get("key") or value.get("parameter")
+    entry_sensitive = parent_sensitive or _is_sensitive_name(entry_name)
+    for key, item in list(value.items()):
+        key_sensitive = entry_sensitive or _is_sensitive_name(key)
+        if key_sensitive and isinstance(item, (str, int, float, bool)):
+            value[key] = REDACTED_VALUE
+        elif isinstance(item, str) and key.lower() == "url" and "?" in item and _is_sensitive_name(item):
+            value[key] = item.split("?", 1)[0] + "?[REDACTED]"
+        elif isinstance(item, str) and key.lower() in {"value", "text", "body"} and _is_sensitive_name(item):
+            value[key] = REDACTED_VALUE
+        elif key_sensitive and key.lower() in {"value", "text", "body", "postdata"}:
+            value[key] = REDACTED_VALUE
+        else:
+            value[key] = _redact_sensitive_capture_payload(item, parent_sensitive=key_sensitive)
+    return value

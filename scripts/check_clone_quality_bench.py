@@ -302,7 +302,50 @@ def print_clone_output_row(url: str, payload: dict[str, Any]) -> None:
     )
 
 
-def run_case(url: str, output_root: Path, *, wait_seconds: int, timeout_seconds: int, breakpoints: list[str]) -> int:
+def _numeric(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def quality_gate_failures(
+    summary: dict[str, Any],
+    *,
+    min_score: float | None,
+    min_screen_score: float | None,
+    min_breakpoint_average: float | None,
+    require_ready: bool,
+) -> list[str]:
+    failures: list[str] = []
+    score = _numeric(summary_score(summary))
+    screen_score = _numeric(summary.get("screen_clone_score"))
+    breakpoint_average = _numeric(summary.get("breakpoint_score_average"))
+    ready = summary_ready(summary)
+    if min_score is not None and (score is None or score < min_score):
+        failures.append(f"score {fmt_number(score)} < {fmt_number(min_score)}")
+    if min_screen_score is not None and (screen_score is None or screen_score < min_screen_score):
+        failures.append(f"screen {fmt_number(screen_score)} < {fmt_number(min_screen_score)}")
+    if min_breakpoint_average is not None and (breakpoint_average is None or breakpoint_average < min_breakpoint_average):
+        failures.append(f"bp_avg {fmt_number(breakpoint_average)} < {fmt_number(min_breakpoint_average)}")
+    if require_ready and ready is not True:
+        failures.append(f"ready {fmt_yes_no(ready)} != yes")
+    return failures
+
+
+def run_case(
+    url: str,
+    output_root: Path,
+    *,
+    wait_seconds: int,
+    timeout_seconds: int,
+    breakpoints: list[str],
+    min_score: float | None,
+    min_screen_score: float | None,
+    min_breakpoint_average: float | None,
+    require_ready: bool,
+) -> int:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     case_dir = output_root / f"{slugify_url(url)}-{timestamp}"
     if case_dir.exists():
@@ -332,6 +375,17 @@ def run_case(url: str, output_root: Path, *, wait_seconds: int, timeout_seconds:
         return 1
 
     print_summary_row(url, summary, case_dir)
+    failures = quality_gate_failures(
+        summary,
+        min_score=min_score,
+        min_screen_score=min_screen_score,
+        min_breakpoint_average=min_breakpoint_average,
+        require_ready=require_ready,
+    )
+    for failure in failures:
+        print_row(url, "GATE_FAIL", failure)
+    if failures:
+        return 1
     return 0
 
 
@@ -361,6 +415,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Run only the primary viewport.",
     )
+    parser.add_argument("--min-score", type=float, help="Fail if the root self-verify score is below this value.")
+    parser.add_argument("--min-screen-score", type=float, help="Fail if the screen/visual score is below this value.")
+    parser.add_argument("--min-breakpoint-average", type=float, help="Fail if breakpoint average is below this value.")
+    parser.add_argument("--require-ready", action="store_true", help="Fail unless the summary is ready for exact clone/reuse.")
     return parser.parse_args(argv)
 
 
@@ -381,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
                 wait_seconds=max(1, int(args.wait_seconds)),
                 timeout_seconds=max(1, int(args.timeout_seconds)),
                 breakpoints=breakpoints,
+                min_score=args.min_score,
+                min_screen_score=args.min_screen_score,
+                min_breakpoint_average=args.min_breakpoint_average,
+                require_ready=bool(args.require_ready),
             ),
         )
     return exit_code
