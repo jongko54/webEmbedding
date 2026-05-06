@@ -323,7 +323,7 @@ def telemetry_properties_for_args(
                 "dry_run": bool(getattr(args, "dry_run", False)),
             }
         )
-    elif command in {"inspect", "capture", "reproduce", "clone"}:
+    elif command in {"inspect", "capture", "reproduce", "clone", "queue"}:
         properties.update(
             {
                 "breakpoint_count": len(getattr(args, "breakpoints", []) or []),
@@ -338,6 +338,23 @@ def telemetry_properties_for_args(
                 "has_storage_state_output_path": bool(
                     getattr(args, "storage_state_output_path", None)
                 ),
+            }
+        )
+        if command == "queue":
+            properties.update(
+                {
+                    "action": getattr(args, "queue_action", None),
+                    "queue_root_set": bool(getattr(args, "queue_root", None)),
+                    "job_id_set": bool(getattr(args, "job_id", None)),
+                }
+            )
+    elif command == "har-replay":
+        properties.update(
+            {
+                "request_count": len(getattr(args, "request", []) or []),
+                "requests_json_set": bool(getattr(args, "requests_json", None)),
+                "out_set": bool(getattr(args, "out", None)),
+                "strict": bool(getattr(args, "strict", False)),
             }
         )
     elif command == "benchmark":
@@ -440,6 +457,24 @@ def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
         verify_fidelity_report,
         build_rebuild_scaffold,
     )
+
+
+def load_job_queue_api() -> Any:
+    capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
+    if str(capture_root) not in sys.path:
+        sys.path.insert(0, str(capture_root))
+    from source_first_clone.job_queue import JobQueue
+
+    return JobQueue
+
+
+def load_har_replay_api() -> tuple[Any, Any]:
+    capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
+    if str(capture_root) not in sys.path:
+        sys.path.insert(0, str(capture_root))
+    from source_first_clone.har_replay import build_replay_report, load_request_specs
+
+    return build_replay_report, load_request_specs
 
 
 def load_json_file(path: str) -> dict[str, Any]:
@@ -1245,6 +1280,89 @@ def command_benchmark(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def queue_clone_args_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "timeout_seconds": int(args.timeout_seconds),
+        "wait_seconds": int(args.wait_seconds),
+        "user_data_dir": args.user_data_dir,
+        "storage_state_path": args.storage_state_path,
+        "storage_state_output_path": args.storage_state_output_path,
+        "capture_html": not bool(args.skip_html),
+        "capture_screenshot": not bool(args.skip_screenshot),
+        "viewport_width": int(args.viewport_width),
+        "viewport_height": int(args.viewport_height),
+        "breakpoint_profiles": args.breakpoints,
+        "exact_requested": not bool(args.not_exact),
+        "license_text": args.license_text,
+        "source_signals": args.source_signals,
+        "include_runtime_trace": not bool(args.skip_runtime_trace),
+    }
+
+
+def command_queue(args: argparse.Namespace) -> int:
+    JobQueue = load_job_queue_api()
+    queue = JobQueue(
+        args.queue_root,
+        max_attempts=int(getattr(args, "max_attempts", 2) or 2),
+        retry_delay_seconds=int(getattr(args, "retry_delay_seconds", 30) or 30),
+    )
+    action = args.queue_action
+    if action == "enqueue":
+        job = queue.enqueue(
+            args.url,
+            output_dir=args.output_dir,
+            clone_args=queue_clone_args_from_args(args),
+            metadata={"cli": "web-embedding queue enqueue"},
+            max_attempts=args.max_attempts,
+            retry_delay_seconds=args.retry_delay_seconds,
+        )
+        print(json.dumps(job, indent=2))
+        return 0
+    if action == "list":
+        jobs = queue.list(states=args.state)
+        print(json.dumps({"queue_root": str(queue.queue_root), "count": len(jobs), "jobs": jobs}, indent=2))
+        return 0
+    if action == "status":
+        print(json.dumps(queue.load(args.job_id), indent=2))
+        return 0
+    if action == "cancel":
+        print(json.dumps(queue.cancel(args.job_id, reason=args.reason), indent=2))
+        return 0
+    if action == "run-next":
+        job = queue.run_next(worker_id=args.worker_id)
+        print(json.dumps({"processed": job is not None, "job": job}, indent=2))
+        return 0
+    if action == "run-job":
+        print(json.dumps(queue.run_job(args.job_id, worker_id=args.worker_id), indent=2))
+        return 0
+    raise ValueError(f"Unknown queue action: {action}")
+
+
+def command_har_replay(args: argparse.Namespace) -> int:
+    build_replay_report, load_request_specs = load_har_replay_api()
+    requests: list[dict[str, Any]] = []
+    if args.requests_json:
+        requests.extend(load_request_specs(args.requests_json))
+    for method, url in args.request or []:
+        requests.append({"method": method, "url": url})
+    report = build_replay_report(
+        args.har,
+        requests=requests,
+        output_path=args.out,
+        consume=not bool(args.no_consume),
+    )
+    payload = report if args.full_json else {
+        "source": report.get("source"),
+        "summary": report.get("summary"),
+        "path": report.get("path"),
+    }
+    print(json.dumps(payload, indent=2))
+    summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+    if args.strict and int(summary.get("missing") or 0) > 0:
+        return 1
+    return 0
+
+
 def command_telemetry(args: argparse.Namespace) -> int:
     paths = build_paths(args.target_home)
     if args.telemetry_action == "enable":
@@ -1397,6 +1515,68 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--capture", action="store_true", help="Also persist a shallow capture bundle per URL.")
     benchmark_parser.add_argument("--skip-runtime-trace", action="store_true", help="When capturing, skip deep runtime trace and keep the benchmark static-only.")
     benchmark_parser.set_defaults(func=command_benchmark)
+
+    queue_parser = subparsers.add_parser("queue", help="Manage the filesystem-backed async clone job queue.")
+    queue_subparsers = queue_parser.add_subparsers(dest="queue_action", required=True)
+
+    queue_enqueue_parser = queue_subparsers.add_parser("enqueue", help="Persist a clone job for later worker execution.")
+    queue_enqueue_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_enqueue_parser.add_argument("--url", required=True, help="Reference URL to clone.")
+    queue_enqueue_parser.add_argument("--output-dir", help="Directory where this job should write clone artifacts.")
+    queue_enqueue_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    queue_enqueue_parser.add_argument("--wait-seconds", type=int, default=8, help="Browser settle time after navigation.")
+    queue_enqueue_parser.add_argument("--user-data-dir", help="Persistent browser profile directory for Playwright.")
+    queue_enqueue_parser.add_argument("--storage-state-path", help="Existing Playwright storage state JSON to apply.")
+    queue_enqueue_parser.add_argument("--storage-state-output-path", help="Where to export Playwright storage state JSON.")
+    queue_enqueue_parser.add_argument("--viewport-width", type=int, default=1440, help="Capture viewport width.")
+    queue_enqueue_parser.add_argument("--viewport-height", type=int, default=1200, help="Capture viewport height.")
+    queue_enqueue_parser.add_argument("--breakpoints", nargs="*", choices=["desktop", "tablet", "mobile"], default=[], help="Additional breakpoint profiles to capture alongside the primary viewport.")
+    queue_enqueue_parser.add_argument("--license-text", help="Optional license text for policy classification.")
+    queue_enqueue_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional source/reuse hints such as remix or export.")
+    queue_enqueue_parser.add_argument("--skip-runtime-trace", action="store_true", help="Skip Playwright runtime capture.")
+    queue_enqueue_parser.add_argument("--skip-html", action="store_true", help="Do not save runtime HTML.")
+    queue_enqueue_parser.add_argument("--skip-screenshot", action="store_true", help="Do not save runtime screenshot.")
+    queue_enqueue_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
+    queue_enqueue_parser.add_argument("--max-attempts", type=int, default=2, help="Maximum worker attempts before terminal failure.")
+    queue_enqueue_parser.add_argument("--retry-delay-seconds", type=int, default=30, help="Initial retry delay for retryable failures.")
+    queue_enqueue_parser.set_defaults(func=command_queue)
+
+    queue_list_parser = queue_subparsers.add_parser("list", help="List queued jobs.")
+    queue_list_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_list_parser.add_argument("--state", action="append", default=[], help="Filter by state. Repeat for multiple states.")
+    queue_list_parser.set_defaults(func=command_queue)
+
+    queue_status_parser = queue_subparsers.add_parser("status", help="Print one job record.")
+    queue_status_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_status_parser.add_argument("--job-id", required=True, help="Job id to load.")
+    queue_status_parser.set_defaults(func=command_queue)
+
+    queue_cancel_parser = queue_subparsers.add_parser("cancel", help="Cancel a queued or retry-wait job.")
+    queue_cancel_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_cancel_parser.add_argument("--job-id", required=True, help="Job id to cancel.")
+    queue_cancel_parser.add_argument("--reason", help="Optional cancellation reason.")
+    queue_cancel_parser.set_defaults(func=command_queue)
+
+    queue_run_next_parser = queue_subparsers.add_parser("run-next", help="Run the next due queued or retry-wait job.")
+    queue_run_next_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_run_next_parser.add_argument("--worker-id", help="Stable worker id for job history.")
+    queue_run_next_parser.set_defaults(func=command_queue)
+
+    queue_run_job_parser = queue_subparsers.add_parser("run-job", help="Run one queued or due retry-wait job by id.")
+    queue_run_job_parser.add_argument("--queue-root", required=True, help="Directory containing queue job JSON files.")
+    queue_run_job_parser.add_argument("--job-id", required=True, help="Job id to run.")
+    queue_run_job_parser.add_argument("--worker-id", help="Stable worker id for job history.")
+    queue_run_job_parser.set_defaults(func=command_queue)
+
+    har_replay_parser = subparsers.add_parser("har-replay", help="Replay request specs against a HAR or webEmbedding network manifest.")
+    har_replay_parser.add_argument("--har", required=True, help="Path to network/har.json, network/har-like.json, or network/manifest.json.")
+    har_replay_parser.add_argument("--request", nargs=2, action="append", metavar=("METHOD", "URL"), default=[], help="Request to replay. Repeat for multiple requests.")
+    har_replay_parser.add_argument("--requests-json", help="JSON array or object with a requests array.")
+    har_replay_parser.add_argument("--out", help="Optional path for replay-report.json.")
+    har_replay_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any requested replay is missing.")
+    har_replay_parser.add_argument("--no-consume", action="store_true", help="Do not advance duplicate-entry cursors while matching requests.")
+    har_replay_parser.add_argument("--full-json", action="store_true", help="Print the full replay report.")
+    har_replay_parser.set_defaults(func=command_har_replay)
 
     telemetry_parser = subparsers.add_parser("telemetry", help="Manage opt-in telemetry settings.")
     telemetry_subparsers = telemetry_parser.add_subparsers(dest="telemetry_action", required=True)

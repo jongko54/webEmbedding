@@ -18,6 +18,9 @@
   "bin": {
     "web-embedding": "bin/web-embedding.mjs"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "bin",
     "bundle",
@@ -35,6 +38,9 @@
     "scripts/benchmark_routes.py",
     "scripts/check_benchmark_report.py",
     "scripts/check_benchmark_evidence.py",
+    "scripts/check_job_queue_smoke.py",
+    "scripts/check_har_replay_smoke.py",
+    "scripts/benchmark_authenticated_corpus.py",
     "scripts/summarize_benchmark_scores.py",
     "scripts/classify_pipeline_failures.py",
     "scripts/check_production_readiness.py",
@@ -46,6 +52,7 @@
     "docs/benchmark-evidence.json",
     "docs/production-pipeline-gates.json",
     "docs/production-pipeline.md",
+    "docs/authenticated-dashboard-corpus.example.json",
     "docs/policy-and-safety-guardrails.md",
     "README.md",
     "LICENSE"
@@ -61,8 +68,11 @@
     "check:clone-score-gate:local": "python3 ./scripts/check_clone_quality_bench.py https://www.mozilla.org/ --output-root ./.tmp/clone-score-gate --wait-seconds 1 --timeout-seconds 35 --no-breakpoints --min-score 85 --min-screen-score 85 --require-ready",
     "check:benchmark-routes:local": "python3 ./scripts/benchmark_routes.py --urls-file docs/universal-benchmark-corpus.txt --corpus-name universal-route-corpus --out ./.tmp/universal-route-benchmark --timeout-seconds 20 && python3 ./scripts/check_benchmark_report.py --report ./.tmp/universal-route-benchmark/universal-route-report.json --expectations docs/universal-benchmark-expectations.json",
     "check:benchmark-evidence:local": "python3 ./scripts/check_benchmark_evidence.py",
+    "check:job-queue:local": "python3 ./scripts/check_job_queue_smoke.py",
+    "check:har-replay:local": "python3 ./scripts/check_har_replay_smoke.py",
+    "check:authenticated-corpus:local": "python3 ./scripts/benchmark_authenticated_corpus.py --manifest docs/authenticated-dashboard-corpus.example.json --validate-only --out ./.tmp/authenticated-dashboard-corpus-validate",
     "classify:pipeline-failures": "python3 ./scripts/classify_pipeline_failures.py",
-    "check:production-readiness:local": "npm run check:benchmark-routes:local && python3 ./scripts/check_production_readiness.py --report ./.tmp/universal-route-benchmark/universal-route-report.json",
+    "check:production-readiness:local": "npm run check:benchmark-routes:local && npm run check:job-queue:local && npm run check:har-replay:local && npm run check:authenticated-corpus:local && python3 ./scripts/check_production_readiness.py --report ./.tmp/universal-route-benchmark/universal-route-report.json",
     "summarize:benchmark-scores": "python3 ./scripts/summarize_benchmark_scores.py"
   },
   "dependencies": {

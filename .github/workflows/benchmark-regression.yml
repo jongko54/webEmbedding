@@ -44,6 +44,15 @@ jobs:
         run: |
           python scripts/check_benchmark_evidence.py
 
+      - name: Run operational smoke checks
+        run: |
+          python scripts/check_job_queue_smoke.py
+          python scripts/check_har_replay_smoke.py
+          python scripts/benchmark_authenticated_corpus.py \
+            --manifest docs/authenticated-dashboard-corpus.example.json \
+            --validate-only \
+            --out ./.tmp/authenticated-dashboard-corpus-validate
+
       - name: Validate production readiness gates
         run: |
           python scripts/check_production_readiness.py \

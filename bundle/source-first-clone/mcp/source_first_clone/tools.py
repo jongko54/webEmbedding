@@ -9,6 +9,8 @@ from .acquisition import detect_runtime_capabilities
 from .acquisition import discover_embed_candidates as discover_embed_candidates_fn
 from .acquisition import inspect_reference, trace_runtime_sources as trace_runtime_sources_fn
 from .capture_bundle import capture_reference_bundle
+from .har_replay import build_replay_report
+from .job_queue import JobQueue
 from .orchestration import clone_reference_url
 from .policy import classify_clone_mode
 from .planning import plan_reproduction_path
@@ -146,6 +148,85 @@ def clone_reference_url_tool(arguments: dict[str, Any]) -> dict[str, Any]:
         license_text=arguments.get("license_text"),
         source_signals=arguments.get("source_signals"),
         include_runtime_trace=bool(arguments.get("include_runtime_trace", True)),
+    )
+
+
+def _queue_clone_args(arguments: dict[str, Any]) -> dict[str, Any]:
+    clone_args = dict(arguments.get("clone_args") or {})
+    for key in (
+        "timeout_seconds",
+        "wait_seconds",
+        "user_data_dir",
+        "storage_state_path",
+        "storage_state_output_path",
+        "capture_html",
+        "capture_screenshot",
+        "viewport_width",
+        "viewport_height",
+        "breakpoint_profiles",
+        "exact_requested",
+        "license_text",
+        "source_signals",
+        "include_runtime_trace",
+    ):
+        if key in arguments and arguments.get(key) is not None:
+            clone_args[key] = arguments[key]
+    return clone_args
+
+
+def enqueue_clone_job_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    queue = JobQueue(
+        arguments["queue_root"],
+        max_attempts=int(arguments.get("max_attempts", 2)),
+        retry_delay_seconds=int(arguments.get("retry_delay_seconds", 30)),
+    )
+    return queue.enqueue(
+        arguments["url"],
+        output_dir=arguments.get("output_dir"),
+        clone_args=_queue_clone_args(arguments),
+        metadata=arguments.get("metadata") if isinstance(arguments.get("metadata"), dict) else None,
+        max_attempts=int(arguments["max_attempts"]) if arguments.get("max_attempts") is not None else None,
+        retry_delay_seconds=int(arguments["retry_delay_seconds"]) if arguments.get("retry_delay_seconds") is not None else None,
+    )
+
+
+def list_clone_jobs_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    queue = JobQueue(arguments["queue_root"])
+    states = arguments.get("states")
+    jobs = queue.list(states=states if isinstance(states, list) else None)
+    return {
+        "queue_root": str(queue.queue_root),
+        "count": len(jobs),
+        "jobs": jobs,
+    }
+
+
+def load_clone_job_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    return JobQueue(arguments["queue_root"]).load(arguments["job_id"])
+
+
+def cancel_clone_job_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    return JobQueue(arguments["queue_root"]).cancel(arguments["job_id"], reason=arguments.get("reason"))
+
+
+def run_clone_job_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    queue = JobQueue(arguments["queue_root"])
+    worker_id = arguments.get("worker_id")
+    if arguments.get("job_id"):
+        return queue.run_job(arguments["job_id"], worker_id=worker_id)
+    job = queue.run_next(worker_id=worker_id)
+    return {"processed": False, "job": None} if job is None else {"processed": True, "job": job}
+
+
+def replay_har_requests_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    requests = arguments.get("requests")
+    if requests is not None and not isinstance(requests, list):
+        raise ValueError("requests must be an array when provided")
+    return build_replay_report(
+        arguments["har_path"],
+        requests=requests,
+        output_path=arguments.get("output_path"),
+        consume=bool(arguments.get("consume", True)),
     )
 
 
@@ -333,6 +414,99 @@ TOOLS = [
             "required": ["url"],
         },
     },
+    {
+        "name": "enqueue_clone_job",
+        "description": "Persist a source-first clone job into a filesystem-backed async queue for later worker execution.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "queue_root": {"type": "string"},
+                "url": {"type": "string"},
+                "output_dir": {"type": "string"},
+                "clone_args": {"type": "object"},
+                "metadata": {"type": "object"},
+                "max_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
+                "retry_delay_seconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+            },
+            "required": ["queue_root", "url"],
+        },
+    },
+    {
+        "name": "list_clone_jobs",
+        "description": "List persisted clone jobs from the filesystem-backed async queue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "queue_root": {"type": "string"},
+                "states": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["queue_root"],
+        },
+    },
+    {
+        "name": "load_clone_job",
+        "description": "Load one persisted clone job by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "queue_root": {"type": "string"},
+                "job_id": {"type": "string"},
+            },
+            "required": ["queue_root", "job_id"],
+        },
+    },
+    {
+        "name": "cancel_clone_job",
+        "description": "Move a queued or retry-wait clone job to cancelled.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "queue_root": {"type": "string"},
+                "job_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["queue_root", "job_id"],
+        },
+    },
+    {
+        "name": "run_clone_job",
+        "description": "Run one clone queue job, or the next due queued/retry-wait job when job_id is omitted.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "queue_root": {"type": "string"},
+                "job_id": {"type": "string"},
+                "worker_id": {"type": "string"},
+            },
+            "required": ["queue_root"],
+        },
+    },
+    {
+        "name": "replay_har_requests",
+        "description": "Replay request specs against a standard HAR, near-HAR, or webEmbedding network manifest and return deterministic response matches.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "har_path": {"type": "string"},
+                "requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "method": {"type": "string"},
+                            "url": {"type": "string"},
+                            "postData": {},
+                        },
+                        "required": ["url"],
+                    },
+                },
+                "output_path": {"type": "string"},
+                "consume": {"type": "boolean"},
+            },
+            "required": ["har_path"],
+        },
+    },
 ]
 
 
@@ -349,6 +523,12 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "build_reproduction_bundle": build_reproduction_bundle_tool,
     "build_rebuild_scaffold": build_rebuild_scaffold_tool,
     "clone_reference_url": clone_reference_url_tool,
+    "enqueue_clone_job": enqueue_clone_job_tool,
+    "list_clone_jobs": list_clone_jobs_tool,
+    "load_clone_job": load_clone_job_tool,
+    "cancel_clone_job": cancel_clone_job_tool,
+    "run_clone_job": run_clone_job_tool,
+    "replay_har_requests": replay_har_requests_tool,
 }
 
 

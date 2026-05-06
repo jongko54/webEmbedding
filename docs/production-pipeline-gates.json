@@ -119,7 +119,8 @@
       "failed",
       "blocked",
       "needs_session",
-      "manual_review"
+      "manual_review",
+      "cancelled"
     ],
     "retry_policy": {
       "max_attempts": 2,

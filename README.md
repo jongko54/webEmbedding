@@ -17,6 +17,8 @@ The current pipeline is strongest for static and semi-static web pages:
 
 It is not a full backend or app-logic clone engine. Login-only screens, app-first or native-app-required services, captcha-heavy sites, maps, games, canvas/WebGL-heavy pages, real-time feeds, payments, booking flows, and private server behavior still need separate handling.
 
+Operationally, the repo is now a production-candidate clone engine for URL-based capture and bounded reconstruction: jobs can be queued, network evidence can be replay-audited from HAR artifacts, authenticated dashboard runs can be driven from user-owned browser state, and local gates verify the route corpus, score checks, package contents, and CI wiring. The remaining hard boundary is server-side product behavior, not front-end evidence capture and reconstruction.
+
 ## Measured Checkpoints
 
 Recent local benchmark runs from this repo:
@@ -58,6 +60,10 @@ Production readiness gates are tracked in `docs/production-pipeline-gates.json`.
 - Operational failure classification:
   - reports typed pipeline action codes such as `network-replay-limited`, `auth-session-missing`, `public-app-gate`, and `canvas-visual-fallback`
   - exposes HAR/network `replay_readiness` before treating captured network evidence as replay-grade
+- Production pipeline helpers:
+  - filesystem-backed async clone job queue with durable JSON records, worker locks, retry scheduling, cancellation, and manifest annotation
+  - deterministic HAR replay engine for standard HAR, near-HAR, and captured `network/manifest.json` artifacts
+  - authenticated dashboard live corpus runner that accepts user-provided `storage_state_path` or `user_data_dir` outside the repo
 - Self-verification:
   - screenshot similarity
   - DOM snapshot similarity
@@ -250,6 +256,7 @@ A clone run can produce:
 - `network/manifest.json`
 - `network/har.json`
 - `network/har-like.json`
+- `network/replay-report.json`
 - `assets/inventory.json`
 - `interactions/states.json`
 - `interactions/trace.json`
@@ -297,6 +304,14 @@ Validate production pipeline gates:
 
 ```bash
 npm run check:production-readiness:local
+```
+
+Run the operational smokes individually:
+
+```bash
+npm run check:job-queue:local
+npm run check:har-replay:local
+npm run check:authenticated-corpus:local
 ```
 
 Classify failure/action codes from a route report:
@@ -363,6 +378,12 @@ git diff --check
   Benchmark expectation validator for exact, minimum, and contains-style checks.
 - `scripts/check_benchmark_evidence.py`
   Benchmark evidence manifest validator.
+- `scripts/check_job_queue_smoke.py`
+  Filesystem async clone job queue smoke test.
+- `scripts/check_har_replay_smoke.py`
+  Deterministic HAR replay engine smoke test.
+- `scripts/benchmark_authenticated_corpus.py`
+  User-provided authenticated dashboard corpus runner.
 - `scripts/summarize_benchmark_scores.py`
   Utility for finding low or high scoring persisted benchmark artifacts under an output root.
 - `scripts/classify_pipeline_failures.py`

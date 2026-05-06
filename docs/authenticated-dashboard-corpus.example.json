@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "corpus_name": "authenticated-dashboard-live-corpus",
+  "defaults": {
+    "wait_seconds": 8,
+    "timeout_seconds": 35,
+    "viewport": {
+      "width": 1440,
+      "height": 1200
+    },
+    "breakpoints": ["desktop", "tablet", "mobile"],
+    "scores": {
+      "min_score": 85,
+      "min_screen_score": 80,
+      "min_breakpoint_average": 75,
+      "require_ready": false
+    }
+  },
+  "items": [
+    {
+      "id": "example-ops-dashboard",
+      "url": "https://app.example.invalid/dashboard",
+      "session": {
+        "storage_state_path": "${WEBEMBEDDING_EXAMPLE_DASHBOARD_STORAGE_STATE}"
+      },
+      "expected": {
+        "selectors": [
+          {
+            "selector": "[data-testid='dashboard-shell']",
+            "min_count": 1
+          },
+          {
+            "selector": "nav[aria-label='Primary']",
+            "min_count": 1
+          }
+        ],
+        "scores": {
+          "min_score": 85,
+          "min_screen_score": 80
+        }
+      }
+    },
+    {
+      "id": "example-analytics-dashboard",
+      "url": "https://app.example.invalid/analytics",
+      "session": {
+        "user_data_dir": "${WEBEMBEDDING_EXAMPLE_DASHBOARD_USER_DATA_DIR}"
+      },
+      "expected": {
+        "selectors": [
+          {
+            "selector": "main",
+            "min_count": 1
+          },
+          {
+            "selector": "[data-testid='kpi-grid']",
+            "min_count": 1
+          }
+        ],
+        "scores": {
+          "min_score": 82,
+          "min_screen_score": 78,
+          "require_ready": false
+        }
+      }
+    }
+  ]
+}

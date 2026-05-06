@@ -95,7 +95,7 @@ def validate_docs(root: Path) -> None:
         raise AssertionError("docs/policy-and-safety-guardrails.md is required")
     production_text = production_doc.read_text().lower()
     policy_text = policy_doc.read_text().lower()
-    for token in ["queued", "retry", "artifact", "pipeline-run-manifest", "manual_review"]:
+    for token in ["queued", "retry", "artifact", "pipeline-run-manifest", "manual_review", "job queue", "har replay", "authenticated dashboard corpus"]:
         if token not in production_text:
             raise AssertionError(f"production pipeline doc missing `{token}`")
     for token in ["permission", "license", "robots", "tos", "pii", "session", "exact reuse", "bounded rebuild"]:
@@ -112,6 +112,9 @@ def validate_ci_and_package(root: Path) -> None:
         "check:benchmark-evidence:local",
         "check:clone-score-gate:local",
         "classify:pipeline-failures",
+        "check:job-queue:local",
+        "check:har-replay:local",
+        "check:authenticated-corpus:local",
         "check:production-readiness:local",
     ]
     missing_scripts = [script for script in required_scripts if script not in scripts]
@@ -120,15 +123,19 @@ def validate_ci_and_package(root: Path) -> None:
     required_files = [
         "scripts/classify_pipeline_failures.py",
         "scripts/check_production_readiness.py",
+        "scripts/check_job_queue_smoke.py",
+        "scripts/check_har_replay_smoke.py",
+        "scripts/benchmark_authenticated_corpus.py",
         "docs/production-pipeline-gates.json",
         "docs/production-pipeline.md",
+        "docs/authenticated-dashboard-corpus.example.json",
         "docs/policy-and-safety-guardrails.md",
     ]
     missing_files = [path for path in required_files if path not in files]
     if missing_files:
         raise AssertionError(f"package files missing: {', '.join(missing_files)}")
     workflow = (root / ".github" / "workflows" / "benchmark-regression.yml").read_text()
-    for token in ["check_benchmark_evidence.py", "check_production_readiness.py"]:
+    for token in ["check_benchmark_evidence.py", "check_production_readiness.py", "check_job_queue_smoke.py", "check_har_replay_smoke.py", "benchmark_authenticated_corpus.py"]:
         if token not in workflow:
             raise AssertionError(f"benchmark regression workflow missing `{token}`")
 
