@@ -1,10 +1,12 @@
 # webEmbedding
 
-`webEmbedding` is a source-first website cloning workflow packaged as a Skill + MCP server for AI coding agents.
+`webEmbedding` is a source-first website cloning engine for AI coding agents: it captures live pages with Playwright, replays network evidence from HAR artifacts, rebuilds only when direct reuse is blocked, and self-verifies the result.
 
-It does more than ask an AI to "clone this site." It inspects the URL, chooses the safest reuse or rebuild path, captures the live page, extracts structured page evidence, generates reusable frontend reconstruction artifacts when direct reuse is blocked, and then self-verifies the result with visual, DOM, computed-style, interaction, and responsive-breakpoint checks.
+It ships as a Skill + MCP server. Instead of asking a model to "clone this site" from a screenshot, it inspects the URL, chooses a reuse or rebuild route, captures DOM/runtime HTML/styles/assets/network traces, generates bounded frontend reconstruction artifacts, and checks the output with visual, DOM, computed-style, interaction, and responsive-breakpoint verification.
 
 ![webEmbedding Skill and MCP workflow](./docs/assets/webembedding-skill-mcp-card.png)
+
+GitHub listing, social preview, and launch-copy recommendations are in [`docs/github-listing.md`](./docs/github-listing.md).
 
 ## Current Status
 
@@ -98,6 +100,17 @@ web-embedding install
 web-embedding doctor
 ```
 
+Clone a public URL after installing:
+
+```bash
+web-embedding clone \
+  --url https://developer.mozilla.org/en-US/ \
+  --output-dir ./.tmp/mdn-clone \
+  --wait-seconds 2 \
+  --timeout-seconds 35 \
+  --breakpoints mobile tablet
+```
+
 If you already have an older local plugin installed, overwrite it with:
 
 ```bash
@@ -167,6 +180,23 @@ WEB_EMBEDDING_TELEMETRY_PROMPT=0
 WEB_EMBEDDING_TELEMETRY_ENDPOINT=https://your-collector.example/events
 WEB_EMBEDDING_TELEMETRY_LOG=./telemetry.jsonl
 ```
+
+Run a local/self-hosted JSONL collector:
+
+```bash
+npm run telemetry:collector -- --host 127.0.0.1 --port 8765 --out ./telemetry.jsonl
+WEB_EMBEDDING_TELEMETRY=1 \
+WEB_EMBEDDING_TELEMETRY_ENDPOINT=http://127.0.0.1:8765/events \
+web-embedding doctor
+```
+
+Summarize collected usage:
+
+```bash
+npm run telemetry:summarize -- ./telemetry.jsonl
+```
+
+The summary includes install and clone executions, total command executions, unique anonymous install IDs, command counts, and version counts. See [docs/telemetry.md](docs/telemetry.md) for collector and analyzer details.
 
 ## Quick Start
 
@@ -401,7 +431,7 @@ git diff --check
 
 The strongest claim for this project is:
 
-> A benchmark-first Skill + MCP workflow for URL-based website cloning that handles iframe-blocked pages and reports reproducible visual, DOM, style, interaction, and responsive breakpoint scores.
+> A source-first website cloning engine that combines Playwright capture, HAR replay, MCP tools, and self-verification to rebuild iframe-blocked public pages with reproducible visual, DOM, style, interaction, and responsive scores.
 
 Avoid treating the output as a legal or ownership bypass. The engine can reconstruct public page structure, but permission, licensing, and acceptable use still matter.
 

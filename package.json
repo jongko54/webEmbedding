@@ -12,6 +12,18 @@
   "bugs": {
     "url": "https://github.com/jongko54/webEmbedding/issues"
   },
+  "keywords": [
+    "website-cloning",
+    "ai-agent",
+    "mcp",
+    "playwright",
+    "har",
+    "web-automation",
+    "frontend",
+    "visual-regression",
+    "browser-capture",
+    "site-reconstruction"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -45,6 +57,8 @@
     "scripts/classify_pipeline_failures.py",
     "scripts/check_production_readiness.py",
     "scripts/release_bundle.py",
+    "scripts/telemetry_collector.py",
+    "scripts/summarize_telemetry.py",
     "!scripts/**/__pycache__",
     "!scripts/**/*.pyc",
     "docs/universal-benchmark-corpus.txt",
@@ -54,6 +68,8 @@
     "docs/production-pipeline.md",
     "docs/authenticated-dashboard-corpus.example.json",
     "docs/policy-and-safety-guardrails.md",
+    "docs/github-listing.md",
+    "docs/telemetry.md",
     "README.md",
     "LICENSE"
   ],
@@ -73,7 +89,9 @@
     "check:authenticated-corpus:local": "python3 ./scripts/benchmark_authenticated_corpus.py --manifest docs/authenticated-dashboard-corpus.example.json --validate-only --out ./.tmp/authenticated-dashboard-corpus-validate",
     "classify:pipeline-failures": "python3 ./scripts/classify_pipeline_failures.py",
     "check:production-readiness:local": "npm run check:benchmark-routes:local && npm run check:job-queue:local && npm run check:har-replay:local && npm run check:authenticated-corpus:local && python3 ./scripts/check_production_readiness.py --report ./.tmp/universal-route-benchmark/universal-route-report.json",
-    "summarize:benchmark-scores": "python3 ./scripts/summarize_benchmark_scores.py"
+    "summarize:benchmark-scores": "python3 ./scripts/summarize_benchmark_scores.py",
+    "telemetry:collector": "python3 ./scripts/telemetry_collector.py",
+    "telemetry:summarize": "python3 ./scripts/summarize_telemetry.py"
   },
   "dependencies": {
     "playwright-core": "^1.59.1"
