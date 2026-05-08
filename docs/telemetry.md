@@ -1,6 +1,6 @@
 # Opt-in Telemetry Collection
 
-webEmbedding telemetry is disabled by default. When a user opts in, the installer sends a small anonymous JSON command-completion event to the endpoint they configure. The payload is designed for usage counting only: it does not require tokens and should not include target URLs, local paths, captured HTML, screenshots, storage state, environment variables, API keys, or command output.
+webEmbedding telemetry is disabled by default. When a user opts in, the installer sends a small anonymous JSON command-completion event to the configured endpoint. The default endpoint is `https://vercel-telemetry-rho.vercel.app/api/events`. The payload is designed for usage counting only: it does not require tokens and should not include target URLs, local paths, captured HTML, screenshots, storage state, environment variables, API keys, or command output. It includes a coarse execution-context label such as `local`, `ci`, `github-actions`, `codex`, `claude-code`, or `cursor`; it does not send the underlying environment variable names or values.
 
 ## Run A Local Collector
 
@@ -47,6 +47,19 @@ The analyzer prints total event count, install execution count, clone execution 
 ```bash
 python3 ./scripts/summarize_telemetry.py ./telemetry.jsonl --json
 ```
+
+The analyzer also accepts Vercel JSON logs from the deployed collector:
+
+```bash
+vercel logs https://vercel-telemetry-rho.vercel.app \
+  --since 24h \
+  --no-follow \
+  --json \
+  --expand \
+  | python3 ./scripts/summarize_telemetry.py /dev/stdin --json
+```
+
+Collector records are logged with the `WEB_EMBEDDING_TELEMETRY` prefix.
 
 ## Privacy Notes
 

@@ -22,11 +22,11 @@ from typing import Any
 
 PLUGIN_NAME = "source-first-clone"
 PACKAGE_NAME = "web-embedding"
-PACKAGE_VERSION = "0.3.3"
+PACKAGE_VERSION = "0.3.4"
 TELEMETRY_SCHEMA_VERSION = 1
 TELEMETRY_CONFIG_DIR = ".web-embedding"
 TELEMETRY_CONFIG_FILE = "telemetry.json"
-DEFAULT_TELEMETRY_ENDPOINT = ""
+DEFAULT_TELEMETRY_ENDPOINT = "https://vercel-telemetry-rho.vercel.app/api/events"
 TELEMETRY_PROMPT_ENV = "WEB_EMBEDDING_TELEMETRY_PROMPT"
 MARKETPLACE_ENTRY = {
     "name": PLUGIN_NAME,
@@ -148,6 +148,21 @@ def utc_now_iso() -> str:
 def debug_telemetry(message: str) -> None:
     if parse_bool_env(os.environ.get("WEB_EMBEDDING_TELEMETRY_DEBUG")) is True:
         print(f"telemetry: {message}", file=sys.stderr)
+
+
+def telemetry_execution_context() -> str:
+    env_names = set(os.environ)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return "github-actions"
+    if any(name.startswith("CODEX_") for name in env_names) or "CODEX_HOME" in env_names:
+        return "codex"
+    if any(name.startswith("CLAUDE") for name in env_names):
+        return "claude-code"
+    if any(name.startswith("CURSOR_") for name in env_names):
+        return "cursor"
+    if parse_bool_env(os.environ.get("CI")) is True:
+        return "ci"
+    return "local"
 
 
 def package_version() -> str:
@@ -410,6 +425,7 @@ def emit_telemetry_event(
                 "os_release": platform.release(),
                 "machine": platform.machine(),
                 "python": platform.python_version(),
+                "execution_context": telemetry_execution_context(),
             },
             "properties": safe_telemetry_value(properties),
         }

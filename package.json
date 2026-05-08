@@ -1,6 +1,6 @@
 {
   "name": "web-embedding",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "type": "module",
   "license": "MIT",

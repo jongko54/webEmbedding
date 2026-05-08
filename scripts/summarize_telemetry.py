@@ -11,6 +11,24 @@ from pathlib import Path
 from typing import Any
 
 
+VERCEL_LOG_PREFIX = "WEB_EMBEDDING_TELEMETRY "
+
+
+def telemetry_payload_from_record(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if isinstance(payload.get("event"), str) and isinstance(payload.get("anonymous_id"), str):
+        return payload
+
+    message = payload.get("message")
+    if isinstance(message, str) and message.startswith(VERCEL_LOG_PREFIX):
+        try:
+            nested = json.loads(message[len(VERCEL_LOG_PREFIX) :])
+        except json.JSONDecodeError:
+            return None
+        return nested if isinstance(nested, dict) else None
+
+    return None
+
+
 def nested_get(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
     current: Any = payload
     for key in path:
@@ -40,13 +58,21 @@ def event_version(payload: dict[str, Any]) -> str | None:
     )
 
 
+def event_execution_context(payload: dict[str, Any]) -> str | None:
+    return string_value(nested_get(payload, ("runtime", "execution_context"))) or string_value(
+        nested_get(payload, ("properties", "execution_context"))
+    )
+
+
 def summarize(path: Path) -> dict[str, Any]:
     event_count = 0
     invalid_lines = 0
+    skipped_lines = 0
     anonymous_ids: set[str] = set()
     event_counts: collections.Counter[str] = collections.Counter()
     command_counts: collections.Counter[str] = collections.Counter()
     version_counts: collections.Counter[str] = collections.Counter()
+    context_counts: collections.Counter[str] = collections.Counter()
 
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -62,7 +88,13 @@ def summarize(path: Path) -> dict[str, Any]:
                 invalid_lines += 1
                 continue
 
+            telemetry_payload = telemetry_payload_from_record(payload)
+            if telemetry_payload is None:
+                skipped_lines += 1
+                continue
+
             event_count += 1
+            payload = telemetry_payload
             anonymous_id = string_value(payload.get("anonymous_id"))
             if anonymous_id:
                 anonymous_ids.add(anonymous_id)
@@ -76,9 +108,13 @@ def summarize(path: Path) -> dict[str, Any]:
             version = event_version(payload) or "unknown"
             version_counts[version] += 1
 
+            context = event_execution_context(payload) or "unknown"
+            context_counts[context] += 1
+
     return {
         "events": event_count,
         "invalid_lines": invalid_lines,
+        "skipped_lines": skipped_lines,
         "unique_anonymous_ids": len(anonymous_ids),
         "install_executions": command_counts.get("install", 0),
         "clone_executions": command_counts.get("clone", 0),
@@ -88,6 +124,7 @@ def summarize(path: Path) -> dict[str, Any]:
         "events_by_name": dict(event_counts.most_common()),
         "commands": dict(command_counts.most_common()),
         "versions": dict(version_counts.most_common()),
+        "execution_contexts": dict(context_counts.most_common()),
     }
 
 
@@ -121,6 +158,7 @@ def main() -> int:
 
     print(f"events: {summary['events']}")
     print(f"invalid_lines: {summary['invalid_lines']}")
+    print(f"skipped_lines: {summary['skipped_lines']}")
     print(f"unique_anonymous_ids: {summary['unique_anonymous_ids']}")
     print(f"install_executions: {summary['install_executions']}")
     print(f"clone_executions: {summary['clone_executions']}")
@@ -128,6 +166,7 @@ def main() -> int:
     print_counter("events_by_name", summary["events_by_name"])
     print_counter("commands", summary["commands"])
     print_counter("versions", summary["versions"])
+    print_counter("execution_contexts", summary["execution_contexts"])
     return 0
 
 
