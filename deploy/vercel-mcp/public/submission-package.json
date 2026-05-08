@@ -5,7 +5,7 @@
   "company_url": "https://webembedding-mcp.vercel.app/",
   "privacy_url": "https://webembedding-mcp.vercel.app/privacy.html",
   "terms_url": "https://webembedding-mcp.vercel.app/terms.html",
-  "logo_url": "https://webembedding-mcp.vercel.app/icon.svg",
+  "logo_url": "https://webembedding-mcp.vercel.app/icon.png",
   "short_description": "Source-first URL intake for embed/source routing and local web reproduction handoff.",
   "description": "webEmbedding helps AI coding agents inspect public or user-authorized web pages before reproducing them. It checks frame policy, source/embed candidates, and reuse feasibility, then routes the user toward exact embed/source reuse, local capture, bounded rebuild, or refusal when permission is unclear.",
   "hosted_tools": [
