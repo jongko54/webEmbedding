@@ -1,5 +1,7 @@
 # webEmbedding
 
+<!-- mcp-name: io.github.jongko54/web-embedding -->
+
 `webEmbedding` is a source-first website cloning engine for AI coding agents: it captures live pages with Playwright, replays network evidence from HAR artifacts, rebuilds only when direct reuse is blocked, and self-verifies the result.
 
 It ships as a Skill + MCP server. Instead of asking a model to "clone this site" from a screenshot, it inspects the URL, chooses a reuse or rebuild route, captures DOM/runtime HTML/styles/assets/network traces, generates bounded frontend reconstruction artifacts, and checks the output with visual, DOM, computed-style, interaction, and responsive-breakpoint verification.
@@ -123,6 +125,45 @@ You can also run the installer without a global install:
 ```bash
 npx web-embedding install
 ```
+
+### Use As An MCP Server
+
+For MCP clients that can launch npm stdio servers:
+
+```json
+{
+  "mcpServers": {
+    "source-first-clone": {
+      "command": "npx",
+      "args": ["-y", "web-embedding@latest", "mcp"]
+    }
+  }
+}
+```
+
+For local smoke testing:
+
+```bash
+npx web-embedding@latest mcp
+```
+
+The MCP Registry identity is `io.github.jongko54/web-embedding`; `server.json` and `package.json#mcpName` are kept in sync for registry ownership verification.
+
+### Agent Marketplaces
+
+This repository includes marketplace metadata for the two local agent surfaces:
+
+- Codex: `.agents/plugins/marketplace.json` points to `./bundle/source-first-clone`.
+- Claude Code: `.claude-plugin/marketplace.json` points to the same bundle and the bundle includes `.claude-plugin/plugin.json`.
+
+Claude Code users can add the marketplace from GitHub with:
+
+```text
+/plugin marketplace add jongko54/webEmbedding
+/plugin install source-first-clone@webembedding
+```
+
+AI auto-selection expectations and golden prompts live in `docs/ai-distribution.md` and `evals/ai-selection/webembedding-golden-prompts.json`.
 
 ### Install From Release
 

@@ -1,0 +1,58 @@
+name: Publish MCP Registry
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  publish-mcp-registry:
+    if: vars.ENABLE_MCP_REGISTRY_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate package metadata
+        run: npm run check:ai-selection:local
+
+      - name: Wait for npm package version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 30); do
+            if npm view "web-embedding@${VERSION}" version >/dev/null 2>&1; then
+              echo "web-embedding@${VERSION} is available on npm."
+              exit 0
+            fi
+            echo "Waiting for web-embedding@${VERSION} on npm (${attempt}/30)..."
+            sleep 20
+          done
+          echo "web-embedding@${VERSION} was not visible on npm in time." >&2
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish

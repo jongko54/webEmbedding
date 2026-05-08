@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.1",
+  "version": "0.3.5",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "author": {
     "name": "Jongho",
@@ -15,7 +15,9 @@
     "source-first",
     "embed",
     "clone",
-    "reference-intake"
+    "reference-intake",
+    "mcp-registry",
+    "claude-code"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
@@ -31,8 +33,8 @@
       "Write"
     ],
     "websiteURL": "https://github.com/jongko54/webEmbedding#readme",
-    "privacyPolicyURL": "https://github.com/jongko54/webEmbedding#readme",
-    "termsOfServiceURL": "https://github.com/jongko54/webEmbedding#readme",
+    "privacyPolicyURL": "https://github.com/jongko54/webEmbedding/blob/main/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/jongko54/webEmbedding/blob/main/docs/terms.md",
     "defaultPrompt": [
       "Use the original embed or preview URL before recreating this reference.",
       "If the original page itself is frameable, use direct iframe reuse instead of rebuilding it.",

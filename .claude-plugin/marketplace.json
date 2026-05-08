@@ -1,0 +1,30 @@
+{
+  "name": "webembedding",
+  "owner": {
+    "name": "Jongho"
+  },
+  "description": "Claude Code marketplace for source-first URL clone, capture, rebuild, and fidelity verification workflows.",
+  "version": "0.3.5",
+  "plugins": [
+    {
+      "name": "source-first-clone",
+      "source": "./bundle/source-first-clone",
+      "description": "Source-first URL clone, capture, bounded rebuild, and fidelity verification workflow.",
+      "version": "0.3.5",
+      "author": {
+        "name": "Jongho"
+      },
+      "homepage": "https://github.com/jongko54/webEmbedding#readme",
+      "repository": "https://github.com/jongko54/webEmbedding",
+      "license": "MIT",
+      "category": "developer-tools",
+      "keywords": [
+        "source-first",
+        "website-cloning",
+        "mcp",
+        "playwright",
+        "fidelity"
+      ]
+    }
+  ]
+}

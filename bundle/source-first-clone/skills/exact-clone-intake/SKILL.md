@@ -1,11 +1,13 @@
 ---
 name: "exact-clone-intake"
-description: "Use when a user gives a URL and wants the page copied, cloned, embedded, or reconstructed with high fidelity. Prefer exact reuse when possible; otherwise capture structured evidence, build a bounded frontend scaffold, and verify the result."
+description: "Use when a user gives a URL and wants the page copied, cloned, embedded, captured, source-routed, or reconstructed with high fidelity. Trigger on Korean requests like 그대로 가져와줘 or 완전 똑같이. Prefer exact reuse when possible; otherwise capture structured evidence, build a bounded frontend scaffold, and verify the result."
 ---
 
 # Exact Clone Intake
 
 Treat requests like `그대로 가져와줘`, `완전 똑같이`, `same`, `exact`, `as-is`, and `clone this` as source-first clone requests.
+
+Do not use this skill for generic URL summarization, data scraping, localhost debugging, original page design, package maintenance, or requests to bypass auth, paywalls, captcha, ownership, or license boundaries.
 
 This skill is paired with the `source-first-clone` MCP server. It is meant for general AI coding workflows, not a single framework. The important behavior is: inspect first, capture evidence, reuse when allowed, rebuild only when needed, and verify the output instead of trusting prompt-only generation.
 

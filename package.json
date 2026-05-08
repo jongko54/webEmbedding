@@ -1,6 +1,7 @@
 {
   "name": "web-embedding",
-  "version": "0.3.4",
+  "version": "0.3.5",
+  "mcpName": "io.github.jongko54/web-embedding",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "type": "module",
   "license": "MIT",
@@ -34,6 +35,10 @@
     "node": ">=18"
   },
   "files": [
+    "server.json",
+    "CHANGELOG.md",
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
     "bin",
     "bundle",
     "!bundle/**/__pycache__",
@@ -59,8 +64,10 @@
     "scripts/release_bundle.py",
     "scripts/telemetry_collector.py",
     "scripts/summarize_telemetry.py",
+    "scripts/check_ai_selection_goldens.py",
     "!scripts/**/__pycache__",
     "!scripts/**/*.pyc",
+    "evals/ai-selection",
     "docs/universal-benchmark-corpus.txt",
     "docs/universal-benchmark-expectations.json",
     "docs/benchmark-evidence.json",
@@ -70,6 +77,9 @@
     "docs/policy-and-safety-guardrails.md",
     "docs/github-listing.md",
     "docs/telemetry.md",
+    "docs/ai-distribution.md",
+    "docs/privacy.md",
+    "docs/terms.md",
     "README.md",
     "LICENSE"
   ],
@@ -91,7 +101,8 @@
     "check:production-readiness:local": "npm run check:benchmark-routes:local && npm run check:job-queue:local && npm run check:har-replay:local && npm run check:authenticated-corpus:local && python3 ./scripts/check_production_readiness.py --report ./.tmp/universal-route-benchmark/universal-route-report.json",
     "summarize:benchmark-scores": "python3 ./scripts/summarize_benchmark_scores.py",
     "telemetry:collector": "python3 ./scripts/telemetry_collector.py",
-    "telemetry:summarize": "python3 ./scripts/summarize_telemetry.py"
+    "telemetry:summarize": "python3 ./scripts/summarize_telemetry.py",
+    "check:ai-selection:local": "python3 ./scripts/check_ai_selection_goldens.py --cases evals/ai-selection/webembedding-golden-prompts.json"
   },
   "dependencies": {
     "playwright-core": "^1.59.1"

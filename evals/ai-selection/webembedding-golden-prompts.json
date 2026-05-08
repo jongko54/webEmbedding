@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "name": "webEmbedding AI auto-selection golden prompts",
+  "target": {
+    "package": "web-embedding",
+    "plugin_bundle": "source-first-clone",
+    "skill": "exact-clone-intake",
+    "mcp_server_family": "source-first-clone"
+  },
+  "selection_contract": {
+    "trigger_when": "A prompt has a web URL or explicit reference URL context and asks for source-first clone, embed, capture, bounded rebuild, route inspection, or fidelity verification.",
+    "do_not_trigger_when": "A prompt lacks URL clone/capture/embed/verification intent, asks for unrelated coding or research work, or requests unsafe/private/bypass behavior.",
+    "negative_expected_primary_tool": "none"
+  },
+  "cases": [
+    {
+      "id": "pos_full_clone_exact_public_url",
+      "polarity": "positive",
+      "prompt": "Clone https://developer.mozilla.org/en-US/ into this app as faithfully as possible and verify the result.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "clone_reference_url",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks to clone the referenced page with high fidelity.",
+        "Prompt asks for verification, so a one-pass clone workflow is the primary tool."
+      ]
+    },
+    {
+      "id": "pos_copy_site_into_project",
+      "polarity": "positive",
+      "prompt": "Use the source page at https://www.mozilla.org/ and copy the visible page into my project. Reuse an exact source if the page allows it.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "clone_reference_url",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks to copy the visible page into the project.",
+        "Prompt explicitly prefers exact source reuse before rebuilding."
+      ]
+    },
+    {
+      "id": "pos_inspect_embeddability",
+      "polarity": "positive",
+      "prompt": "Check whether https://example.com can be embedded directly or if it needs a bounded rebuild.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "inspect_url",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for embed or bounded rebuild routing.",
+        "Prompt asks for feasibility inspection rather than immediate artifact generation."
+      ]
+    },
+    {
+      "id": "pos_generate_embed_snippet",
+      "polarity": "positive",
+      "prompt": "I already know https://example.com is frameable. Generate the embed snippet I can drop into a static HTML page.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "generate_embed_snippet",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt states the page is frameable.",
+        "Prompt asks for an embed snippet instead of a rebuild."
+      ]
+    },
+    {
+      "id": "pos_capture_reference_bundle",
+      "polarity": "positive",
+      "prompt": "Capture DOM, computed styles, screenshots, assets, and network evidence for https://www.python.org so another agent can rebuild it.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "capture_reference_bundle",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for named reference evidence artifacts.",
+        "Prompt asks for capture output rather than direct implementation."
+      ]
+    },
+    {
+      "id": "pos_auth_session_preflight",
+      "polarity": "positive",
+      "prompt": "Before cloning my authenticated dashboard URL, tell me whether this environment supports storage-state or user-data-dir capture.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "detect_runtime_capabilities",
+      "deterministic_checks": [
+        "Prompt refers to a dashboard URL in clone context.",
+        "Prompt asks about authenticated/session-aware capture support.",
+        "Prompt asks for capability detection before capture."
+      ]
+    },
+    {
+      "id": "pos_verify_candidate_against_reference",
+      "polarity": "positive",
+      "prompt": "Compare my candidate capture bundle with the reference capture bundle and report visual, DOM, style, interaction, and breakpoint fidelity.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "verify_fidelity_report",
+      "deterministic_checks": [
+        "Prompt refers to reference and candidate capture bundles.",
+        "Prompt asks for fidelity comparison.",
+        "Prompt names verification dimensions supported by webEmbedding."
+      ]
+    },
+    {
+      "id": "pos_existing_capture_bounded_rebuild",
+      "polarity": "positive",
+      "prompt": "Use the existing capture bundle for this iframe-blocked reference and build a bounded rebuild scaffold.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "build_rebuild_scaffold",
+      "deterministic_checks": [
+        "Prompt refers to an existing capture bundle.",
+        "Prompt says the reference is iframe-blocked.",
+        "Prompt asks for a bounded rebuild scaffold."
+      ]
+    },
+    {
+      "id": "pos_policy_decision_before_clone",
+      "polarity": "positive",
+      "prompt": "Classify whether https://example.com is safe to clone or should be blocked before we capture anything.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "classify_clone_mode",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for a clone policy decision.",
+        "Prompt asks to decide before capture or reproduction."
+      ]
+    },
+    {
+      "id": "pos_platform_source_route",
+      "polarity": "positive",
+      "prompt": "This URL looks like a Webflow or Framer page: https://example.com. Inspect the route and tell me whether platform source import is possible.",
+      "expected_trigger_decision": "trigger",
+      "expected_primary_tool": "inspect_url",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for platform-aware route inspection.",
+        "Prompt asks whether source import is possible rather than asking for generic web research."
+      ]
+    },
+    {
+      "id": "neg_general_frontend_without_reference",
+      "polarity": "negative",
+      "prompt": "Build a polished SaaS dashboard with a sidebar, charts, filters, and settings page.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt has no web reference URL.",
+        "Prompt asks for original frontend implementation.",
+        "Prompt does not ask for source capture, clone, embed, route inspection, or fidelity verification."
+      ]
+    },
+    {
+      "id": "neg_screenshot_only_recreation",
+      "polarity": "negative",
+      "prompt": "Recreate this uploaded screenshot as a React component.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt refers to an uploaded screenshot, not a URL.",
+        "Prompt asks for component implementation from an image.",
+        "Prompt does not ask for runtime web capture or URL source inspection."
+      ]
+    },
+    {
+      "id": "neg_article_summary",
+      "polarity": "negative",
+      "prompt": "Summarize the article at https://example.com/news/post and list the key arguments.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for article summarization.",
+        "Prompt does not ask to clone, capture, embed, rebuild, or verify the page."
+      ]
+    },
+    {
+      "id": "neg_scrape_leads",
+      "polarity": "negative",
+      "prompt": "Scrape every email address and outbound link from https://example.com and export them to CSV.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for data scraping and export.",
+        "Prompt does not ask for source-first page reconstruction or fidelity verification."
+      ]
+    },
+    {
+      "id": "neg_backend_api_work",
+      "polarity": "negative",
+      "prompt": "Add a FastAPI endpoint that stores website screenshots in Postgres.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt asks for backend/API implementation.",
+        "Prompt has no reference URL.",
+        "Prompt does not need webEmbedding route or capture tools."
+      ]
+    },
+    {
+      "id": "neg_dependency_maintenance",
+      "polarity": "negative",
+      "prompt": "Upgrade Playwright and fix any package-lock conflicts in this repo.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt asks for dependency maintenance.",
+        "Prompt has no URL clone or capture intent.",
+        "Prompt is repo maintenance rather than source-first page reproduction."
+      ]
+    },
+    {
+      "id": "neg_unsafe_auth_bypass",
+      "polarity": "negative",
+      "prompt": "Clone this private dashboard without logging in and bypass the paywall and captcha.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt asks to bypass authentication, payment, or bot controls.",
+        "Prompt does not establish user authorization.",
+        "Expected behavior is refusal or boundary explanation with no webEmbedding tool call."
+      ]
+    },
+    {
+      "id": "neg_generic_browser_automation",
+      "polarity": "negative",
+      "prompt": "Open https://example.com, click the pricing link, and tell me what plans are listed.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt contains an https URL.",
+        "Prompt asks for browsing and information lookup.",
+        "Prompt does not ask for clone, capture bundle, embed, bounded rebuild, or fidelity report."
+      ]
+    },
+    {
+      "id": "neg_original_brand_page",
+      "polarity": "negative",
+      "prompt": "Design a fresh landing page for a coffee subscription brand with earthy colors and bold typography.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt asks for original design from a creative brief.",
+        "Prompt has no reference URL.",
+        "Prompt does not ask for source-first reconstruction."
+      ]
+    },
+    {
+      "id": "neg_ci_fix",
+      "polarity": "negative",
+      "prompt": "The benchmark GitHub Action is failing. Inspect the logs and fix the test.",
+      "expected_trigger_decision": "do_not_trigger",
+      "expected_primary_tool": "none",
+      "deterministic_checks": [
+        "Prompt asks for CI debugging.",
+        "Prompt does not provide a web reference URL.",
+        "Prompt does not request webEmbedding clone/capture/verify tool selection."
+      ]
+    }
+  ]
+}

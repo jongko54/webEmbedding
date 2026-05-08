@@ -22,7 +22,7 @@ from typing import Any
 
 PLUGIN_NAME = "source-first-clone"
 PACKAGE_NAME = "web-embedding"
-PACKAGE_VERSION = "0.3.4"
+PACKAGE_VERSION = "0.3.5"
 TELEMETRY_SCHEMA_VERSION = 1
 TELEMETRY_CONFIG_DIR = ".web-embedding"
 TELEMETRY_CONFIG_FILE = "telemetry.json"
@@ -493,6 +493,15 @@ def load_har_replay_api() -> tuple[Any, Any]:
     return build_replay_report, load_request_specs
 
 
+def load_mcp_serve() -> Any:
+    capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
+    if str(capture_root) not in sys.path:
+        sys.path.insert(0, str(capture_root))
+    from source_first_clone.protocol import serve
+
+    return serve
+
+
 def load_json_file(path: str) -> dict[str, Any]:
     payload = json.loads(Path(path).expanduser().resolve().read_text())
     if not isinstance(payload, dict):
@@ -699,6 +708,11 @@ def command_capabilities(args: argparse.Namespace) -> int:
     _inspect_reference, detect_runtime_capabilities, _capture_reference_bundle, _build_reproduction_bundle, _clone_reference_url, _verify_fidelity_report, _build_rebuild_scaffold = load_capture_api()
     print(json.dumps(detect_runtime_capabilities(), indent=2))
     return 0
+
+
+def command_mcp(args: argparse.Namespace) -> int:
+    del args
+    return int(load_mcp_serve()() or 0)
 
 
 def compact_site_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1442,6 +1456,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     capabilities_parser = subparsers.add_parser("capabilities", help="Detect runtime capture dependencies.")
     capabilities_parser.set_defaults(func=command_capabilities)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Run the bundled source-first-clone MCP server over stdio.")
+    mcp_parser.set_defaults(func=command_mcp)
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a URL and print its universal site profile and route hints.")
     inspect_parser.add_argument("--url", required=True, help="Reference URL to inspect.")

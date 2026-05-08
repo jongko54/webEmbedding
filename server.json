@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jongko54/web-embedding",
+  "title": "webEmbedding",
+  "description": "Source-first URL clone, capture, rebuild, and fidelity verification tools.",
+  "version": "0.3.5",
+  "websiteUrl": "https://github.com/jongko54/webEmbedding#readme",
+  "repository": {
+    "url": "https://github.com/jongko54/webEmbedding",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "web-embedding",
+      "version": "0.3.5",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

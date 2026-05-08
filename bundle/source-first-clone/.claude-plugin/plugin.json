@@ -1,0 +1,29 @@
+{
+  "name": "source-first-clone",
+  "version": "0.3.5",
+  "description": "Source-first URL clone, capture, bounded rebuild, and fidelity verification workflow.",
+  "author": {
+    "name": "Jongho"
+  },
+  "homepage": "https://github.com/jongko54/webEmbedding#readme",
+  "repository": "https://github.com/jongko54/webEmbedding",
+  "license": "MIT",
+  "keywords": [
+    "source-first",
+    "website-cloning",
+    "mcp",
+    "playwright",
+    "fidelity"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "source-first-clone": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/server.py"
+      ],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}",
+      "autoStart": false
+    }
+  }
+}

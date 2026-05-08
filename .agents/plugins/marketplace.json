@@ -1,0 +1,20 @@
+{
+  "name": "webembedding",
+  "interface": {
+    "displayName": "webEmbedding"
+  },
+  "plugins": [
+    {
+      "name": "source-first-clone",
+      "source": {
+        "source": "local",
+        "path": "./bundle/source-first-clone"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
