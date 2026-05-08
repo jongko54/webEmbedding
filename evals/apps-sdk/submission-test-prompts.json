@@ -4,7 +4,7 @@
   "target": {
     "package": "web-embedding",
     "current_distribution": "local stdio MCP",
-    "next_distribution": "hosted HTTPS MCP Apps SDK app"
+    "next_distribution": "hosted HTTPS MCP Apps SDK app at https://webembedding-mcp.vercel.app/mcp"
   },
   "purpose": "Developer Mode prompt coverage for Apps SDK submission review readiness. These cases are documentation and review material only; they do not execute clone jobs or mutate package metadata.",
   "cases": [
@@ -17,10 +17,10 @@
     },
     {
       "id": "apps_sdk_capture_public_reference",
-      "prompt": "Capture DOM, computed styles, screenshots, assets, and network evidence for https://www.python.org so my team can rebuild it.",
+      "prompt": "Plan how to capture DOM, computed styles, screenshots, assets, and network evidence for https://www.python.org so my team can rebuild it.",
       "expected_app_selection": "select",
-      "expected_primary_tool": "capture_reference_bundle",
-      "expected_behavior": "Capture public or user-authorized evidence and avoid exposing sensitive headers, cookies, credentials, or private form bodies in user-facing output."
+      "expected_primary_tool": "plan_reproduction_path",
+      "expected_behavior": "Explain that hosted intake cannot run browser capture, then route public or user-authorized capture to the local stdio MCP package without requesting sensitive headers, cookies, credentials, or private form bodies."
     },
     {
       "id": "apps_sdk_generate_embed_snippet",
@@ -31,17 +31,17 @@
     },
     {
       "id": "apps_sdk_full_clone_verify",
-      "prompt": "Clone https://developer.mozilla.org/en-US/ as faithfully as possible and verify the result.",
+      "prompt": "Plan how to clone https://developer.mozilla.org/en-US/ as faithfully as possible and verify the result.",
       "expected_app_selection": "select",
-      "expected_primary_tool": "clone_reference_url",
-      "expected_behavior": "Prefer allowed exact source or embed reuse, otherwise produce a bounded rebuild and fidelity report without describing bounded rebuild output as original source reuse."
+      "expected_primary_tool": "plan_reproduction_path",
+      "expected_behavior": "Prefer allowed exact source or embed reuse, otherwise explain that full capture, bounded rebuild, and fidelity verification run through the local stdio MCP package."
     },
     {
       "id": "apps_sdk_verify_candidate_bundle",
-      "prompt": "Compare my candidate capture bundle with the reference capture bundle and report visual, DOM, style, interaction, and breakpoint fidelity.",
+      "prompt": "Can the hosted connector compare my candidate capture bundle with the reference capture bundle and report fidelity?",
       "expected_app_selection": "select",
-      "expected_primary_tool": "verify_fidelity_report",
-      "expected_behavior": "Run fidelity verification and report differences by evidence type and breakpoint."
+      "expected_primary_tool": "detect_runtime_capabilities",
+      "expected_behavior": "Explain that hosted intake does not accept capture bundles or run fidelity verification, and route the user to the local stdio MCP package."
     },
     {
       "id": "apps_sdk_negative_article_summary",
@@ -66,10 +66,10 @@
     },
     {
       "id": "apps_sdk_session_capability_preflight",
-      "prompt": "Use my provided storage state to inspect whether my own authenticated dashboard can be captured.",
+      "prompt": "Can the hosted connector use my provided storage state to inspect whether my own authenticated dashboard can be captured?",
       "expected_app_selection": "select",
       "expected_primary_tool": "detect_runtime_capabilities",
-      "expected_behavior": "Check session-aware capture capability first, warn that storage state is sensitive, and avoid exposing cookies, authorization headers, or private account content."
+      "expected_behavior": "Report that the hosted endpoint does not accept storage state or session artifacts, warn that storage state is sensitive, and route authenticated capture to local-only workflows."
     }
   ]
 }

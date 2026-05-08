@@ -1,0 +1,20 @@
+{
+  "app_name": "webEmbedding",
+  "connector_name": "webEmbedding",
+  "connector_url": "https://webembedding-mcp.vercel.app/mcp",
+  "company_url": "https://webembedding-mcp.vercel.app/",
+  "privacy_url": "https://webembedding-mcp.vercel.app/privacy.html",
+  "terms_url": "https://webembedding-mcp.vercel.app/terms.html",
+  "logo_url": "https://webembedding-mcp.vercel.app/icon.svg",
+  "short_description": "Source-first URL intake for embed/source routing and local web reproduction handoff.",
+  "description": "webEmbedding helps AI coding agents inspect public or user-authorized web pages before reproducing them. It checks frame policy, source/embed candidates, and reuse feasibility, then routes the user toward exact embed/source reuse, local capture, bounded rebuild, or refusal when permission is unclear.",
+  "hosted_tools": [
+    "detect_runtime_capabilities",
+    "inspect_url",
+    "discover_embed_candidates",
+    "classify_clone_mode",
+    "generate_embed_snippet",
+    "plan_reproduction_path"
+  ],
+  "review_boundary": "The hosted app does not accept browser profiles, Playwright storage state, local output paths, screenshots, HAR files, capture bundles, or generated clone artifacts. Full capture and fidelity workflows remain local-only through npx -y web-embedding@latest mcp."
+}

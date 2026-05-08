@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.7
+
+- Added the primary hosted Apps SDK MCP alias at `https://webembedding-mcp.vercel.app/mcp`.
+- Hosted public Apps SDK review pages for the app listing, privacy policy, terms, and icon.
+- Aligned Apps SDK submission golden prompts with the hosted endpoint's read-only intake scope.
+- Updated MCP Registry remote metadata to advertise the `/mcp` endpoint.
+
 ## 0.3.6
 
 - Added a hosted Apps SDK intake MCP endpoint for low-risk source-first URL routing tools.

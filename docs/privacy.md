@@ -28,6 +28,8 @@ When you run capture, inspect, clone, benchmark, queue worker, or HAR replay com
 
 ## Hosted Apps SDK Intake
 
-The hosted Apps SDK intake endpoint at `https://webembedding-mcp.vercel.app/api/mcp` processes URL inspection, embed candidate discovery, clone-mode classification, embed snippet generation, reproduction planning, and hosted capability checks. It does not accept local browser profile directories, Playwright storage state, local output paths, screenshots, HAR files, capture bundles, or generated clone artifacts.
+The hosted Apps SDK intake endpoint at `https://webembedding-mcp.vercel.app/mcp` processes URL inspection, embed candidate discovery, clone-mode classification, embed snippet generation, reproduction planning, and hosted capability checks. It does not accept local browser profile directories, Playwright storage state, local output paths, screenshots, HAR files, capture bundles, or generated clone artifacts.
 
 Requests to the hosted endpoint are processed on Vercel infrastructure. The hosted endpoint should be used only with public or user-authorized URLs and should not receive credentials, cookies, authorization headers, private dashboard URLs, or sensitive page content.
+
+The public hosted privacy page is available at `https://webembedding-mcp.vercel.app/privacy.html`.

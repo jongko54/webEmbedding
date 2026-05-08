@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webEmbedding Privacy</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <style>
+      body {
+        margin: 0;
+        background: #f6f7f2;
+        color: #101820;
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(860px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 48px 0;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 36px;
+      }
+
+      h2 {
+        margin-top: 30px;
+        font-size: 20px;
+      }
+
+      p,
+      li {
+        color: #526070;
+      }
+
+      a {
+        color: #1e88e5;
+      }
+
+      code {
+        background: #ffffff;
+        border: 1px solid #d6dbdf;
+        border-radius: 6px;
+        padding: 2px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Privacy Policy</h1>
+      <p>Last updated: May 8, 2026</p>
+
+      <h2>Overview</h2>
+      <p>
+        webEmbedding is a source-first website inspection, embed routing, capture, bounded reconstruction, and fidelity
+        verification workflow for AI coding agents. The hosted Apps SDK endpoint is intentionally narrower than the local
+        package and only accepts the fields needed for read-only URL intake.
+      </p>
+
+      <h2>Hosted Apps SDK Endpoint</h2>
+      <p>
+        The hosted MCP endpoint at <code>https://webembedding-mcp.vercel.app/mcp</code> processes URL inspection, embed
+        candidate discovery, clone-mode classification, embed snippet generation, reproduction planning, and hosted
+        capability checks.
+      </p>
+      <p>
+        Do not send credentials, cookies, authorization headers, private dashboard URLs, private page content, browser
+        profiles, Playwright storage state, screenshots, HAR files, capture bundles, local file paths, or generated clone
+        artifacts to the hosted endpoint.
+      </p>
+
+      <h2>Local Package</h2>
+      <p>
+        The local stdio MCP package may process URLs, files, browser profile directories, Playwright storage state files,
+        screenshots, HTML, CSS, assets, and network evidence that you explicitly provide. Local artifacts are processed on
+        your machine and written to the output directory you choose.
+      </p>
+
+      <h2>Telemetry</h2>
+      <p>
+        Anonymous telemetry is disabled by default. If enabled, telemetry may include command-completion metadata such as
+        command name, package version, success or failure status, OS/runtime basics, and coarse option flags.
+      </p>
+      <p>
+        Telemetry does not send target URLs, local paths, captured HTML, screenshots, storage state, command output,
+        environment variables, API keys, or generated artifacts.
+      </p>
+
+      <h2>Retention</h2>
+      <p>
+        The hosted endpoint does not intentionally persist target page content or generated clone artifacts. Infrastructure
+        providers may retain limited request metadata for reliability and abuse prevention according to their service
+        policies.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Support and source code are available through
+        <a href="https://github.com/jongko54/webEmbedding">github.com/jongko54/webEmbedding</a>.
+      </p>
+    </main>
+  </body>
+</html>

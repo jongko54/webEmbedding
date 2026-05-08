@@ -19,9 +19,11 @@ npx -y web-embedding@latest mcp
 
 ## Endpoints
 
-- `POST /api/mcp`: Streamable HTTP JSON-response MCP endpoint.
+- `POST /mcp`: primary Streamable HTTP JSON-response MCP endpoint.
+- `POST /api/mcp`: underlying Vercel function endpoint kept for compatibility.
 - `GET /api/mcp`: returns 405 because this deployment does not provide a server-to-client SSE stream.
-- `GET /api/health`: health check.
+- `GET /health`: primary health check.
+- `GET /api/health`: underlying Vercel function health check.
 
 ## Environment
 
@@ -46,4 +48,11 @@ cd deploy/vercel-mcp
 vercel --prod
 ```
 
-After deployment, add the public `/api/mcp` URL in ChatGPT Developer Mode. Do not submit the app for public review until the prompts in `evals/apps-sdk/submission-test-prompts.json` have been tested against the deployed endpoint.
+After deployment, add the public `/mcp` URL in ChatGPT Developer Mode. Do not submit the app for public review until the prompts in `evals/apps-sdk/submission-test-prompts.json` have been tested against the deployed endpoint.
+
+Review pages are served from this deployment:
+
+- `https://webembedding-mcp.vercel.app/`
+- `https://webembedding-mcp.vercel.app/privacy.html`
+- `https://webembedding-mcp.vercel.app/terms.html`
+- `https://webembedding-mcp.vercel.app/submission.html`

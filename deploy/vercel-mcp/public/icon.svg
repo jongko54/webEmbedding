@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">webEmbedding icon</title>
+  <desc id="desc">A source-first web frame mark.</desc>
+  <rect width="512" height="512" rx="96" fill="#101820"/>
+  <rect x="84" y="116" width="344" height="280" rx="32" fill="#f6f7f2"/>
+  <rect x="112" y="152" width="288" height="42" rx="16" fill="#101820"/>
+  <circle cx="140" cy="173" r="8" fill="#f6f7f2"/>
+  <circle cx="166" cy="173" r="8" fill="#f6f7f2"/>
+  <circle cx="192" cy="173" r="8" fill="#f6f7f2"/>
+  <path d="M162 276l62-54v42h126v24H224v42l-62-54z" fill="#1e88e5"/>
+  <rect x="112" y="342" width="128" height="20" rx="10" fill="#101820"/>
+  <rect x="264" y="342" width="136" height="20" rx="10" fill="#101820"/>
+</svg>

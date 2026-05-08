@@ -7,3 +7,5 @@ You are responsible for using it only on pages and artifacts you are allowed to 
 The tool separates direct source reuse from bounded reconstruction. A generated rebuild should not be described as exact source reuse unless it is actually using an allowed original source or embed path.
 
 See `docs/policy-and-safety-guardrails.md` for operational boundaries and review guidance.
+
+The public hosted terms page is available at `https://webembedding-mcp.vercel.app/terms.html`.

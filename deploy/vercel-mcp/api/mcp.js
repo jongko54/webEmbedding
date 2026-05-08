@@ -1,5 +1,5 @@
 const SERVER_NAME = "webembedding-remote-intake";
-const SERVER_VERSION = "0.3.6";
+const SERVER_VERSION = "0.3.7";
 const RESOURCE_URI = "ui://webembedding/intake.html";
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_HTML_BYTES = 512 * 1024;

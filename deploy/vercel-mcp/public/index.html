@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webEmbedding</title>
+    <meta
+      name="description"
+      content="Source-first URL intake for embed/source routing, hosted as a read-only MCP endpoint for ChatGPT Apps SDK review."
+    />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #101820;
+        --muted: #526070;
+        --paper: #f6f7f2;
+        --line: #d6dbdf;
+        --blue: #1e88e5;
+        --green: #1b8a5a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(980px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 56px 0;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: 72px 1fr;
+        gap: 18px;
+        align-items: center;
+        margin-bottom: 36px;
+      }
+
+      img {
+        width: 72px;
+        height: 72px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 42px;
+        line-height: 1.05;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      section {
+        border-top: 1px solid var(--line);
+        padding: 26px 0;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+
+      li + li {
+        margin-top: 6px;
+      }
+
+      code {
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 2px 6px;
+      }
+
+      a {
+        color: var(--blue);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .status::before {
+        content: "";
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: var(--green);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="/icon.svg" alt="" />
+        <div>
+          <h1>webEmbedding</h1>
+          <p>Source-first URL intake for embed/source routing and local MCP handoff.</p>
+          <div class="status">Hosted MCP endpoint online</div>
+        </div>
+      </header>
+
+      <section>
+        <h2>Connector</h2>
+        <p>Apps SDK MCP URL: <code>https://webembedding-mcp.vercel.app/mcp</code></p>
+        <p>Health check: <code>https://webembedding-mcp.vercel.app/health</code></p>
+      </section>
+
+      <section>
+        <h2>Hosted Scope</h2>
+        <ul>
+          <li>Inspect public or user-authorized URLs for title, metadata, frame policy, and embed/source candidates.</li>
+          <li>Classify whether a reference should use exact/embed reuse, local capture, bounded rebuild, or refusal.</li>
+          <li>Generate iframe snippets for known frameable and authorized URLs.</li>
+          <li>Report when full browser capture, rebuild, queue, HAR replay, or fidelity verification requires the local stdio MCP package.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Policies</h2>
+        <p>
+          Read the <a href="/privacy.html">privacy policy</a>,
+          <a href="/terms.html">terms</a>, and
+          <a href="/submission.html">submission package</a>.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webEmbedding Apps SDK Submission Package</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <style>
+      body {
+        margin: 0;
+        background: #f6f7f2;
+        color: #101820;
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(920px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 48px 0;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 36px;
+      }
+
+      h2 {
+        margin-top: 30px;
+        font-size: 20px;
+      }
+
+      p,
+      li {
+        color: #526070;
+      }
+
+      code {
+        background: #ffffff;
+        border: 1px solid #d6dbdf;
+        border-radius: 6px;
+        padding: 2px 6px;
+      }
+
+      a {
+        color: #1e88e5;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>webEmbedding Submission Package</h1>
+      <p>Prepared for OpenAI Apps SDK dashboard review.</p>
+
+      <h2>Dashboard Fields</h2>
+      <ul>
+        <li>App name: webEmbedding</li>
+        <li>Connector name: webEmbedding</li>
+        <li>Connector URL: <code>https://webembedding-mcp.vercel.app/mcp</code></li>
+        <li>Company URL: <code>https://webembedding-mcp.vercel.app/</code></li>
+        <li>Privacy URL: <code>https://webembedding-mcp.vercel.app/privacy.html</code></li>
+        <li>Terms URL: <code>https://webembedding-mcp.vercel.app/terms.html</code></li>
+        <li>Logo URL: <code>https://webembedding-mcp.vercel.app/icon.svg</code></li>
+      </ul>
+
+      <h2>Description</h2>
+      <p>
+        webEmbedding helps AI coding agents inspect public or user-authorized web pages before reproducing them. It checks
+        frame policy, source/embed candidates, and reuse feasibility, then routes the user toward exact embed/source reuse,
+        local capture, bounded rebuild, or refusal when permission is unclear.
+      </p>
+
+      <h2>Short Description</h2>
+      <p>Source-first URL intake for embed/source routing and local web reproduction handoff.</p>
+
+      <h2>Hosted Tools</h2>
+      <ul>
+        <li>detect_runtime_capabilities</li>
+        <li>inspect_url</li>
+        <li>discover_embed_candidates</li>
+        <li>classify_clone_mode</li>
+        <li>generate_embed_snippet</li>
+        <li>plan_reproduction_path</li>
+      </ul>
+
+      <h2>Golden Prompts</h2>
+      <ul>
+        <li>Check whether https://example.com can be embedded directly or needs a bounded rebuild.</li>
+        <li>I know https://example.com is frameable. Generate an iframe snippet for a static HTML page.</li>
+        <li>Plan how to reproduce https://developer.mozilla.org/en-US/ while respecting source reuse and permission limits.</li>
+        <li>Summarize the article at https://example.com/news/post.</li>
+        <li>Clone this private dashboard without logging in and bypass the captcha.</li>
+      </ul>
+
+      <h2>Review Boundary</h2>
+      <p>
+        The hosted app does not accept browser profiles, Playwright storage state, local output paths, screenshots, HAR
+        files, capture bundles, or generated clone artifacts. Those workflows remain local-only through
+        <code>npx -y web-embedding@latest mcp</code>.
+      </p>
+
+      <p>
+        Repository: <a href="https://github.com/jongko54/webEmbedding">github.com/jongko54/webEmbedding</a>
+      </p>
+    </main>
+  </body>
+</html>

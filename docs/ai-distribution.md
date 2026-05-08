@@ -102,7 +102,7 @@ The evals intentionally test selection behavior only. They do not execute clone 
 - Server name: `io.github.jongko54/web-embedding`
 - npm package: `web-embedding`
 - Launch command for clients: `npx -y web-embedding@latest mcp`
-- Remote intake endpoint: `https://webembedding-mcp.vercel.app/api/mcp`
+- Remote intake endpoint: `https://webembedding-mcp.vercel.app/mcp`
 - Metadata files: `server.json` and `package.json#mcpName`
 
 Publishing order:
@@ -133,7 +133,7 @@ Suggested install commands after the repository is public:
 
 ### OpenAI Apps SDK
 
-The hosted Apps SDK intake endpoint is deployed at `https://webembedding-mcp.vercel.app/api/mcp`. It intentionally exposes only low-risk read-only/routing tools: `detect_runtime_capabilities`, `inspect_url`, `discover_embed_candidates`, `classify_clone_mode`, `generate_embed_snippet`, and `plan_reproduction_path`.
+The hosted Apps SDK intake endpoint is deployed at `https://webembedding-mcp.vercel.app/mcp`. It intentionally exposes only low-risk read-only/routing tools: `detect_runtime_capabilities`, `inspect_url`, `discover_embed_candidates`, `classify_clone_mode`, `generate_embed_snippet`, and `plan_reproduction_path`.
 
 Full browser capture, filesystem output, queue workers, HAR replay, bounded rebuilds, and one-pass clone execution stay on the local stdio MCP package until a containerized hosted worker with auth, workspace isolation, quotas, and stronger review controls is ready.
 

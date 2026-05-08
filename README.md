@@ -154,10 +154,15 @@ The MCP Registry identity is `io.github.jongko54/web-embedding`; `server.json` a
 The public remote MCP intake endpoint for Apps SDK Developer Mode is:
 
 ```text
-https://webembedding-mcp.vercel.app/api/mcp
+https://webembedding-mcp.vercel.app/mcp
 ```
 
 It exposes low-risk source-first routing tools such as URL inspection, embed candidate discovery, clone-mode classification, and embed snippet generation. Full browser capture, HAR replay, queues, bounded rebuilds, and one-pass clone execution remain local-first through the stdio MCP package.
+
+Apps SDK review pages are hosted alongside the endpoint:
+`https://webembedding-mcp.vercel.app/privacy.html`,
+`https://webembedding-mcp.vercel.app/terms.html`, and
+`https://webembedding-mcp.vercel.app/submission.html`.
 
 ### Agent Marketplaces
 

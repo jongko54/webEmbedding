@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "web-embedding"
-version = "0.3.6"
+version = "0.3.7"
 description = "Source-first Codex plugin installer for webpage intake and session-aware exact-clone workflows."
 readme = "README.md"
 license = "MIT"

@@ -1,11 +1,11 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Source-first URL clone, capture, bounded rebuild, and fidelity verification workflow.",
   "author": {
     "name": "Jongho"
   },
-  "homepage": "https://github.com/jongko54/webEmbedding#readme",
+  "homepage": "https://webembedding-mcp.vercel.app/",
   "repository": "https://github.com/jongko54/webEmbedding",
   "license": "MIT",
   "keywords": [
