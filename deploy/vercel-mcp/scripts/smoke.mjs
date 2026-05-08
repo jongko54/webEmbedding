@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { handleMcpPayload } from "../api/mcp.js";
+
+const init = await handleMcpPayload({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+assert.equal(init.result.serverInfo.name, "webembedding-remote-intake");
+
+const listed = await handleMcpPayload({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+const tools = listed.result.tools.map((tool) => tool.name);
+assert.ok(tools.includes("inspect_url"));
+assert.ok(tools.includes("generate_embed_snippet"));
+assert.ok(!tools.includes("clone_reference_url"));
+
+const snippet = await handleMcpPayload({
+  jsonrpc: "2.0",
+  id: 3,
+  method: "tools/call",
+  params: {
+    name: "generate_embed_snippet",
+    arguments: { url: "https://example.com", framework: "html" }
+  }
+});
+assert.match(snippet.result.structuredContent.snippet, /iframe/);
+assert.equal(snippet.result.content[0].type, "text");
+
+const resource = await handleMcpPayload({ jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://webembedding/intake.html" } });
+assert.equal(resource.result.contents[0]._meta.ui.domain, "https://webembedding-mcp.vercel.app");
+
+console.log("Remote MCP smoke passed.");

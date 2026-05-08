@@ -1,6 +1,6 @@
 {
   "name": "web-embedding",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "mcpName": "io.github.jongko54/web-embedding",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "type": "module",
@@ -39,6 +39,7 @@
     "CHANGELOG.md",
     ".agents/plugins/marketplace.json",
     ".claude-plugin/marketplace.json",
+    "deploy/vercel-mcp",
     "bin",
     "bundle",
     "!bundle/**/__pycache__",
@@ -68,6 +69,7 @@
     "!scripts/**/__pycache__",
     "!scripts/**/*.pyc",
     "evals/ai-selection",
+    "evals/apps-sdk",
     "docs/universal-benchmark-corpus.txt",
     "docs/universal-benchmark-expectations.json",
     "docs/benchmark-evidence.json",
@@ -78,6 +80,7 @@
     "docs/github-listing.md",
     "docs/telemetry.md",
     "docs/ai-distribution.md",
+    "docs/apps-sdk-submission.md",
     "docs/privacy.md",
     "docs/terms.md",
     "README.md",
@@ -102,7 +105,8 @@
     "summarize:benchmark-scores": "python3 ./scripts/summarize_benchmark_scores.py",
     "telemetry:collector": "python3 ./scripts/telemetry_collector.py",
     "telemetry:summarize": "python3 ./scripts/summarize_telemetry.py",
-    "check:ai-selection:local": "python3 ./scripts/check_ai_selection_goldens.py --cases evals/ai-selection/webembedding-golden-prompts.json"
+    "check:ai-selection:local": "python3 ./scripts/check_ai_selection_goldens.py --cases evals/ai-selection/webembedding-golden-prompts.json",
+    "check:remote-mcp:local": "npm --prefix deploy/vercel-mcp run smoke"
   },
   "dependencies": {
     "playwright-core": "^1.59.1"

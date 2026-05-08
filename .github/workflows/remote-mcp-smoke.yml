@@ -1,0 +1,35 @@
+name: Remote MCP Smoke
+
+on:
+  pull_request:
+    paths:
+      - "deploy/vercel-mcp/**"
+      - "package.json"
+      - ".github/workflows/remote-mcp-smoke.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "deploy/vercel-mcp/**"
+      - "package.json"
+      - ".github/workflows/remote-mcp-smoke.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Run remote MCP smoke
+        run: npm run check:remote-mcp:local

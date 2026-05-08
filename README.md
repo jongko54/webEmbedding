@@ -149,6 +149,16 @@ npx web-embedding@latest mcp
 
 The MCP Registry identity is `io.github.jongko54/web-embedding`; `server.json` and `package.json#mcpName` are kept in sync for registry ownership verification.
 
+### Hosted Apps SDK Intake Endpoint
+
+The public remote MCP intake endpoint for Apps SDK Developer Mode is:
+
+```text
+https://webembedding-mcp.vercel.app/api/mcp
+```
+
+It exposes low-risk source-first routing tools such as URL inspection, embed candidate discovery, clone-mode classification, and embed snippet generation. Full browser capture, HAR replay, queues, bounded rebuilds, and one-pass clone execution remain local-first through the stdio MCP package.
+
 ### Agent Marketplaces
 
 This repository includes marketplace metadata for the two local agent surfaces:

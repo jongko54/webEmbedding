@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.6
+
+- Added a hosted Apps SDK intake MCP endpoint for low-risk source-first URL routing tools.
+- Added remote MCP smoke coverage and Apps SDK submission prompts.
+- Added MCP Registry remote transport metadata for the hosted endpoint.
+
 ## 0.3.5
 
 - Added MCP Registry metadata and npm `mcpName` ownership verification.

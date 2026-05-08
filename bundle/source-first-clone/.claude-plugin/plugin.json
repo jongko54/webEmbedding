@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Source-first URL clone, capture, bounded rebuild, and fidelity verification workflow.",
   "author": {
     "name": "Jongho"

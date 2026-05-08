@@ -114,6 +114,20 @@ def validate_manifest_alignment() -> list[str]:
         if npm_package.get("transport", {}).get("type") != "stdio":
             failures.append("server.json package transport must be stdio")
 
+    remotes = server.get("remotes", [])
+    if remotes is not None:
+        if not isinstance(remotes, list):
+            failures.append("server.json remotes must be an array when present")
+        for index, remote in enumerate(remotes if isinstance(remotes, list) else []):
+            if not isinstance(remote, dict):
+                failures.append(f"server.json remotes[{index}] must be an object")
+                continue
+            if remote.get("type") not in {"streamable-http", "sse"}:
+                failures.append(f"server.json remotes[{index}].type must be streamable-http or sse")
+            url = remote.get("url")
+            if not isinstance(url, str) or not url.startswith("https://"):
+                failures.append(f"server.json remotes[{index}].url must be an https URL")
+
     for name, manifest in (("Codex", codex), ("Claude", claude)):
         if manifest.get("version") != version:
             failures.append(f"{name} plugin version must match package.json version")

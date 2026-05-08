@@ -102,6 +102,7 @@ The evals intentionally test selection behavior only. They do not execute clone 
 - Server name: `io.github.jongko54/web-embedding`
 - npm package: `web-embedding`
 - Launch command for clients: `npx -y web-embedding@latest mcp`
+- Remote intake endpoint: `https://webembedding-mcp.vercel.app/api/mcp`
 - Metadata files: `server.json` and `package.json#mcpName`
 
 Publishing order:
@@ -110,6 +111,8 @@ Publishing order:
 2. Ensure `server.json.version`, `server.json.packages[0].version`, and `package.json.version` match.
 3. Run `mcp-publisher login github` locally, or enable the `Publish MCP Registry` GitHub Action with OIDC.
 4. Run `mcp-publisher publish`.
+
+The registry metadata can include both transports: the local npm stdio package for full clone/capture workflows and the hosted Streamable HTTP intake endpoint for low-risk Apps SDK routing.
 
 ### Codex
 
@@ -130,4 +133,8 @@ Suggested install commands after the repository is public:
 
 ### OpenAI Apps SDK
 
-The current server is a local stdio MCP server. Apps SDK public app submission requires a hosted HTTPS MCP endpoint, app listing assets, precise tool metadata, privacy/terms review material, and Developer Mode test examples. That is a separate hosted app track; do not describe the local stdio package as an approved ChatGPT app until that review has passed.
+The hosted Apps SDK intake endpoint is deployed at `https://webembedding-mcp.vercel.app/api/mcp`. It intentionally exposes only low-risk read-only/routing tools: `detect_runtime_capabilities`, `inspect_url`, `discover_embed_candidates`, `classify_clone_mode`, `generate_embed_snippet`, and `plan_reproduction_path`.
+
+Full browser capture, filesystem output, queue workers, HAR replay, bounded rebuilds, and one-pass clone execution stay on the local stdio MCP package until a containerized hosted worker with auth, workspace isolation, quotas, and stronger review controls is ready.
+
+Apps SDK public app submission still requires Developer Mode testing, app listing assets, precise tool metadata, privacy/terms review material, screenshots, test prompts, and dashboard review. Do not describe the hosted endpoint as an approved ChatGPT app until that review has passed.

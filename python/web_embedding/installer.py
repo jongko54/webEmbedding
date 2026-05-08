@@ -22,7 +22,7 @@ from typing import Any
 
 PLUGIN_NAME = "source-first-clone"
 PACKAGE_NAME = "web-embedding"
-PACKAGE_VERSION = "0.3.5"
+PACKAGE_VERSION = "0.3.6"
 TELEMETRY_SCHEMA_VERSION = 1
 TELEMETRY_CONFIG_DIR = ".web-embedding"
 TELEMETRY_CONFIG_FILE = "telemetry.json"
