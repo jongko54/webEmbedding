@@ -12,7 +12,7 @@ import zlib
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -28,6 +28,14 @@ def is_candidate_noise(url: str) -> bool:
     if lowered.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".css", ".js", ".map", ".woff", ".woff2")):
         return True
     return False
+
+
+def assert_http_url(url: str) -> str:
+    raw_url = str(url or "").strip()
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute HTTP or HTTPS URL")
+    return raw_url
 
 
 def should_promote_direct_iframe(final_url: str, platform_adapter: dict[str, Any] | None) -> bool:
@@ -132,6 +140,7 @@ def _decode_response_body(raw_body: bytes, headers: dict[str, str]) -> str:
 
 
 def fetch_url(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
+    url = assert_http_url(url)
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
     with urlopen(request, timeout=timeout_seconds) as response:
         headers = {key.lower(): value for key, value in response.headers.items()}
@@ -5500,6 +5509,7 @@ def trace_runtime_sources(
     viewport_width: int = 1440,
     viewport_height: int = 1200,
 ) -> dict[str, Any]:
+    url = assert_http_url(url)
     if shutil.which("node") is None:
         return {
             "available": False,

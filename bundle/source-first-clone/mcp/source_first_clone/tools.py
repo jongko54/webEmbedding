@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from .acquisition import detect_runtime_capabilities
+from .acquisition import assert_http_url, detect_runtime_capabilities
 from .acquisition import discover_embed_candidates as discover_embed_candidates_fn
 from .acquisition import inspect_reference, trace_runtime_sources as trace_runtime_sources_fn
 from .capture_bundle import capture_reference_bundle
@@ -22,7 +22,7 @@ from .verification import verify_fidelity_report
 def generate_embed_snippet(arguments: dict[str, Any]) -> dict[str, Any]:
     title = arguments.get("title") or "Embedded reference"
     framework = arguments.get("framework", "nextjs")
-    url = arguments["url"]
+    url = assert_http_url(arguments["url"])
 
     if framework == "html":
         snippet = (
@@ -508,6 +508,34 @@ TOOLS = [
         },
     },
 ]
+
+
+TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
+    "detect_runtime_capabilities": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "inspect_url": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True, "idempotentHint": True},
+    "discover_embed_candidates": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True, "idempotentHint": True},
+    "trace_runtime_sources": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
+    "classify_clone_mode": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "generate_embed_snippet": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "capture_reference_bundle": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
+    "plan_reproduction_path": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "verify_fidelity_report": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "build_reproduction_bundle": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False, "idempotentHint": False},
+    "build_rebuild_scaffold": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False, "idempotentHint": False},
+    "clone_reference_url": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
+    "enqueue_clone_job": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False, "idempotentHint": False},
+    "list_clone_jobs": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "load_clone_job": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "cancel_clone_job": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False, "idempotentHint": False},
+    "run_clone_job": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
+    "replay_har_requests": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False, "idempotentHint": False},
+}
+
+
+for tool in TOOLS:
+    annotations = TOOL_ANNOTATIONS.get(str(tool.get("name") or ""))
+    if annotations:
+        tool["annotations"] = annotations
 
 
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

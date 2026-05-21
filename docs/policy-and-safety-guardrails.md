@@ -28,6 +28,23 @@ Session artifacts must be treated as sensitive:
 - do not claim private app fidelity from a public login shell
 - mark app-gated or native-app-led pages as `needs_session` or `manual_review`
 
+## Current Sandboxing And Approvals
+
+The hosted Apps SDK endpoint is intentionally narrow. It provides read-only URL inspection, embed/source candidate discovery, clone-mode classification, and planning helpers. It accepts only absolute `http` and `https` URLs, does not run Playwright, does not read local paths, does not accept browser profiles or storage state, and does not persist capture artifacts.
+
+The local stdio MCP and CLI are the only surfaces that run browser capture, filesystem queues, HAR replay, bounded rebuild scaffolds, and one-shot clone workflows. Those tools run under the user's local agent and filesystem permissions, so the caller is responsible for agent approvals and for choosing trusted `output_dir`, `queue_root`, `har_path`, `storage_state_path`, and `user_data_dir` values.
+
+Local URL entrypoints must reject non-HTTP schemes such as `file://`. This prevents the tool from being used as a local file reader through URL-shaped input. Browser session inputs are explicit user-supplied evidence, not implicit credential collection.
+
+Recommended production hardening before shared hosted capture workers:
+
+- run capture workers in isolated containers or VMs
+- enforce per-run output roots and deny arbitrary local path access
+- require domain allowlists or recorded approval for authenticated targets
+- use ephemeral browser profiles by default
+- redact or isolate HAR, cookies, storage state, screenshots, and captured HTML before sharing artifacts
+- add quotas, audit logs, and manual review for account, admin, checkout, payment, paywall, captcha, and private dashboard routes
+
 ## PII And Network Artifacts
 
 HAR, query strings, cookies, request headers, response headers, and form bodies can contain PII or secrets. Production storage should redact or isolate:

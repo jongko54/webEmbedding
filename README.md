@@ -164,6 +164,17 @@ Apps SDK review pages are hosted alongside the endpoint:
 `https://webembedding-mcp.vercel.app/terms.html`, and
 `https://webembedding-mcp.vercel.app/submission.html`.
 
+### Sandboxing And Approvals
+
+webEmbedding has two different execution boundaries:
+
+- Hosted Apps SDK intake: read-only URL routing and classification only. It accepts absolute `http` and `https` URLs, does not run Playwright, does not read local files, does not use browser profiles or storage state, and does not persist capture artifacts.
+- Local stdio MCP and CLI: full capture, HAR replay, queues, rebuild scaffolds, and self-verify run on the user's machine under the user's local agent and filesystem permissions. Output is written only to caller-provided paths such as `output_dir` or `queue_root`.
+- Authenticated capture: session-aware runs require the caller to intentionally provide a `storage_state_path` or `user_data_dir`. webEmbedding does not collect credentials, perform login bypasses, or treat a public login shell as private app evidence.
+- Access-controlled surfaces: paywalls, captcha flows, private dashboards, payment/checkout/account/admin flows, and native-app-led screens should be blocked, marked `needs_session`, or sent to manual review unless the user has explicit authorization and supplies the needed evidence.
+
+Local URL entrypoints reject non-HTTP schemes such as `file://` so an agent cannot use clone/capture tools as a local file reader. Telemetry is disabled by default and, when enabled, excludes target URLs, local paths, captured HTML, screenshots, storage state, environment variables, API keys, and command output.
+
 ### Agent Marketplaces
 
 This repository includes marketplace metadata for the two local agent surfaces:
