@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "author": {
     "name": "Jongho",

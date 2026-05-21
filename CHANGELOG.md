@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.8
+
+- Hardened local MCP URL entrypoints to reject non-HTTP schemes and added tool annotations for safer agent approvals.
+- Documented the hosted-vs-local sandboxing boundary and authenticated capture approval model.
+- Bumped package, MCP registry, hosted endpoint, and plugin metadata versions for the next release.
+
 ## 0.3.7
 
 - Added the primary hosted Apps SDK MCP alias at `https://webembedding-mcp.vercel.app/mcp`.
