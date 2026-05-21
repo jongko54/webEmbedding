@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .acquisition import assert_http_url, detect_runtime_capabilities
 from .acquisition import discover_embed_candidates as discover_embed_candidates_fn
 from .acquisition import inspect_reference, trace_runtime_sources as trace_runtime_sources_fn
+from .audit import audit_reference_url
 from .capture_bundle import capture_reference_bundle
 from .har_replay import build_replay_report
 from .job_queue import JobQueue
@@ -57,6 +58,16 @@ def detect_runtime_capabilities_tool(arguments: dict[str, Any]) -> dict[str, Any
 def discover_embed_candidates(arguments: dict[str, Any]) -> dict[str, Any]:
     timeout_seconds = int(arguments.get("timeout_seconds", 20))
     return discover_embed_candidates_fn(arguments["url"], timeout_seconds=timeout_seconds)
+
+
+def audit_reference_url_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    return audit_reference_url(
+        url=arguments["url"],
+        timeout_seconds=int(arguments.get("timeout_seconds", 20)),
+        exact_requested=bool(arguments.get("exact_requested", True)),
+        license_text=arguments.get("license_text"),
+        source_signals=arguments.get("source_signals"),
+    )
 
 
 def trace_runtime_sources(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -298,6 +309,21 @@ TOOLS = [
         },
     },
     {
+        "name": "audit_reference_url",
+        "description": "Run a safe preflight audit for a URL before clone or capture, returning risk, approvals, route readiness, and next local MCP actions without browser capture.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                "exact_requested": {"type": "boolean"},
+                "license_text": {"type": "string"},
+                "source_signals": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["url"],
+        },
+    },
+    {
         "name": "generate_embed_snippet",
         "description": "Generate a ready-to-paste iframe snippet for HTML or Next.js.",
         "inputSchema": {
@@ -516,6 +542,7 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "discover_embed_candidates": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True, "idempotentHint": True},
     "trace_runtime_sources": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
     "classify_clone_mode": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
+    "audit_reference_url": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True, "idempotentHint": True},
     "generate_embed_snippet": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
     "capture_reference_bundle": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True, "idempotentHint": False},
     "plan_reproduction_path": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
@@ -544,6 +571,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "discover_embed_candidates": discover_embed_candidates,
     "trace_runtime_sources": trace_runtime_sources,
     "classify_clone_mode": classify_clone_mode,
+    "audit_reference_url": audit_reference_url_tool,
     "generate_embed_snippet": generate_embed_snippet,
     "capture_reference_bundle": capture_reference_bundle_tool,
     "plan_reproduction_path": plan_reproduction_path_tool,

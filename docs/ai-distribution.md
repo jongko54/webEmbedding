@@ -16,6 +16,7 @@ Select `webEmbedding` when the user provides or clearly refers to a web URL and 
 
 - clone, copy, reproduce, recreate, or rebuild a page with high fidelity
 - inspect whether a page can be reused, embedded, framed, exported, or remixed
+- audit whether a page is ready for exact/embed reuse, needs local capture, needs an authenticated session, requires manual review, or should be blocked before capture
 - capture DOM, runtime HTML, styles, assets, screenshots, network evidence, interactions, or storage state for a reference page
 - route between exact reuse, platform-source import, runtime capture, bounded rebuild, or visual fallback
 - generate an embed snippet after a reusable source or embed URL is identified
@@ -44,6 +45,7 @@ Use this mapping for deterministic AI auto-selection:
 | User intent | Expected primary tool |
 | --- | --- |
 | Full URL-to-clone workflow | `clone_reference_url` |
+| Safe preflight before capture, clone, or embed reuse | `audit_reference_url` |
 | Feasibility, frame policy, route, or source inspection | `inspect_url` |
 | Session-aware or authenticated capture preparation | `detect_runtime_capabilities` |
 | Evidence bundle capture | `capture_reference_bundle` |
@@ -65,6 +67,8 @@ Strong positive lexical signals include:
 - `copy this page into my app`
 - `make it look identical`
 - `is this page embeddable`
+- `audit this URL before cloning`
+- `preflight this reference`
 - `capture the reference page`
 - `bounded rebuild`
 - `verify fidelity`

@@ -1,6 +1,7 @@
 const SERVER_NAME = "webembedding-remote-intake";
-const SERVER_VERSION = "0.3.8";
+const SERVER_VERSION = "0.3.9";
 const RESOURCE_URI = "ui://webembedding/intake.html";
+const LOCAL_MCP_COMMAND = "npx -y web-embedding@latest mcp";
 const MAX_BODY_BYTES = 512 * 1024;
 const MAX_HTML_BYTES = 512 * 1024;
 const DEFAULT_ALLOWED_ORIGINS = [
@@ -12,6 +13,38 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://127.0.0.1:3000",
   "http://127.0.0.1:5173"
 ];
+const HOSTED_LIMITATIONS = [
+  "Hosted intake does not run Playwright, read local files, use browser profiles, or persist capture artifacts.",
+  "Use the local stdio MCP package for full capture, rebuild, queue, HAR replay, and clone workflows."
+];
+const READINESS_LABELS = {
+  "exact-embed-possible": "Exact/embed possible",
+  "local-capture-needed": "Local capture needed",
+  "auth-session-needed": "Auth/session needed",
+  "blocked-manual-review": "Blocked/manual review",
+  "reference-only": "Reference-only"
+};
+
+function readiness(status, reason, nextAction, extra = {}) {
+  return {
+    status,
+    label: READINESS_LABELS[status] || status,
+    reason,
+    next_action: nextAction,
+    local_mcp_command: LOCAL_MCP_COMMAND,
+    hosted_read_only: true,
+    ...extra
+  };
+}
+
+function reportFromReadiness(readiness_, details = []) {
+  return [
+    `${readiness_.label}: ${readiness_.reason}`,
+    `Next: ${readiness_.next_action}`,
+    `Local command: ${readiness_.local_mcp_command}`,
+    ...details.filter(Boolean)
+  ].join("\n");
+}
 
 function sendJson(response, statusCode, payload, extraHeaders = {}) {
   response.statusCode = statusCode;
@@ -162,6 +195,44 @@ function addCandidate(candidates, seen, url, source) {
   candidates.push({ url, source, kind: classifyCandidate(url) });
 }
 
+function assessInspectionReadiness({ response, frameBlocked, candidateUrls }) {
+  if ([401, 403].includes(response.status)) {
+    return readiness(
+      "auth-session-needed",
+      `The hosted endpoint received HTTP ${response.status}, so review likely needs user authorization or an authenticated browser session.`,
+      "Ask the user for an authorized public URL, export/source route, or run the local MCP with their browser/session context.",
+      { requires_local_session: true }
+    );
+  }
+
+  if (!response.ok) {
+    return readiness(
+      "blocked-manual-review",
+      `The URL returned HTTP ${response.status}; hosted intake cannot determine a reusable source safely.`,
+      "Manually review access, permission, and availability before attempting capture or reproduction.",
+      { http_status: response.status }
+    );
+  }
+
+  const reusable = candidateUrls.find((candidate) => /embed|preview|source|viewer/.test(String(candidate.kind || candidate.url || "")));
+  if (reusable && !frameBlocked) {
+    return readiness(
+      "exact-embed-possible",
+      "A likely embed, preview, viewer, or source candidate was found and no obvious frame block was detected.",
+      "Verify permission and frameability, then generate an embed snippet or reuse the authorized source.",
+      { preferred_candidate: reusable }
+    );
+  }
+
+  return readiness(
+    "local-capture-needed",
+    frameBlocked
+      ? "The target advertises frame restrictions, so hosted exact embedding may fail."
+      : "No trusted reusable embed/source candidate was found by hosted inspection.",
+    "Run the local stdio MCP for browser evidence capture, bounded rebuild artifacts, and fidelity reporting."
+  );
+}
+
 async function fetchHtml(url, timeoutSeconds = 12) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
@@ -192,6 +263,7 @@ async function inspectUrl(arguments_) {
   const frameAncestors = csp.match(/frame-ancestors\s+([^;]+)/i)?.[1] || null;
   const candidateUrls = discoverCandidatesFromHtml(html, response.url);
   const frameBlocked = Boolean(xFrameOptions) || Boolean(frameAncestors && !/['"]?\*['"]?/.test(frameAncestors));
+  const readiness_ = assessInspectionReadiness({ response, frameBlocked, candidateUrls });
   return {
     url,
     final_url: response.url,
@@ -211,10 +283,17 @@ async function inspectUrl(arguments_) {
       candidate_kinds: [...new Set(candidateUrls.map((candidate) => candidate.kind))]
     },
     candidate_urls: candidateUrls.slice(0, 12),
-    hosted_limitations: [
-      "Hosted intake does not run Playwright, read local files, use browser profiles, or persist capture artifacts.",
-      "Use the local stdio MCP package for full capture, rebuild, queue, HAR replay, and clone workflows."
-    ]
+    readiness: readiness_,
+    readiness_report: reportFromReadiness(readiness_, [
+      `Final URL: ${response.url}`,
+      `HTTP status: ${response.status}`,
+      `Candidates: ${candidateUrls.length}`
+    ]),
+    local_command_guidance: {
+      command: LOCAL_MCP_COMMAND,
+      when_to_use: "Use locally when capture, authenticated/session pages, filesystem artifacts, HAR replay, queues, or fidelity verification are needed."
+    },
+    hosted_limitations: HOSTED_LIMITATIONS
   };
 }
 
@@ -225,11 +304,19 @@ async function discoverEmbedCandidates(arguments_) {
     final_url: inspection.final_url,
     candidates: inspection.candidate_urls,
     candidate_count: inspection.source_signals.candidate_count,
+    readiness: inspection.readiness,
+    readiness_report: inspection.readiness_report,
+    local_command_guidance: inspection.local_command_guidance,
     hosted_limitations: inspection.hosted_limitations
   };
 }
 
 function detectRuntimeCapabilities() {
+  const readiness_ = readiness(
+    "local-capture-needed",
+    "Hosted Apps SDK intake is read-only and cannot perform browser capture or write artifacts.",
+    "Use hosted tools for public URL inspection and routing, then run the local stdio MCP for capture and fidelity work."
+  );
   return {
     hosted_remote_mcp: true,
     runtime_trace: false,
@@ -237,7 +324,10 @@ function detectRuntimeCapabilities() {
     chrome: false,
     filesystem_output: false,
     local_stdio_available: false,
-    local_stdio_command: "npx -y web-embedding@latest mcp",
+    local_stdio_command: LOCAL_MCP_COMMAND,
+    readiness: readiness_,
+    readiness_report: reportFromReadiness(readiness_),
+    readiness_states: READINESS_LABELS,
     notes: [
       "This hosted endpoint is an Apps SDK intake surface.",
       "Run the local stdio MCP package for browser capture, filesystem artifacts, queues, HAR replay, and full clone execution."
@@ -249,35 +339,83 @@ function classifyCloneMode(arguments_) {
   const licenseText = String(arguments_.license_text || "").toLowerCase();
   const sourceSignals = Array.isArray(arguments_.source_signals) ? arguments_.source_signals : [];
   const candidates = Array.isArray(arguments_.candidates) ? arguments_.candidates : [];
+  const siteProfile = arguments_.site_profile && typeof arguments_.site_profile === "object" ? arguments_.site_profile : {};
+  const combinedSignals = [
+    licenseText,
+    ...sourceSignals.map((signal) => String(signal)),
+    String(siteProfile.status || ""),
+    String(siteProfile.access || ""),
+    String(siteProfile.notes || "")
+  ].join(" ").toLowerCase();
   const exactRequested = arguments_.exact_requested !== false;
   const blocked =
     /all rights reserved|do not copy|no reproduction|forbidden|not allowed|no permission/.test(licenseText) ||
-    sourceSignals.some((signal) => /no-permission|private|paywall|captcha|bypass/i.test(String(signal)));
+    /no-permission|captcha|bypass|bot protection|circumvent/.test(combinedSignals);
+  const needsAuthSession =
+    /private|paywall|login|logged[-\s]?in|auth|authenticated|session|cookie|401|403|permission required/.test(combinedSignals);
 
   if (blocked) {
+    const readiness_ = readiness(
+      "blocked-manual-review",
+      "Permission, license, access-control, or bypass signals require refusal or manual review before capture or reproduction.",
+      "Ask the user for proof of authorization, reusable source/export, or a permitted reference."
+    );
     return {
       mode: "blocked",
-      reason: "Permission, license, access-control, or bypass signals require refusal or manual review before capture or reproduction.",
-      next_action: "Ask the user for proof of authorization, reusable source/export, or a permitted reference."
+      reason: readiness_.reason,
+      readiness: readiness_,
+      readiness_report: reportFromReadiness(readiness_),
+      next_action: readiness_.next_action
+    };
+  }
+
+  if (needsAuthSession) {
+    const readiness_ = readiness(
+      "auth-session-needed",
+      "The supplied signals indicate private, paywalled, or session-scoped content that hosted intake cannot access safely.",
+      "Ask the user for authorization and run the local stdio MCP with an appropriate authenticated browser/session context.",
+      { requires_local_session: true }
+    );
+    return {
+      mode: "needs-session",
+      reason: readiness_.reason,
+      readiness: readiness_,
+      readiness_report: reportFromReadiness(readiness_),
+      next_action: readiness_.next_action
     };
   }
 
   const reusable = candidates.find((candidate) => /embed|preview|source|viewer/.test(String(candidate.kind || candidate.url || "")));
   if (reusable) {
+    const readiness_ = readiness(
+      "exact-embed-possible",
+      "A likely embed, preview, viewer, or source candidate is present.",
+      "Verify frame/source permission before generating an embed snippet.",
+      { preferred_candidate: reusable }
+    );
     return {
       mode: "exact-or-embed-reuse",
-      reason: "A likely embed, preview, viewer, or source candidate is present.",
+      reason: readiness_.reason,
       preferred_candidate: reusable,
-      next_action: "Verify frame/source permission before generating an embed snippet."
+      readiness: readiness_,
+      readiness_report: reportFromReadiness(readiness_),
+      next_action: readiness_.next_action
     };
   }
 
-  return {
-    mode: exactRequested ? "needs-capture-or-bounded-rebuild" : "approximate-reference-ok",
-    reason: "No trusted reusable source was supplied to the hosted intake endpoint.",
-    next_action: exactRequested
+  const readiness_ = readiness(
+    exactRequested ? "local-capture-needed" : "reference-only",
+    "No trusted reusable source was supplied to the hosted intake endpoint.",
+    exactRequested
       ? "Use the local stdio MCP package for browser evidence capture and bounded rebuild verification."
       : "Proceed with an approximate design reference only if license and permission allow it."
+  );
+  return {
+    mode: exactRequested ? "needs-capture-or-bounded-rebuild" : "approximate-reference-ok",
+    reason: readiness_.reason,
+    readiness: readiness_,
+    readiness_report: reportFromReadiness(readiness_),
+    next_action: readiness_.next_action
   };
 }
 
@@ -296,9 +434,16 @@ function generateEmbedSnippet(arguments_) {
           '  style={{ display: "block", width: "100%", height: "100vh", border: 0 }}',
           "/>"
         ].join("\n");
+  const readiness_ = readiness(
+    "exact-embed-possible",
+    "An iframe snippet can be generated for this supplied URL, assuming it is authorized and frameable.",
+    "Use the snippet only after verifying permission and runtime frame policy; fall back to local capture if embedding is blocked."
+  );
   return {
     framework,
     snippet,
+    readiness: readiness_,
+    readiness_report: reportFromReadiness(readiness_, [`Framework: ${framework}`]),
     assumptions: [
       "The target remains frameable at runtime.",
       "The user is authorized to embed or reuse this URL.",
@@ -318,8 +463,14 @@ function planReproductionPath(arguments_) {
   return {
     classification,
     steps,
+    readiness: classification.readiness,
+    readiness_report: classification.readiness_report,
     hosted_next_action: classification.next_action,
-    local_mcp_command: "npx -y web-embedding@latest mcp"
+    local_mcp_command: LOCAL_MCP_COMMAND,
+    local_command_guidance: {
+      command: LOCAL_MCP_COMMAND,
+      when_to_use: "Run locally for browser capture, authenticated/session pages, filesystem output, queues, HAR replay, or fidelity verification."
+    }
   };
 }
 
@@ -336,7 +487,7 @@ const TOOLS = [
   {
     name: "detect_runtime_capabilities",
     title: "Detect Hosted Runtime Capabilities",
-    description: "Report the hosted Apps SDK intake runtime capabilities and explain when the local stdio MCP is required.",
+    description: "Report hosted Apps SDK readiness, read-only runtime capabilities, unsupported capture behavior, and the local stdio command.",
     inputSchema: { type: "object", properties: {} },
     outputSchema: { type: "object", additionalProperties: true },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }
@@ -357,8 +508,9 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true, idempotentHint: true },
     _meta: {
       ui: { resourceUri: RESOURCE_URI },
-      "openai/toolInvocation/invoking": "Inspecting URL",
-      "openai/toolInvocation/invoked": "Inspection ready"
+      "openai/outputTemplate": RESOURCE_URI,
+      "openai/toolInvocation/invoking": "Inspecting hosted readiness",
+      "openai/toolInvocation/invoked": "Readiness report ready"
     }
   },
   {
@@ -377,8 +529,9 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true, idempotentHint: true },
     _meta: {
       ui: { resourceUri: RESOURCE_URI },
-      "openai/toolInvocation/invoking": "Finding embed routes",
-      "openai/toolInvocation/invoked": "Embed routes ready"
+      "openai/outputTemplate": RESOURCE_URI,
+      "openai/toolInvocation/invoking": "Finding embed readiness",
+      "openai/toolInvocation/invoked": "Embed readiness ready"
     }
   },
   {
@@ -396,7 +549,12 @@ const TOOLS = [
       }
     },
     outputSchema: { type: "object", additionalProperties: true },
-    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    _meta: {
+      "openai/outputTemplate": RESOURCE_URI,
+      "openai/toolInvocation/invoking": "Classifying readiness",
+      "openai/toolInvocation/invoked": "Readiness classified"
+    }
   },
   {
     name: "generate_embed_snippet",
@@ -412,7 +570,12 @@ const TOOLS = [
       required: ["url"]
     },
     outputSchema: { type: "object", additionalProperties: true },
-    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    _meta: {
+      "openai/outputTemplate": RESOURCE_URI,
+      "openai/toolInvocation/invoking": "Preparing embed snippet",
+      "openai/toolInvocation/invoked": "Embed snippet ready"
+    }
   },
   {
     name: "plan_reproduction_path",
@@ -430,7 +593,12 @@ const TOOLS = [
       }
     },
     outputSchema: { type: "object", additionalProperties: true },
-    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    _meta: {
+      "openai/outputTemplate": RESOURCE_URI,
+      "openai/toolInvocation/invoking": "Planning handoff",
+      "openai/toolInvocation/invoked": "Handoff plan ready"
+    }
   }
 ];
 
@@ -453,8 +621,9 @@ function appResource() {
   </head>
   <body>
     <h1>webEmbedding</h1>
-    <p>Source-first URL intake for embed/source routing. Full browser capture and bounded rebuilds run through the local stdio MCP package.</p>
-    <p><code>npx -y web-embedding@latest mcp</code></p>
+    <p>Source-first URL intake for ChatGPT review: exact/embed possible, local capture needed, auth/session needed, or blocked/manual review.</p>
+    <p>Hosted mode is read-only. Full browser capture and bounded rebuilds run through the local stdio MCP package.</p>
+    <p><code>${LOCAL_MCP_COMMAND}</code></p>
   </body>
 </html>`,
     _meta: {
@@ -465,7 +634,8 @@ function appResource() {
           resourceDomains: ["https://webembedding-mcp.vercel.app"]
         }
       },
-      "openai/widgetDescription": "Shows webEmbedding source-first URL intake status and local MCP handoff guidance.",
+      "openai/widgetDescription": "Shows webEmbedding hosted readiness status, review-safe routing, and local MCP handoff guidance.",
+      "openai/widgetPrefersBorder": true,
       "openai/widgetCSP": {
         connect_domains: ["https://webembedding-mcp.vercel.app"],
         resource_domains: ["https://webembedding-mcp.vercel.app"]

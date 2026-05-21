@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.9
+
+- Added safe preflight `audit` CLI/MCP routing to report reuse readiness, local-capture needs, session requirements, manual-review cases, and blockers before browser capture.
+- Added hosted Apps SDK readiness reports and local MCP handoff guidance to the remote intake endpoint.
+- Expanded AI auto-selection golden prompts for audit/preflight, hosted intake, local clone/capture, and unsafe authorization cases.
+
 ## 0.3.8
 
 - Hardened local MCP URL entrypoints to reject non-HTTP schemes and added tool annotations for safer agent approvals.

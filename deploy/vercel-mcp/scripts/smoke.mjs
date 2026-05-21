@@ -10,6 +10,18 @@ assert.ok(tools.includes("inspect_url"));
 assert.ok(tools.includes("generate_embed_snippet"));
 assert.ok(!tools.includes("clone_reference_url"));
 
+const inspection = await handleMcpPayload({
+  jsonrpc: "2.0",
+  id: 21,
+  method: "tools/call",
+  params: {
+    name: "inspect_url",
+    arguments: { url: "https://example.com", timeout_seconds: 10 }
+  }
+});
+assert.ok(inspection.result.structuredContent.readiness);
+assert.match(inspection.result.structuredContent.readiness_report, /Local command:/);
+
 const snippet = await handleMcpPayload({
   jsonrpc: "2.0",
   id: 3,

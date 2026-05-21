@@ -274,6 +274,15 @@ node ./bin/web-embedding.mjs inspect \
   --url https://developer.mozilla.org/en-US/
 ```
 
+Run a safe preflight audit before capture or clone:
+
+```bash
+node ./bin/web-embedding.mjs audit \
+  --url https://developer.mozilla.org/en-US/
+```
+
+The audit reports whether the reference is ready for exact/embed reuse, needs local capture, needs an authenticated session, requires manual review, or should be blocked before any browser capture or filesystem output runs.
+
 Run the full clone workflow:
 
 ```bash
@@ -311,6 +320,10 @@ node ./bin/web-embedding.mjs telemetry status
 
 ```bash
 node ./bin/web-embedding.mjs inspect --url https://www.mozilla.org/
+```
+
+```bash
+node ./bin/web-embedding.mjs audit --url https://www.mozilla.org/
 ```
 
 ```bash

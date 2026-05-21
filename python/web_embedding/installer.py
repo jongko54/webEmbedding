@@ -22,7 +22,7 @@ from typing import Any
 
 PLUGIN_NAME = "source-first-clone"
 PACKAGE_NAME = "web-embedding"
-PACKAGE_VERSION = "0.3.8"
+PACKAGE_VERSION = "0.3.9"
 TELEMETRY_SCHEMA_VERSION = 1
 TELEMETRY_CONFIG_DIR = ".web-embedding"
 TELEMETRY_CONFIG_FILE = "telemetry.json"
@@ -338,7 +338,7 @@ def telemetry_properties_for_args(
                 "dry_run": bool(getattr(args, "dry_run", False)),
             }
         )
-    elif command in {"inspect", "capture", "reproduce", "clone", "queue"}:
+    elif command in {"inspect", "audit", "capture", "reproduce", "clone", "queue"}:
         properties.update(
             {
                 "breakpoint_count": len(getattr(args, "breakpoints", []) or []),
@@ -473,6 +473,15 @@ def load_capture_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
         verify_fidelity_report,
         build_rebuild_scaffold,
     )
+
+
+def load_audit_api() -> Any:
+    capture_root = repo_root() / "bundle" / PLUGIN_NAME / "mcp"
+    if str(capture_root) not in sys.path:
+        sys.path.insert(0, str(capture_root))
+    from source_first_clone.audit import audit_reference_url
+
+    return audit_reference_url
 
 
 def load_job_queue_api() -> Any:
@@ -933,6 +942,19 @@ def command_inspect(args: argparse.Namespace) -> int:
         "candidate_sample": (result.get("candidate_urls") or [])[:12],
     }
     print(json.dumps(payload, indent=2))
+    return 0
+
+
+def command_audit(args: argparse.Namespace) -> int:
+    audit_reference_url = load_audit_api()
+    result = audit_reference_url(
+        url=args.url,
+        timeout_seconds=args.timeout_seconds,
+        exact_requested=not args.not_exact,
+        license_text=args.license_text,
+        source_signals=args.source_signals,
+    )
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -1465,6 +1487,14 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
     inspect_parser.add_argument("--full-json", action="store_true", help="Print the full raw inspection payload.")
     inspect_parser.set_defaults(func=command_inspect)
+
+    audit_parser = subparsers.add_parser("audit", help="Run a safe preflight audit before capture, clone, or embed reuse.")
+    audit_parser.add_argument("--url", required=True, help="Reference URL to audit.")
+    audit_parser.add_argument("--timeout-seconds", type=int, default=20, help="Static fetch timeout in seconds.")
+    audit_parser.add_argument("--license-text", help="Optional license text for policy classification.")
+    audit_parser.add_argument("--source-signals", nargs="*", default=[], help="Optional access, source, or reuse hints such as remix, private, paywall, or captcha.")
+    audit_parser.add_argument("--not-exact", action="store_true", help="Mark the request as approximate instead of exact.")
+    audit_parser.set_defaults(func=command_audit)
 
     capture_parser = subparsers.add_parser("capture", help="Run a session-aware capture bundle flow.")
     capture_parser.add_argument("--url", required=True, help="Reference URL to capture.")
