@@ -460,6 +460,23 @@ def assert_fetch_url_decodes_compressed_html() -> None:
         server.shutdown()
 
 
+def assert_mcp_tool_dispatch_semantics() -> None:
+    from source_first_clone.tools import handle_call  # noqa: PLC0415
+
+    result = handle_call(
+        "classify_clone_mode",
+        {
+            "exact_requested": True,
+            "license_text": "MIT",
+            "candidates": [{"kind": "direct-iframe", "url": "https://fixture.example/"}],
+            "source_signals": ["public"],
+            "site_profile": {"frame_policy": {"embeddable": True}},
+        },
+    )
+    if result.get("mode") != "embed":
+        raise AssertionError(f"MCP classify_clone_mode dispatch expected embed, got {result}")
+
+
 def assert_rebuild_scaffold_visual_semantics() -> None:
     from source_first_clone.rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold  # noqa: PLC0415
     from source_first_clone.repair_scaffold import build_repair_scaffold  # noqa: PLC0415
@@ -1507,6 +1524,7 @@ def main() -> int:
     assert_verification_similarity_semantics()
     assert_fetch_url_decodes_compressed_html()
     assert_site_profile_routing_semantics()
+    assert_mcp_tool_dispatch_semantics()
     assert_app_gate_evidence_reporting()
     assert_blocked_policy_stops_reproduction()
     assert_network_redaction_semantics()

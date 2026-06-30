@@ -4,7 +4,7 @@
   "target": {
     "package": "web-embedding",
     "current_distribution": "local stdio MCP",
-    "next_distribution": "hosted HTTPS MCP Apps SDK app at https://webembedding-mcp.vercel.app/mcp"
+    "next_distribution": "hosted HTTPS MCP Apps SDK app at https://webembedding-jongkos-mcp.vercel.app/mcp"
   },
   "purpose": "Developer Mode prompt coverage for Apps SDK submission review readiness. These cases are documentation and review material only; they do not execute clone jobs or mutate package metadata.",
   "cases": [
@@ -13,7 +13,7 @@
       "prompt": "Check whether https://example.com can be embedded directly or if it needs a bounded rebuild.",
       "expected_app_selection": "select",
       "expected_primary_tool": "inspect_url",
-      "expected_behavior": "Inspect the URL route, frame policy, and source reuse feasibility. Do not generate a rebuild unless the user asks for one."
+      "expected_behavior": "Inspect the URL route, frame policy, and source reuse feasibility. For https://example.com, report no obvious frame blocker, include a direct-iframe candidate, and mark exact/embed reuse as possible. Do not generate a rebuild unless the user asks for one."
     },
     {
       "id": "apps_sdk_capture_public_reference",

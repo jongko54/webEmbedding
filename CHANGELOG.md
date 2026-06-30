@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.10
+
+- Fixed hosted Apps SDK review readiness for direct iframe reuse so public pages without frame blockers report exact/embed reuse instead of forcing rebuild routing.
+- Fixed local MCP `classify_clone_mode` dispatch so submitted candidate/source arguments are passed through consistently.
+- Moved the hosted Apps SDK endpoint to the `jongkos-projects` Vercel project at `https://webembedding-jongkos-mcp.vercel.app/mcp` and aligned widget metadata, submission package URLs, and smoke coverage.
+
 ## 0.3.9
 
 - Added safe preflight `audit` CLI/MCP routing to report reuse readiness, local-capture needs, session requirements, manual-review cases, and blockers before browser capture.

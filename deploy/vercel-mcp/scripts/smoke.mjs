@@ -21,6 +21,25 @@ const inspection = await handleMcpPayload({
 });
 assert.ok(inspection.result.structuredContent.readiness);
 assert.match(inspection.result.structuredContent.readiness_report, /Local command:/);
+assert.equal(inspection.result.structuredContent.readiness.status, "exact-embed-possible");
+assert.ok(inspection.result.structuredContent.candidate_urls.some((candidate) => candidate.kind === "direct-iframe"));
+
+const directIframeClassification = await handleMcpPayload({
+  jsonrpc: "2.0",
+  id: 22,
+  method: "tools/call",
+  params: {
+    name: "classify_clone_mode",
+    arguments: {
+      exact_requested: true,
+      license_text: "MIT",
+      candidates: [{ kind: "direct-iframe", url: "https://example.com/" }],
+      source_signals: ["public"],
+      site_profile: { frame_policy: { embeddable: true } }
+    }
+  }
+});
+assert.equal(directIframeClassification.result.structuredContent.mode, "exact-or-embed-reuse");
 
 const snippet = await handleMcpPayload({
   jsonrpc: "2.0",
@@ -35,6 +54,6 @@ assert.match(snippet.result.structuredContent.snippet, /iframe/);
 assert.equal(snippet.result.content[0].type, "text");
 
 const resource = await handleMcpPayload({ jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://webembedding/intake.html" } });
-assert.equal(resource.result.contents[0]._meta.ui.domain, "https://webembedding-mcp.vercel.app");
+assert.equal(resource.result.contents[0]._meta.ui.domain, "https://webembedding-jongkos-mcp.vercel.app");
 
 console.log("Remote MCP smoke passed.");

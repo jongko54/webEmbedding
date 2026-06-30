@@ -8,4 +8,4 @@ The tool separates direct source reuse from bounded reconstruction. A generated 
 
 See `docs/policy-and-safety-guardrails.md` for operational boundaries and review guidance.
 
-The public hosted terms page is available at `https://webembedding-mcp.vercel.app/terms.html`.
+The public hosted terms page is available at `https://webembedding-jongkos-mcp.vercel.app/terms.html`.

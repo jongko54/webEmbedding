@@ -1,5 +1,5 @@
 const SERVER_NAME = "webembedding-remote-intake";
-const SERVER_VERSION = "0.3.9";
+const SERVER_VERSION = "0.3.10";
 const RESOURCE_URI = "ui://webembedding/intake.html";
 const LOCAL_MCP_COMMAND = "npx -y web-embedding@latest mcp";
 const MAX_BODY_BYTES = 512 * 1024;
@@ -195,6 +195,10 @@ function addCandidate(candidates, seen, url, source) {
   candidates.push({ url, source, kind: classifyCandidate(url) });
 }
 
+function isReusableCandidate(candidate) {
+  return /direct-iframe|iframe|embed|preview|source|viewer/.test(String(candidate.kind || candidate.url || ""));
+}
+
 function assessInspectionReadiness({ response, frameBlocked, candidateUrls }) {
   if ([401, 403].includes(response.status)) {
     return readiness(
@@ -214,11 +218,11 @@ function assessInspectionReadiness({ response, frameBlocked, candidateUrls }) {
     );
   }
 
-  const reusable = candidateUrls.find((candidate) => /embed|preview|source|viewer/.test(String(candidate.kind || candidate.url || "")));
+  const reusable = candidateUrls.find(isReusableCandidate);
   if (reusable && !frameBlocked) {
     return readiness(
       "exact-embed-possible",
-      "A likely embed, preview, viewer, or source candidate was found and no obvious frame block was detected.",
+      "A likely direct iframe, embed, preview, viewer, or source candidate was found and no obvious frame block was detected.",
       "Verify permission and frameability, then generate an embed snippet or reuse the authorized source.",
       { preferred_candidate: reusable }
     );
@@ -261,8 +265,11 @@ async function inspectUrl(arguments_) {
   const csp = response.headers.get("content-security-policy") || "";
   const xFrameOptions = response.headers.get("x-frame-options") || "";
   const frameAncestors = csp.match(/frame-ancestors\s+([^;]+)/i)?.[1] || null;
-  const candidateUrls = discoverCandidatesFromHtml(html, response.url);
   const frameBlocked = Boolean(xFrameOptions) || Boolean(frameAncestors && !/['"]?\*['"]?/.test(frameAncestors));
+  let candidateUrls = discoverCandidatesFromHtml(html, response.url);
+  if (response.ok && !frameBlocked && !candidateUrls.some((candidate) => candidate.kind === "direct-iframe" && candidate.url === response.url)) {
+    candidateUrls = [{ url: response.url, source: "frame-policy", kind: "direct-iframe" }, ...candidateUrls];
+  }
   const readiness_ = assessInspectionReadiness({ response, frameBlocked, candidateUrls });
   return {
     url,
@@ -385,11 +392,11 @@ function classifyCloneMode(arguments_) {
     };
   }
 
-  const reusable = candidates.find((candidate) => /embed|preview|source|viewer/.test(String(candidate.kind || candidate.url || "")));
+  const reusable = candidates.find(isReusableCandidate);
   if (reusable) {
     const readiness_ = readiness(
       "exact-embed-possible",
-      "A likely embed, preview, viewer, or source candidate is present.",
+      "A likely direct iframe, embed, preview, viewer, or source candidate is present.",
       "Verify frame/source permission before generating an embed snippet.",
       { preferred_candidate: reusable }
     );
@@ -605,7 +612,7 @@ const TOOLS = [
 function appResource() {
   return {
     uri: RESOURCE_URI,
-    mimeType: "text/html",
+    mimeType: "text/html;profile=mcp-app",
     text: `<!doctype html>
 <html lang="en">
   <head>
@@ -628,19 +635,19 @@ function appResource() {
 </html>`,
     _meta: {
       ui: {
-        domain: "https://webembedding-mcp.vercel.app",
+        domain: "https://webembedding-jongkos-mcp.vercel.app",
         csp: {
-          connectDomains: ["https://webembedding-mcp.vercel.app"],
-          resourceDomains: ["https://webembedding-mcp.vercel.app"]
+          connectDomains: ["https://webembedding-jongkos-mcp.vercel.app"],
+          resourceDomains: ["https://webembedding-jongkos-mcp.vercel.app"]
         }
       },
       "openai/widgetDescription": "Shows webEmbedding hosted readiness status, review-safe routing, and local MCP handoff guidance.",
       "openai/widgetPrefersBorder": true,
       "openai/widgetCSP": {
-        connect_domains: ["https://webembedding-mcp.vercel.app"],
-        resource_domains: ["https://webembedding-mcp.vercel.app"]
+        connect_domains: ["https://webembedding-jongkos-mcp.vercel.app"],
+        resource_domains: ["https://webembedding-jongkos-mcp.vercel.app"]
       },
-      "openai/widgetDomain": "https://webembedding-mcp.vercel.app"
+      "openai/widgetDomain": "https://webembedding-jongkos-mcp.vercel.app"
     }
   };
 }
@@ -704,7 +711,7 @@ async function handleRequest(message) {
               name: "webembedding-intake",
               title: "webEmbedding Intake",
               description: "Small status component for source-first URL intake.",
-              mimeType: "text/html"
+              mimeType: "text/html;profile=mcp-app"
             }
           ]
         }

@@ -52,7 +52,7 @@ After deployment, add the public `/mcp` URL in ChatGPT Developer Mode. Do not su
 
 Review pages are served from this deployment:
 
-- `https://webembedding-mcp.vercel.app/`
-- `https://webembedding-mcp.vercel.app/privacy.html`
-- `https://webembedding-mcp.vercel.app/terms.html`
-- `https://webembedding-mcp.vercel.app/submission.html`
+- `https://webembedding-jongkos-mcp.vercel.app/`
+- `https://webembedding-jongkos-mcp.vercel.app/privacy.html`
+- `https://webembedding-jongkos-mcp.vercel.app/terms.html`
+- `https://webembedding-jongkos-mcp.vercel.app/submission.html`

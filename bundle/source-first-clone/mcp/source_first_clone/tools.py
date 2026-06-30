@@ -85,6 +85,16 @@ def trace_runtime_sources(arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def classify_clone_mode_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    return classify_clone_mode(
+        exact_requested=bool(arguments.get("exact_requested", True)),
+        license_text=arguments.get("license_text"),
+        candidates=arguments.get("candidates"),
+        source_signals=arguments.get("source_signals"),
+        site_profile=arguments.get("site_profile"),
+    )
+
+
 def capture_reference_bundle_tool(arguments: dict[str, Any]) -> dict[str, Any]:
     return capture_reference_bundle(
         url=arguments["url"],
@@ -570,7 +580,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "inspect_url": inspect_url,
     "discover_embed_candidates": discover_embed_candidates,
     "trace_runtime_sources": trace_runtime_sources,
-    "classify_clone_mode": classify_clone_mode,
+    "classify_clone_mode": classify_clone_mode_tool,
     "audit_reference_url": audit_reference_url_tool,
     "generate_embed_snippet": generate_embed_snippet,
     "capture_reference_bundle": capture_reference_bundle_tool,

@@ -8,8 +8,8 @@ This document tracks practical readiness for submitting `webEmbedding` as an Ope
 - The current launch path is `npx -y web-embedding@latest mcp`.
 - The existing server should not be described as an approved ChatGPT app.
 - Apps SDK submission is the next hosted app track and requires a hosted HTTPS MCP endpoint, app listing material, Developer Mode testing, and review-ready privacy and terms disclosures.
-- Current hosted intake endpoint: `https://webembedding-mcp.vercel.app/mcp`.
-- Public review pages are hosted at `https://webembedding-mcp.vercel.app/`, `https://webembedding-mcp.vercel.app/privacy.html`, `https://webembedding-mcp.vercel.app/terms.html`, and `https://webembedding-mcp.vercel.app/submission.html`.
+- Current hosted intake endpoint: `https://webembedding-jongkos-mcp.vercel.app/mcp`.
+- Public review pages are hosted at `https://webembedding-jongkos-mcp.vercel.app/`, `https://webembedding-jongkos-mcp.vercel.app/privacy.html`, `https://webembedding-jongkos-mcp.vercel.app/terms.html`, and `https://webembedding-jongkos-mcp.vercel.app/submission.html`.
 - The hosted endpoint is intentionally narrower than the local stdio MCP: it exposes source-first URL inspection, embed discovery, clone-mode classification, embed snippets, reproduction planning, and capability reporting only.
 
 ## Submission Positioning
@@ -39,7 +39,7 @@ Avoid framing the app as a scraper, crawler, copyright bypass, lead extractor, p
 
 ### Product And Tooling
 
-- [x] Hosted HTTPS MCP endpoint is deployed and reachable at `https://webembedding-mcp.vercel.app/mcp`.
+- [x] Hosted HTTPS MCP endpoint is deployed and reachable at `https://webembedding-jongkos-mcp.vercel.app/mcp`.
 - [x] Tool descriptions clearly state allowed use on public or user-authorized pages.
 - [x] Tool descriptions distinguish hosted inspection/routing from local capture, bounded rebuild, and fidelity verification.
 - [x] Tool descriptions do not imply that bounded rebuilds are original source reuse.

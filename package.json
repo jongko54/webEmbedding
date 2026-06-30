@@ -1,6 +1,6 @@
 {
   "name": "web-embedding",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "mcpName": "io.github.jongko54/web-embedding",
   "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
   "type": "module",

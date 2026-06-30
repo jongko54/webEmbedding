@@ -6,9 +6,9 @@ import re
 
 
 SERVER_NAME = "source-first-clone"
-SERVER_VERSION = "0.3.9"
-USER_AGENT = "webEmbedding/0.3.9"
-CAPTURE_SCHEMA_VERSION = "0.3.9"
+SERVER_VERSION = "0.3.10"
+USER_AGENT = "webEmbedding/0.3.10"
+CAPTURE_SCHEMA_VERSION = "0.3.10"
 DEFAULT_BROWSER_PATHS = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
