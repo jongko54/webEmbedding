@@ -1,6 +1,6 @@
 {
   "name": "web-embedding",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "mcpName": "io.github.jongko54/web-embedding",
   "description": "MCP server + Skill that clones any web page from its URL into a verified offline HTML copy, embed, or rebuild for AI coding agents (Claude Code, Codex, Cursor).",
   "type": "module",

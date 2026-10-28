@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.12
 
 - Fixed site-profile false positives from page prose: framework detection now needs markup/asset markers (Spanish "vuelve" no longer marks python.org as a Vue app shell; "Shopify." or "readymag" in copy no longer selects those platforms).
 - Stopped proposing a page as its own `direct-iframe` candidate when its headers block framing, and tightened `generic-embed` so links like `linkpreview.app` are not treated as reusable embeds.
