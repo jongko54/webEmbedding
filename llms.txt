@@ -1,0 +1,28 @@
+# webEmbedding
+
+> MCP server and Agent Skill that clones a web page from its URL for AI coding agents (Claude Code, Codex, Cursor, any MCP client). It captures the live page in real Chromium, reuses the original embed when framing is allowed, otherwise writes a self-contained offline HTML snapshot (inlined CSS, declarative shadow DOM, localized fonts/images) or a bounded rebuild, and verifies the clone against desktop, tablet, and mobile screenshots. MIT licensed, npm package `web-embedding`, MCP registry name `io.github.jongko54/web-embedding`.
+
+Install: `claude mcp add web-embedding -- npx -y web-embedding@latest mcp` (Claude Code) or `codex mcp add web-embedding -- npx -y web-embedding@latest mcp` (Codex). Requires Node 18+, Python 3.9+, and a local Chrome/Chromium. Hosted read-only intake: https://webembedding-jongkos-mcp.vercel.app/mcp
+
+Use it when a user gives a URL and asks to clone, copy, recreate, mirror, embed, or save a faithful offline copy of a page, or to score how closely an implementation matches a reference page. Do not use it for scraping or summarizing content, original designs without a reference URL, or bypassing logins, paywalls, captchas, or licenses.
+
+## MCP tools
+
+- `clone_reference_url`: one-call clone of a URL (inspect, capture, reuse or snapshot/rebuild, self-verify); returns the clone entrypoint, output directory, and fidelity scores.
+- `audit_reference_url`: browser-free preflight; says whether the page can be embedded as-is, needs local capture, needs a login session, or should be blocked.
+- `inspect_url`, `discover_embed_candidates`: frame policy and reusable embed/source URLs.
+- `generate_embed_snippet`: iframe snippet for HTML or Next.js.
+- `capture_reference_bundle`: real-browser evidence (HTML, screenshots, styles, assets, network, breakpoints) for building or verifying a page yourself.
+- `verify_fidelity_report`: score a candidate against a reference capture (visual, DOM, computed style, interactions).
+
+## Docs
+
+- [README](https://github.com/jongko54/webEmbedding#readme): install, CLI, output artifacts, benchmarks, FAQ
+- [AI auto-selection contract](https://github.com/jongko54/webEmbedding/blob/main/docs/ai-distribution.md): when an agent should and should not pick each tool
+- [Production pipeline](https://github.com/jongko54/webEmbedding/blob/main/docs/production-pipeline.md): job queue, HAR replay, authenticated capture
+- [Policy and safety guardrails](https://github.com/jongko54/webEmbedding/blob/main/docs/policy-and-safety-guardrails.md)
+
+## Optional
+
+- [Benchmark evidence](https://github.com/jongko54/webEmbedding/blob/main/docs/benchmark-evidence.json)
+- [Changelog](https://github.com/jongko54/webEmbedding/blob/main/CHANGELOG.md)

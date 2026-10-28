@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.11
+
+- Added a `runtime-snapshot` renderer: a SingleFile-style serialization of the live DOM with authored/CSSOM stylesheets inlined, adoptedStyleSheets, open shadow roots as declarative shadow DOM, canvas pixels, form state, and localized image/font/stylesheet assets. Self-verify tries it first and skips scaffold renderers (and the Next build) when it is ready.
+- Replaced the fixed post-load sleep with readiness signals: load event, network quiet, a lazy-load scroll pass, `document.fonts.ready`, and image decode. `wait_seconds` is now an upper bound.
+- Scoped script-written pixel geometry (masonry, equal-height, slider widths) to the capture viewport so breakpoint renders fall back to authored layout.
+- Captured breakpoint variants in parallel.
+- Added a numpy/Pillow fast path for screenshot fingerprints (~80x faster on full-page screenshots, identical results; pure-Python fallback kept) and reported block SSIM / pixel-diff ratio alongside the existing screenshot score.
+- Fixed the local MCP stdio transport: it now speaks standard newline-delimited JSON-RPC (Content-Length framing still accepted), negotiates the protocol version, and answers `ping`. Previously standard MCP clients received no response.
+- Added MCP `instructions` (local and hosted) and rewrote the main tool descriptions around user intent, so agents know when to pick `clone_reference_url`, `audit_reference_url`, and friends.
+- Added `llms.txt`, an agent quick-install and FAQ section in the README, refreshed benchmark numbers, and clearer registry/npm/plugin descriptions and keywords.
+- Synced Claude/Codex plugin manifest versions with `package.json`.
+
 ## 0.3.10
 
 - Fixed hosted Apps SDK review readiness for direct iframe reuse so public pages without frame blockers report exact/embed reuse instead of forcing rebuild routing.

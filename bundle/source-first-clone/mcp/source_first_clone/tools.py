@@ -262,7 +262,7 @@ TOOLS = [
     },
     {
         "name": "inspect_url",
-        "description": "Fetch a URL, inspect HTML metadata, and summarize likely exact-clone paths.",
+        "description": "Inspect a URL before cloning: fetch it, read frame policy (X-Frame-Options/CSP), metadata, and platform signals, and summarize whether it can be embedded, sourced, or must be rebuilt.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -320,7 +320,7 @@ TOOLS = [
     },
     {
         "name": "audit_reference_url",
-        "description": "Run a safe preflight audit for a URL before clone or capture, returning risk, approvals, route readiness, and next local MCP actions without browser capture.",
+        "description": "Preflight check before cloning or embedding a URL, without launching a browser. Returns whether the page can be reused/embedded as-is, needs local browser capture, needs a logged-in session, needs manual review, or should be blocked, plus the next tool to call.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -335,7 +335,7 @@ TOOLS = [
     },
     {
         "name": "generate_embed_snippet",
-        "description": "Generate a ready-to-paste iframe snippet for HTML or Next.js.",
+        "description": "Generate a ready-to-paste iframe embed snippet (HTML or Next.js) for a URL that is known to allow framing.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -348,7 +348,7 @@ TOOLS = [
     },
     {
         "name": "capture_reference_bundle",
-        "description": "Build a structured capture bundle scaffold from static inspection and optional session-aware runtime capture without claiming full DOM/CSS fidelity.",
+        "description": "Capture evidence for a URL with a real browser: runtime HTML, full-page screenshots, DOM and computed-style summaries, assets, network/HAR metadata, interactions, and optional desktop/tablet/mobile breakpoints. With output_dir and capture_html it also writes an offline HTML snapshot. Use when you will build or verify a page yourself.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -389,7 +389,7 @@ TOOLS = [
     },
     {
         "name": "verify_fidelity_report",
-        "description": "Create an honest fidelity-verification scaffold and list the missing artifacts required for real visual comparison.",
+        "description": "Compare a reference capture against a candidate (e.g. your own implementation) and score visual, DOM, computed-style, and interaction similarity, listing the biggest differences to fix.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -426,7 +426,7 @@ TOOLS = [
     },
     {
         "name": "clone_reference_url",
-        "description": "Run the source-first exact-clone workflow end-to-end from a single URL, including session-aware capture and reproduction bundle output.",
+        "description": "Clone a web page from its URL in one call. Use when the user asks to clone, copy, recreate, mirror, or make a page look exactly like a URL. Captures the live page in a real browser, reuses the original when it can be embedded, otherwise writes a self-contained offline HTML snapshot (inlined CSS, shadow DOM, localized fonts/images) or a rebuild, and self-verifies it against desktop/tablet/mobile screenshots. Returns the clone entrypoint, output directory, and fidelity scores.",
         "inputSchema": {
             "type": "object",
             "properties": {

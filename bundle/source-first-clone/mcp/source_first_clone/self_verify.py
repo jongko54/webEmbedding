@@ -714,6 +714,22 @@ def _renderer_candidates(rebuild_artifacts: dict[str, str]) -> list[dict[str, st
     return candidates
 
 
+def _document_snapshot_candidate(reference_bundle: dict[str, Any]) -> dict[str, str] | None:
+    bundle = reference_bundle.get("bundle", {}) if isinstance(reference_bundle, dict) else {}
+    captured = bundle.get("captured_artifacts", {}) if isinstance(bundle, dict) else {}
+    snapshot = captured.get("document_snapshot") if isinstance(captured, dict) else None
+    snapshot_path = snapshot.get("path") if isinstance(snapshot, dict) else None
+    if not snapshot_path or not Path(snapshot_path).exists():
+        return None
+    return {
+        "name": "runtime-snapshot",
+        "entrypoint": str(snapshot_path),
+        "kind": "static",
+        "artifact_paths": [str(snapshot_path)],
+        "note": "Self-contained serialization of the live DOM with inlined CSSOM, declarative shadow roots, and localized assets.",
+    }
+
+
 def _comparison_score(report: dict[str, Any]) -> int:
     summary = report.get("comparison_summary", {}) if isinstance(report, dict) else {}
     try:
@@ -1030,6 +1046,10 @@ def run_rebuild_self_verify(
         }
 
     renderer_candidates = _renderer_candidates(rebuild_artifacts)
+    # The snapshot never changes across repair passes, so only the initial stage verifies it.
+    snapshot_candidate = _document_snapshot_candidate(reference_bundle) if stage_path == "self-verify" else None
+    if snapshot_candidate:
+        renderer_candidates.insert(0, snapshot_candidate)
     if not renderer_candidates:
         return {
             "available": False,
@@ -1196,8 +1216,10 @@ def run_rebuild_self_verify(
                         }
                     )
             overall_ready = _renderer_ready(root_report)
-            quality_required = bool(artifact_quality.get("required"))
-            quality_ready = bool(artifact_quality.get("ready"))
+            # Scaffold artifact checks don't apply to the standalone document snapshot.
+            scaffold_renderer = name != "runtime-snapshot"
+            quality_required = scaffold_renderer and bool(artifact_quality.get("required"))
+            quality_ready = (not scaffold_renderer) or bool(artifact_quality.get("ready"))
             if quality_required and not quality_ready:
                 overall_ready = False
             if visual_qa.get("available") and not visual_qa.get("ready"):

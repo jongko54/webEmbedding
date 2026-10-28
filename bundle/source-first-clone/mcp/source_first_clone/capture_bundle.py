@@ -6,6 +6,7 @@ import base64
 import json
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -86,11 +87,11 @@ def capture_reference_bundle(
         viewport_height=viewport_height,
         runtime_output_dir=runtime_output_dir,
         breakpoint_name="primary",
+        capture_snapshot=bool(exact_requested and capture_html and runtime_output_dir),
     )
 
     if breakpoint_requests:
-        variant_summaries: list[dict[str, Any]] = []
-        for request in breakpoint_requests:
+        def capture_variant(request: dict[str, Any]) -> dict[str, Any]:
             variant_output_dir = runtime_output_dir / "breakpoints" / request["name"] if runtime_output_dir else None
             variant_bundle = _build_capture_bundle(
                 url=url,
@@ -112,7 +113,11 @@ def capture_reference_bundle(
             if variant_output_dir:
                 variant_persisted = persist_capture_bundle(variant_output_dir, variant_bundle)
                 variant_bundle["bundle"]["persisted"] = variant_persisted
-            variant_summaries.append(_summarize_breakpoint_variant(request["name"], variant_bundle))
+            return _summarize_breakpoint_variant(request["name"], variant_bundle)
+
+        # Each variant is an independent browser subprocess, so threads parallelize them.
+        with ThreadPoolExecutor(max_workers=len(breakpoint_requests)) as executor:
+            variant_summaries = list(executor.map(capture_variant, breakpoint_requests))
 
         fully_captured = all(summary.get("available") for summary in variant_summaries)
         bundle_payload["breakpoints"] = {
@@ -182,6 +187,7 @@ def _build_capture_bundle(
     viewport_height: int,
     runtime_output_dir: Path | None,
     breakpoint_name: str,
+    capture_snapshot: bool = False,
 ) -> dict[str, Any]:
     derived_storage_state_output_path = storage_state_output_path
     if runtime_output_dir and not derived_storage_state_output_path:
@@ -209,6 +215,7 @@ def _build_capture_bundle(
             capture_screenshot=capture_screenshot,
             viewport_width=viewport_width,
             viewport_height=viewport_height,
+            snapshot_dir=str(runtime_output_dir / "snapshot") if capture_snapshot and runtime_output_dir else None,
         )
         if include_runtime_trace
         else {"available": False, "skipped": True, "session": runtime_request}
@@ -224,6 +231,7 @@ def _build_capture_bundle(
     assets_capture = capture_state.get("assets", {}) if isinstance(capture_state, dict) else {}
     interactions_capture = capture_state.get("interactions", {}) if isinstance(capture_state, dict) else {}
     interaction_trace_capture = capture_state.get("interactionTrace", {}) if isinstance(capture_state, dict) else {}
+    snapshot_capture = capture_state.get("snapshot", {}) if isinstance(capture_state, dict) else {}
     runtime_session = runtime.get("session", {}) if isinstance(runtime, dict) else {}
     gaps = [
         "DOM snapshot",
@@ -282,6 +290,7 @@ def _build_capture_bundle(
                 "assets": bool(assets_capture.get("available")),
                 "interaction_states": bool(interactions_capture.get("available")),
                 "interaction_trace": bool(interaction_trace_capture.get("available")),
+                "document_snapshot": bool(snapshot_capture.get("available")),
             },
             "missing_artifacts": gaps,
             "captured_artifacts": {
@@ -295,6 +304,7 @@ def _build_capture_bundle(
                 "interaction_trace": interaction_trace_capture if interaction_trace_capture.get("available") else None,
                 "html": html_capture if html_capture.get("available") else None,
                 "screenshot": screenshot_capture if screenshot_capture.get("available") else None,
+                "document_snapshot": snapshot_capture if snapshot_capture.get("available") else None,
                 "session": runtime_session if runtime_session else None,
             },
         },
@@ -519,6 +529,10 @@ def persist_capture_bundle(output_dir: Path, bundle_payload: dict[str, Any]) -> 
             "byteLength": screenshot_capture.get("byteLength", 0),
             "path": str(screenshot_path),
         }
+
+    snapshot_capture = runtime_capture.get("snapshot", {}) if isinstance(runtime_capture, dict) else {}
+    if snapshot_capture.get("available") and snapshot_capture.get("path") and Path(snapshot_capture["path"]).exists():
+        persisted["files"]["document_snapshot"] = str(snapshot_capture["path"])
 
     session = runtime.get("session", {}) if isinstance(runtime, dict) else {}
     storage_state_output_path = session.get("storageStateOutputPath")

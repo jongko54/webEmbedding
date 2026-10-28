@@ -419,6 +419,7 @@ const captureScreenshot = String(runtimeArgs[6] || "false") === "true";
 const viewportWidth = Number(runtimeArgs[7] || "1440");
 const viewportHeight = Number(runtimeArgs[8] || "1200");
 const storageStateOutputPath = runtimeArgs[9] || "";
+const snapshotDir = runtimeArgs[10] || "";
 const fs = require("fs");
 const path = require("path");
 let playwright;
@@ -472,6 +473,526 @@ function buildLaunchOptions() {
     options.executablePath = process.env.WEB_EMBEDDING_CHROME_PATH;
   }
   return options;
+}
+
+const SNAPSHOT_ASSET_TYPES = new Set(["stylesheet", "image", "font"]);
+const SNAPSHOT_MAX_ASSET_BYTES = 12 * 1024 * 1024;
+const SNAPSHOT_MAX_TOTAL_BYTES = 96 * 1024 * 1024;
+
+function trackNetworkActivity(page) {
+  const inflight = new Set();
+  let lastActivity = Date.now();
+  const onStart = (request) => {
+    inflight.add(request);
+    lastActivity = Date.now();
+  };
+  const onEnd = (request) => {
+    inflight.delete(request);
+    lastActivity = Date.now();
+  };
+  page.on("request", onStart);
+  page.on("requestfinished", onEnd);
+  page.on("requestfailed", onEnd);
+  return {
+    pending: () => inflight.size,
+    idleFor: () => Date.now() - lastActivity,
+  };
+}
+
+async function waitForNetworkQuiet(page, activity, quietMs, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    // Long-poll/beacon requests never settle, so tolerate a couple of stragglers.
+    if (activity.pending() <= 2 && activity.idleFor() >= quietMs) {
+      return true;
+    }
+    await page.waitForTimeout(100);
+  }
+  return false;
+}
+
+// Readiness-signal settle instead of a fixed sleep: load event, network quiet,
+// a scroll pass to trigger lazy media / intersection observers, fonts, and image decode.
+// waitSeconds is the upper bound for each network wait, not a mandatory delay.
+async function settlePage(page, activity, waitSeconds) {
+  const started = Date.now();
+  const budgetMs = Math.max(1500, waitSeconds * 1000);
+  const readiness = { strategy: "signals", budgetMs };
+  readiness.loadEvent = await page.waitForLoadState("load", { timeout: budgetMs }).then(() => true).catch(() => false);
+  readiness.networkQuiet = await waitForNetworkQuiet(page, activity, 500, budgetMs);
+  const scroll = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const root = document.scrollingElement || document.documentElement;
+    if (!root) return { steps: 0, scrollHeight: null };
+    const step = Math.max(240, Math.floor(window.innerHeight * 0.85));
+    let steps = 0;
+    // "instant" overrides `scroll-behavior: smooth`, which would otherwise leave the page mid-scroll.
+    const scrollTo = (top) => window.scrollTo({ top, left: 0, behavior: "instant" });
+    for (let y = 0; y < root.scrollHeight && steps < 40; y += step) {
+      scrollTo(y);
+      steps += 1;
+      await sleep(70);
+    }
+    scrollTo(root.scrollHeight);
+    await sleep(120);
+    scrollTo(0);
+    return { steps, scrollHeight: root.scrollHeight };
+  }).catch(() => ({ steps: 0, scrollHeight: null }));
+  readiness.scrollSteps = scroll.steps;
+  readiness.scrollHeight = scroll.scrollHeight;
+  readiness.postScrollNetworkQuiet = await waitForNetworkQuiet(page, activity, 400, Math.min(budgetMs, 4000));
+  const media = await page.evaluate(async () => {
+    const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(resolve, ms))]);
+    let fontsReady = false;
+    if (document.fonts && document.fonts.ready) {
+      await withTimeout(document.fonts.ready.then(() => { fontsReady = true; }), 3000);
+    }
+    const pendingImages = Array.from(document.images).filter((image) => !image.complete);
+    await withTimeout(Promise.all(pendingImages.map((image) => image.decode().catch(() => null))), 3000);
+    return {
+      fontsReady,
+      imagesPending: Array.from(document.images).filter((image) => !image.complete).length,
+    };
+  }).catch(() => ({ fontsReady: false, imagesPending: null }));
+  readiness.fontsReady = media.fontsReady;
+  readiness.imagesPending = media.imagesPending;
+  await page.waitForTimeout(150);
+  readiness.elapsedMs = Date.now() - started;
+  return readiness;
+}
+
+// Runs before page scripts: remembers each element's authored `style` attribute the first time
+// script mutates it, so the snapshot can tell parse-time styles from viewport-specific JS layout.
+function recordAuthoredInlineStyles() {
+  const authored = new WeakMap();
+  window.__webEmbeddingAuthoredStyles = authored;
+  new MutationObserver((records) => {
+    for (const record of records) {
+      if (!authored.has(record.target)) {
+        authored.set(record.target, record.oldValue);
+      }
+    }
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["style"], attributeOldValue: true });
+}
+
+function collectSnapshotAssets(page) {
+  const entries = new Map();
+  let totalBytes = 0;
+  let skipped = 0;
+  page.on("response", (response) => {
+    const request = response.request();
+    const resourceType = request.resourceType();
+    const status = response.status();
+    const headers = response.headers();
+    const contentType = String(headers["content-type"] || "").toLowerCase();
+    // <use href>, CSS masks, and fetch()-loaded icons arrive as "other"/"fetch", so also match on MIME type.
+    const assetLike = SNAPSHOT_ASSET_TYPES.has(resourceType) || /^(image|font)\/|^text\/css/.test(contentType);
+    if (!assetLike || status < 200 || status >= 300) {
+      return;
+    }
+    const aliases = [response.url()];
+    let previous = request.redirectedFrom();
+    while (previous) {
+      aliases.push(previous.url());
+      previous = previous.redirectedFrom();
+    }
+    const body = response.body().then((buffer) => {
+      if (!buffer || buffer.length > SNAPSHOT_MAX_ASSET_BYTES || totalBytes + buffer.length > SNAPSHOT_MAX_TOTAL_BYTES) {
+        skipped += 1;
+        return null;
+      }
+      totalBytes += buffer.length;
+      return buffer;
+    }).catch(() => null);
+    entries.set(response.url(), { aliases, resourceType: /^text\/css/.test(contentType) ? "stylesheet" : resourceType, contentType, body });
+  });
+  return {
+    entries,
+    stats: () => ({ totalBytes, skipped }),
+  };
+}
+
+function snapshotAssetExtension(url, contentType) {
+  const byType = {
+    "text/css": ".css",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "image/svg+xml": ".svg",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+    "font/woff2": ".woff2",
+    "font/woff": ".woff",
+    "font/ttf": ".ttf",
+    "font/otf": ".otf",
+    "application/font-woff2": ".woff2",
+    "application/font-woff": ".woff",
+  };
+  const mime = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (byType[mime]) return byType[mime];
+  try {
+    const ext = path.extname(new URL(url).pathname).toLowerCase();
+    if (/^\.[a-z0-9]{2,5}$/.test(ext)) return ext;
+  } catch (error) {}
+  return ".bin";
+}
+
+// In-page serializer (SingleFile-style): walks the live DOM, so it keeps runtime state that
+// page.content() loses — CSSOM rules (incl. CSS-in-JS insertRule and adoptedStyleSheets),
+// open shadow roots as declarative shadow DOM, canvas pixels, form values, currentSrc.
+function serializeSnapshotDocument(options) {
+  const assetMap = options.assetMap || {};
+  const externalCss = options.externalCss || {};
+  const stats = { shadowRoots: 0, canvases: 0, inlinedStylesheets: 0, remoteStylesheets: 0, customElements: 0 };
+  const customElementNames = new Set();
+  const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+  const DROP_TAGS = new Set(["script", "noscript", "base"]);
+  const URL_ATTRS = new Set(["src", "href", "poster", "background", "xlink:href", "data"]);
+  const escapeText = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const escapeAttr = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const resolveUrl = (value, base) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || /^(data:|blob:|javascript:|about:|#|mailto:|tel:)/i.test(trimmed)) return trimmed;
+    let parsed;
+    try {
+      parsed = new URL(trimmed, base || document.baseURI);
+    } catch (error) {
+      return trimmed;
+    }
+    // Fragments (e.g. `<use href="sprite.svg#icon">`) aren't part of the fetched resource URL.
+    const fragment = parsed.hash;
+    parsed.hash = "";
+    const local = assetMap[parsed.href];
+    return local ? `${local}${fragment}` : `${parsed.href}${fragment}`;
+  };
+  const rewriteCssUrls = (cssText, base) => String(cssText || "")
+    .replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/g, (match, dq, sq, bare) => {
+      const raw = dq !== undefined ? dq : (sq !== undefined ? sq : bare);
+      if (/^(data:|#)/i.test(raw)) return match;
+      return `url("${resolveUrl(raw, base).replace(/"/g, "%22")}")`;
+    })
+    .replace(/@import\s+(["'])([^"']+)\1/g, (match, quote, raw) => {
+      try {
+        return `@import "${new URL(raw, base || document.baseURI).href}"`;
+      } catch (error) {
+        return match;
+      }
+    });
+  // Chrome serializes var()-based shorthands (e.g. `padding-inline: var(--x)`) as empty longhands
+  // (`padding-left: ;`). Authored text avoids that; for CSSOM-only rules the shorthand is rebuilt.
+  const VAR_SHORTHANDS = [
+    "margin", "margin-inline", "margin-block", "padding", "padding-inline", "padding-block",
+    "inset", "inset-inline", "inset-block", "border", "border-top", "border-right", "border-bottom", "border-left",
+    "border-inline", "border-block", "border-inline-start", "border-inline-end", "border-block-start", "border-block-end",
+    "border-width", "border-style", "border-color", "border-radius", "background", "font", "gap", "grid",
+    "grid-template", "grid-area", "grid-row", "grid-column", "flex", "flex-flow", "overflow", "place-items",
+    "place-content", "place-self", "transition", "animation", "outline", "text-decoration", "list-style",
+    "columns", "mask", "scroll-margin", "scroll-padding", "container",
+  ];
+  const BROKEN_DECLARATION = /:\s*;/;
+  const repairDeclarations = (style) => {
+    const text = style.cssText;
+    if (!BROKEN_DECLARATION.test(text)) return text;
+    const restored = [];
+    for (const shorthand of VAR_SHORTHANDS) {
+      const value = style.getPropertyValue(shorthand);
+      if (value && value.includes("var(")) {
+        restored.push(`${shorthand}: ${value}${style.getPropertyPriority(shorthand) ? " !important" : ""};`);
+      }
+    }
+    return `${text.replace(/(^|;)\s*[-\w]+\s*:\s*(?=;)/g, "$1").replace(/;\s*;/g, ";")} ${restored.join(" ")}`;
+  };
+  const ruleText = (rule) => {
+    const text = rule.cssText;
+    if (!BROKEN_DECLARATION.test(text)) return text;
+    const brace = text.indexOf("{");
+    if (brace < 0) return rule.style ? repairDeclarations(rule.style) : text;
+    const own = rule.style ? repairDeclarations(rule.style) : "";
+    const children = rule.cssRules ? Array.from(rule.cssRules).map(ruleText).join("\n") : "";
+    return `${text.slice(0, brace)}{ ${own} ${children} }`;
+  };
+  const sheetMatchesSource = (rules, sourceText) => {
+    try {
+      const parsed = new CSSStyleSheet();
+      parsed.replaceSync(sourceText);
+      return parsed.cssRules.length === rules.length;
+    } catch (error) {
+      return false;
+    }
+  };
+  const sheetText = (sheet, depth, sourceText) => {
+    let rules = null;
+    try {
+      rules = sheet.cssRules;
+    } catch (error) {
+      rules = null;
+    }
+    const base = sheet.href || document.baseURI;
+    const hasImports = rules ? Array.from(rules).some((rule) => rule.type === CSSRule.IMPORT_RULE) : false;
+    const networkText = sheet.href && typeof externalCss[sheet.href] === "string" ? externalCss[sheet.href] : null;
+    if (networkText !== null && (!rules || !hasImports)) {
+      return rewriteCssUrls(networkText, sheet.href);
+    }
+    if (!rules) {
+      return null;
+    }
+    // Inline <style> text is authoritative unless CSS-in-JS grew the sheet via insertRule.
+    if (!hasImports && typeof sourceText === "string" && sourceText.trim() && sheetMatchesSource(rules, sourceText)) {
+      return rewriteCssUrls(sourceText, base);
+    }
+    const parts = [];
+    for (const rule of Array.from(rules)) {
+      if (rule.type === CSSRule.IMPORT_RULE && rule.styleSheet && depth < 4) {
+        const inner = sheetText(rule.styleSheet, depth + 1);
+        if (inner !== null) {
+          const media = rule.media && rule.media.mediaText ? rule.media.mediaText : "";
+          parts.push(media ? `@media ${media} {\n${inner}\n}` : inner);
+          continue;
+        }
+      }
+      parts.push(rewriteCssUrls(ruleText(rule), base));
+    }
+    return parts.join("\n");
+  };
+  const styleTag = (cssText, attrs) => `<style${attrs || ""}>${String(cssText).replace(/<\/style/gi, "<\\/style")}</style>`;
+  const adoptedStyles = (root) => {
+    const sheets = Array.from((root && root.adoptedStyleSheets) || []);
+    return sheets.map((sheet) => {
+      const text = sheetText(sheet, 0);
+      return text ? styleTag(text, " data-web-embedding-adopted") : "";
+    }).join("");
+  };
+  const rewriteSrcset = (value) => String(value || "").split(",").map((candidate) => {
+    const parts = candidate.trim().split(/\s+/);
+    if (!parts[0]) return "";
+    parts[0] = resolveUrl(parts[0]);
+    return parts.join(" ");
+  }).filter(Boolean).join(", ");
+
+  // JS layout (masonry, equal heights, carousels) writes pixel geometry that is only valid at the
+  // capture viewport. Keep it, but scope it to that viewport width and fall back to authored styles
+  // below it; non-geometry changes (opacity, display, ...) stay unconditional.
+  const authoredStyles = window.__webEmbeddingAuthoredStyles || null;
+  const GEOMETRY_PROPERTY = /^(position|top|right|bottom|left|inset.*|(min-|max-)?(width|height))$/;
+  const runtimeGeometryRules = [];
+  const runtimeGeometryFallbacks = [];
+  const declarations = (cssText) => {
+    const probe = document.createElement("div");
+    probe.style.cssText = cssText || "";
+    return Array.from(probe.style).map((name) => [name, probe.style.getPropertyValue(name), probe.style.getPropertyPriority(name)]);
+  };
+  const splitRuntimeStyle = (element, attrs, authoredText) => {
+    const runtimeText = element.getAttribute("style") || "";
+    if (runtimeText === (authoredText || "")) return;
+    const kept = declarations(authoredText).filter(([name]) => GEOMETRY_PROPERTY.test(name));
+    const scoped = [];
+    for (const declaration of declarations(runtimeText)) {
+      if (GEOMETRY_PROPERTY.test(declaration[0])) {
+        scoped.push(declaration);
+      } else {
+        kept.push(declaration);
+      }
+    }
+    const styleText = kept.map(([name, value, priority]) => `${name}: ${value}${priority ? " !important" : ""};`).join(" ");
+    if (styleText) attrs.set("style", rewriteCssUrls(styleText, document.baseURI)); else attrs.delete("style");
+    if (scoped.length) {
+      const id = String(runtimeGeometryRules.length);
+      attrs.set("data-web-embedding-runtime-geometry", id);
+      runtimeGeometryRules.push(`[data-web-embedding-runtime-geometry="${id}"] { ${scoped.map(([name, value]) => `${name}: ${value} !important;`).join(" ")} }`);
+      // Without its scripted width (e.g. slider slides) a floated/shrink-to-fit box can blow past its container.
+      if (scoped.some(([name]) => name === "width" || name === "min-width")) {
+        runtimeGeometryFallbacks.push(`[data-web-embedding-runtime-geometry="${id}"] { max-width: 100% !important; }`);
+      }
+    }
+  };
+
+  const out = [];
+  const serializeChildren = (node) => {
+    for (const child of Array.from(node.childNodes)) {
+      serializeNode(child);
+    }
+  };
+  const serializeNode = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out.push(escapeText(node.textContent));
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+    const element = node;
+    const tag = element.localName;
+    if (DROP_TAGS.has(tag)) return;
+    if (tag === "meta") {
+      const equiv = String(element.getAttribute("http-equiv") || "").toLowerCase();
+      if (equiv === "content-security-policy" || equiv === "refresh") return;
+    }
+    if (tag === "link") {
+      const rel = String(element.getAttribute("rel") || "").toLowerCase();
+      if (/(^|\s)(preload|prefetch|modulepreload|preconnect|dns-prefetch|manifest)(\s|$)/.test(rel)) return;
+      if (/(^|\s)stylesheet(\s|$)/.test(rel)) {
+        if (!element.sheet || element.disabled) return;
+        const text = sheetText(element.sheet, 0);
+        const media = element.getAttribute("media");
+        const mediaAttr = media ? ` media="${escapeAttr(media)}"` : "";
+        if (text !== null) {
+          stats.inlinedStylesheets += 1;
+          out.push(styleTag(text, `${mediaAttr} data-web-embedding-href="${escapeAttr(element.href)}"`));
+        } else {
+          stats.remoteStylesheets += 1;
+          out.push(`<link rel="stylesheet" href="${escapeAttr(resolveUrl(element.href))}"${mediaAttr}>`);
+        }
+        return;
+      }
+    }
+    if (tag === "style") {
+      const text = element.sheet ? sheetText(element.sheet, 0, element.textContent) : element.textContent;
+      const media = element.getAttribute("media");
+      out.push(styleTag(text || "", media ? ` media="${escapeAttr(media)}"` : ""));
+      return;
+    }
+    if (tag.includes("-") && window.customElements && customElements.get(tag)) {
+      customElementNames.add(tag);
+    }
+
+    const attrs = new Map();
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name;
+      const lower = name.toLowerCase();
+      if (lower.startsWith("on") || lower === "nonce" || lower === "integrity") continue;
+      let value = attr.value;
+      if (URL_ATTRS.has(lower) && !(tag === "a" && lower === "href" && /^javascript:/i.test(value.trim()))) {
+        value = resolveUrl(value);
+      } else if (lower === "srcset") {
+        value = rewriteSrcset(value);
+      } else if (lower === "style") {
+        value = rewriteCssUrls(value, document.baseURI);
+      }
+      attrs.set(name, value);
+    }
+    if (authoredStyles && authoredStyles.has(element)) {
+      splitRuntimeStyle(element, attrs, authoredStyles.get(element));
+    }
+    if (tag === "img") {
+      if (element.currentSrc) attrs.set("src", resolveUrl(element.currentSrc));
+      attrs.delete("loading");
+    }
+    if (tag === "iframe") {
+      attrs.delete("loading");
+    }
+    if (tag === "input") {
+      const type = String(element.type || "").toLowerCase();
+      if (type === "checkbox" || type === "radio") {
+        if (element.checked) attrs.set("checked", ""); else attrs.delete("checked");
+      } else if (type !== "password" && type !== "file") {
+        attrs.set("value", element.value);
+      }
+    }
+    if (tag === "option") {
+      if (element.selected) attrs.set("selected", ""); else attrs.delete("selected");
+    }
+    if (tag === "canvas") {
+      try {
+        const dataUrl = element.toDataURL("image/png");
+        if (dataUrl && dataUrl.length > 32) {
+          stats.canvases += 1;
+          const existing = attrs.get("style") || "";
+          attrs.set("style", `${existing}${existing && !existing.trim().endsWith(";") ? ";" : ""}background-image:url("${dataUrl}");background-size:100% 100%;background-repeat:no-repeat;`);
+        }
+      } catch (error) {}
+    }
+
+    out.push(`<${tag}`);
+    for (const [name, value] of attrs) {
+      out.push(value === "" ? ` ${name}` : ` ${name}="${escapeAttr(value)}"`);
+    }
+    out.push(">");
+    if (VOID_TAGS.has(tag)) return;
+    if (tag === "head") {
+      out.push(`<meta name="web-embedding-snapshot" content="${escapeAttr(location.href)}">`);
+    }
+    if (element.shadowRoot) {
+      stats.shadowRoots += 1;
+      out.push(`<template shadowrootmode="${element.shadowRoot.mode || "open"}">`);
+      out.push(adoptedStyles(element.shadowRoot));
+      serializeChildren(element.shadowRoot);
+      out.push("</template>");
+    }
+    if (tag === "textarea") {
+      out.push(escapeText(element.value));
+    } else if (tag === "template") {
+      serializeChildren(element.content);
+    } else {
+      serializeChildren(element);
+    }
+    if (tag === "head") {
+      out.push(adoptedStyles(document));
+    }
+    if (tag === "body" && runtimeGeometryRules.length) {
+      stats.runtimeGeometryElements = runtimeGeometryRules.length;
+      const fallbacks = runtimeGeometryFallbacks.length
+        ? `\n@media (max-width: ${window.innerWidth - 1}px) {\n${runtimeGeometryFallbacks.join("\n")}\n}`
+        : "";
+      out.push(styleTag(`@media (min-width: ${window.innerWidth}px) {\n${runtimeGeometryRules.join("\n")}\n}${fallbacks}`, " data-web-embedding-runtime-geometry"));
+    }
+    if (tag === "body" && customElementNames.size) {
+      // Scripts are stripped; re-define only the elements that were upgraded at capture time so
+      // :defined / :not(:defined) styling matches the live page.
+      const names = JSON.stringify(Array.from(customElementNames));
+      out.push(`<script data-web-embedding-define>for (const n of ${names}) { try { if (!customElements.get(n)) customElements.define(n, class extends HTMLElement {}); } catch (e) {} }</script>`);
+    }
+    out.push(`</${tag}>`);
+  };
+
+  out.push("<!DOCTYPE html>");
+  serializeNode(document.documentElement);
+  stats.customElements = customElementNames.size;
+  return { html: out.join(""), stats };
+}
+
+async function writeDocumentSnapshot(page, snapshotAssets, snapshotDir) {
+  const started = Date.now();
+  const crypto = require("crypto");
+  const assetsDir = path.join(snapshotDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const settled = await Promise.race([
+    Promise.all(Array.from(snapshotAssets.entries.values()).map(async (entry) => ({ entry, buffer: await entry.body }))),
+    new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+  ]);
+  const assetMap = {};
+  const externalCss = {};
+  let assetCount = 0;
+  for (const item of settled || []) {
+    if (!item.buffer) continue;
+    const primaryUrl = item.entry.aliases[0];
+    const fileName = crypto.createHash("sha1").update(primaryUrl).digest("hex").slice(0, 20) + snapshotAssetExtension(primaryUrl, item.entry.contentType);
+    fs.writeFileSync(path.join(assetsDir, fileName), item.buffer);
+    assetCount += 1;
+    for (const alias of item.entry.aliases) {
+      assetMap[alias] = `assets/${fileName}`;
+      if (item.entry.resourceType === "stylesheet") {
+        externalCss[alias] = item.buffer.toString("utf8");
+      }
+    }
+  }
+  const serialized = await page.evaluate(serializeSnapshotDocument, { assetMap, externalCss });
+  const indexPath = path.join(snapshotDir, "index.html");
+  fs.writeFileSync(indexPath, serialized.html);
+  const assetStats = snapshotAssets.stats();
+  return {
+    available: true,
+    path: indexPath,
+    root: snapshotDir,
+    htmlLength: serialized.html.length,
+    assetCount,
+    assetBytes: assetStats.totalBytes,
+    skippedAssetCount: assetStats.skipped,
+    assetWaitTimedOut: settled === null,
+    stats: serialized.stats,
+    durationMs: Date.now() - started,
+  };
 }
 
 function styleSnapshotFromComputed(style) {
@@ -2614,6 +3135,11 @@ async function captureAccessibilitySnapshot(context, page) {
     }
 
     const page = context.pages()[0] || await context.newPage();
+    const networkActivity = trackNetworkActivity(page);
+    const snapshotAssets = snapshotDir ? collectSnapshotAssets(page) : null;
+    if (snapshotDir) {
+      await page.addInitScript(recordAuthoredInlineStyles);
+    }
     const hits = [];
     const failedRequestEntries = [];
     const redirectRequestEntries = [];
@@ -3008,7 +3534,7 @@ async function captureAccessibilitySnapshot(context, page) {
     });
 
     await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 90000 });
-    await page.waitForTimeout(waitSeconds * 1000);
+    const readiness = await settlePage(page, networkActivity, waitSeconds);
     const navigationTiming = await page.evaluate(() => {
       const navEntry = performance && typeof performance.getEntriesByType === "function"
         ? performance.getEntriesByType("navigation")[0] || null
@@ -3117,6 +3643,14 @@ async function captureAccessibilitySnapshot(context, page) {
 
     const html = captureHtml ? await page.content() : null;
     const screenshotBytes = captureScreenshot ? await page.screenshot({ fullPage: true, type: "png" }) : null;
+    let snapshot = snapshotDir ? { available: false, requested: true } : { available: false, requested: false };
+    if (snapshotAssets) {
+      try {
+        snapshot = await writeDocumentSnapshot(page, snapshotAssets, snapshotDir);
+      } catch (error) {
+        snapshot = { available: false, requested: true, error: error.message };
+      }
+    }
     const accessibilityTree = await captureAccessibilitySnapshot(context, page);
     const domSnapshotPayload = await page.evaluate(() => {
       function safeFrameDocument(element) {
@@ -5395,7 +5929,9 @@ async function captureAccessibilitySnapshot(context, page) {
       },
       networkHits: hits.slice(0, 200),
       htmlMatches: [...new Set(htmlMatches)].slice(0, 200),
+      readiness,
       captures: {
+        snapshot,
         dom: {
           available: Boolean(domSnapshot),
           nodeCountApprox: JSON.stringify(domSnapshot || {}).length,
@@ -5508,6 +6044,7 @@ def trace_runtime_sources(
     capture_screenshot: bool = False,
     viewport_width: int = 1440,
     viewport_height: int = 1200,
+    snapshot_dir: str | None = None,
 ) -> dict[str, Any]:
     url = assert_http_url(url)
     if shutil.which("node") is None:
@@ -5557,6 +6094,7 @@ def trace_runtime_sources(
             str(viewport_width),
             str(viewport_height),
             storage_state_output_path or "",
+            snapshot_dir or "",
         ],
         capture_output=True,
         input=_runtime_trace_script(),
