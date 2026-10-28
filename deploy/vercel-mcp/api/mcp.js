@@ -1,5 +1,5 @@
 const SERVER_NAME = "webembedding-remote-intake";
-const SERVER_VERSION = "0.3.11";
+const SERVER_VERSION = "0.3.12";
 // Surfaced to the model by MCP clients; it decides whether an agent reaches for these tools.
 const SERVER_INSTRUCTIONS = [
   "webEmbedding hosted intake: read-only checks for cloning or embedding a web page from its URL.",
