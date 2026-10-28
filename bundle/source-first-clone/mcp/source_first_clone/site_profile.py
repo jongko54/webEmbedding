@@ -11,11 +11,13 @@ APP_RUNTIME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("nextjs", re.compile(r"__next|_next/static|next-data", re.I)),
     ("nuxt", re.compile(r"__nuxt|_nuxt/", re.I)),
     ("react", re.compile(r"data-reactroot|react-root|react-dom", re.I)),
-    ("vue", re.compile(r"data-v-|vue(?:\.runtime)?", re.I)),
-    ("svelte", re.compile(r"svelte", re.I)),
-    ("angular", re.compile(r"ng-version|angular", re.I)),
-    ("shopify", re.compile(r"Shopify\.|window\.Shopify|shopify-section|shopify-features|cdn\.shopify\.com|myshopify\.com", re.I)),
-    ("wordpress", re.compile(r"wp-content|wp-includes|wp-json|wordpress", re.I)),
+    # Markup/asset markers only: bare words like "vue" or "angular" also occur in page prose
+    # (e.g. Spanish "vuelve"), which misrouted content sites as app shells.
+    ("vue", re.compile(r"data-v-(?:app|[0-9a-f]{6,})|__vue_|\bvue(?:\.runtime)?(?:\.[\w-]+)*\.js\b|/vue@\d", re.I)),
+    ("svelte", re.compile(r"svelte-[a-z0-9]{5,}|__svelte|data-sveltekit|/_app/immutable/|\bsvelte(?:kit)?(?:\.[\w-]+)*\.js\b", re.I)),
+    ("angular", re.compile(r"ng-version|_ngcontent-|_nghost-|\bangular(?:\.[\w-]+)*\.js\b|@angular/", re.I)),
+    ("shopify", re.compile(r"Shopify\.(?:theme|shop|routes|locale|currency|country|designMode)|window\.Shopify|shopify-section|shopify-features|cdn\.shopify\.com|myshopify\.com", re.I)),
+    ("wordpress", re.compile(r"wp-content|wp-includes|wp-json|content=[\"']wordpress", re.I)),
     ("wix", re.compile(r"wixstatic\.com|static\.parastorage\.com|wix-code|wix-thunderbolt|wixsite\.com", re.I)),
     ("squarespace", re.compile(r"static1?\.squarespace\.com|squarespace-cdn\.com|sqspcdn\.com|squarespace-context", re.I)),
     ("super", re.compile(r"super\.site|sites\.super\.so|super-content|super\.so/(?:api|cdn|static)", re.I)),

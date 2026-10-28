@@ -38,7 +38,9 @@ URL_PATTERNS = [
     ("framer-publish", re.compile(r"https://(?:[a-z0-9-]+\.)?(?:framer\.app|framer\.website)(?:/[^\"'\s>]*)?", re.I)),
     ("webflow-publish", re.compile(r"https://(?:[a-z0-9-]+\.)?webflow\.io(?:/[^\"'\s>]*)?", re.I)),
     ("iframe-src", re.compile(r"<iframe[^>]+src=[\"']([^\"']+)", re.I)),
-    ("generic-embed", re.compile(r"https://[^\"'\s>]*(?:embed|preview|viewer)[^\"'\s>]*", re.I)),
+    # The keyword must start a host label, path segment, or query token, so ordinary links such as
+    # linkpreview.app or reviewer pages are not mistaken for reusable embeds.
+    ("generic-embed", re.compile(r"https://(?:[^\"'\s>]*?[/.?&=_-])?(?:embed|preview|viewer)s?(?![a-z])[^\"'\s>]*", re.I)),
 ]
 
 LICENSE_HINTS = [

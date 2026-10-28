@@ -321,6 +321,18 @@ def build_candidates(base_url: str, html: str, adapter_candidates: list[dict[str
     return merge_platform_candidates(final_candidates, adapter_candidates)
 
 
+def drop_blocked_self_iframe(candidates: list[dict[str, Any]], final_url: str, frame_policy: dict[str, Any]) -> list[dict[str, Any]]:
+    # Platform adapters propose the page itself as a direct iframe; that is only reusable when framing is allowed.
+    if frame_policy.get("embeddable") is not False:
+        return candidates
+    page = final_url.rstrip("/")
+    return [
+        item
+        for item in candidates
+        if not (item.get("kind") == "direct-iframe" and str(item.get("url") or "").rstrip("/") == page)
+    ]
+
+
 def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
     try:
         fetched = fetch_url(url, timeout_seconds=timeout_seconds)
@@ -334,6 +346,7 @@ def inspect_reference(url: str, timeout_seconds: int = 20) -> dict[str, Any]:
     meta = extract_meta(html)
     platform_adapter = inspect_platform_adapter(fetched["final_url"], html, meta)
     candidate_urls = build_candidates(fetched["final_url"], html, adapter_candidates=platform_adapter.get("candidates"))
+    candidate_urls = drop_blocked_self_iframe(candidate_urls, fetched["final_url"], frame_policy)
     if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidate_urls = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidate_urls]
     inspection = {
@@ -383,6 +396,7 @@ def discover_embed_candidates(url: str, timeout_seconds: int = 20) -> dict[str, 
     meta = extract_meta(fetched["html"])
     platform_adapter = inspect_platform_adapter(fetched["final_url"], fetched["html"], meta)
     candidates = build_candidates(fetched["final_url"], fetched["html"], adapter_candidates=platform_adapter.get("candidates"))
+    candidates = drop_blocked_self_iframe(candidates, fetched["final_url"], frame_policy)
     if frame_policy.get("embeddable") is True and should_promote_direct_iframe(fetched["final_url"], platform_adapter):
         candidates = [{"kind": "direct-iframe", "url": fetched["final_url"]}, *candidates]
     site_profile = classify_site_profile(

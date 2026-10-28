@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fixed site-profile false positives from page prose: framework detection now needs markup/asset markers (Spanish "vuelve" no longer marks python.org as a Vue app shell; "Shopify." or "readymag" in copy no longer selects those platforms).
+- Stopped proposing a page as its own `direct-iframe` candidate when its headers block framing, and tightened `generic-embed` so links like `linkpreview.app` are not treated as reusable embeds.
+- Refreshed universal benchmark expectations for live-site drift (wikipedia.org portal now longform; framer.com no longer ships canvas/WebGL markers).
+- Pointed plugin homepage/privacy/terms URLs at the live hosted domain `webembedding-jongkos-mcp.vercel.app`.
+
 ## 0.3.11
 
 - Added a `runtime-snapshot` renderer: a SingleFile-style serialization of the live DOM with authored/CSSOM stylesheets inlined, adoptedStyleSheets, open shadow roots as declarative shadow DOM, canvas pixels, form state, and localized image/font/stylesheet assets. Self-verify tries it first and skips scaffold renderers (and the Next build) when it is ready.
