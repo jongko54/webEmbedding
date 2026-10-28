@@ -11,7 +11,8 @@ SPLINE_FILE_RE = re.compile(r"https://app\.spline\.design/file/[^\"'\s>]+", re.I
 SPLINE_VIEWER_RE = re.compile(r"https://viewer\.spline\.design/[^\"'\s>]+", re.I)
 FIGMA_DUPLICATE_RE = re.compile(r"duplicate\s+this\s+file", re.I)
 FIGMA_PATH_RE = re.compile(r"^/(?:community/file|file|proto|design|board|slides)/", re.I)
-READYMAG_RUNTIME_RE = re.compile(r"(readymag|rmcdn|embed\.readymag\.com|HtmlSnippet-[^\"'\s>]+\.html)", re.I)
+# Asset/host markers only: the bare word "readymag" appears in competitor comparisons on other builders' sites.
+READYMAG_RUNTIME_RE = re.compile(r"(rmcdn|embed\.readymag\.com|HtmlSnippet-[^\"'\s>]+\.html)", re.I)
 READYMAG_SNIPPET_RE = re.compile(r"https://c-p\.rmcdn\.net/[^\"'&\s>]+HtmlSnippet-[^\"'&\s>]+\.html", re.I)
 FRAMER_PUBLISH_HOST_RE = re.compile(r"(?:^|\.)framer\.(?:app|website)$", re.I)
 FRAMER_RUNTIME_RE = re.compile(r"(?:data-framer|__framer|framer-embed)", re.I)

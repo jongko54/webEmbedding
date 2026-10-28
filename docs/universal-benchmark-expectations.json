@@ -32,7 +32,7 @@
       "critical_depth_counts.runtime-html": 15,
       "critical_depth_counts.network": 15,
       "critical_depth_counts.session-state": 8,
-      "critical_depth_counts.canvas-surface": 4,
+      "critical_depth_counts.canvas-surface": 3,
       "critical_depth_counts.frame-documents": 2,
       "critical_depth_counts.app-gate-evidence": 2,
       "critical_depth_counts.native-app-deep-links": 2,
@@ -102,7 +102,7 @@
       "exact": {
         "status": "ok",
         "route_quality": "complete",
-        "route.primary_surface": "static-document",
+        "route.primary_surface": "longform-content-surface",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "exact-reuse",
         "route.renderer_family": "document-next-app",
@@ -170,7 +170,6 @@
         "route.critical_depths": [
           "runtime-html",
           "network",
-          "canvas-surface",
           "session-state"
         ],
         "failure_classification.codes": [
