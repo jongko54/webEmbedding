@@ -4,13 +4,13 @@
     "name": "Jongho"
   },
   "description": "Claude Code marketplace for source-first URL clone, capture, rebuild, and fidelity verification workflows.",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "plugins": [
     {
       "name": "source-first-clone",
       "source": "./bundle/source-first-clone",
       "description": "Clone any web page from its URL into a verified offline HTML copy, embed, or rebuild: real-browser capture plus desktop/tablet/mobile visual verification.",
-      "version": "0.3.10",
+      "version": "0.3.11",
       "author": {
         "name": "Jongho"
       },

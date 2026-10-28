@@ -1,6 +1,6 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Clone any web page from its URL into a verified offline HTML copy, embed, or rebuild: real-browser capture plus desktop/tablet/mobile visual verification.",
   "author": {
     "name": "Jongho",

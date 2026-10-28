@@ -3,7 +3,7 @@
   "name": "io.github.jongko54/web-embedding",
   "title": "webEmbedding",
   "description": "Clone any web page from a URL into a verified offline HTML copy, embed, or rebuild.",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "websiteUrl": "https://github.com/jongko54/webEmbedding#readme",
   "repository": {
     "url": "https://github.com/jongko54/webEmbedding",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "web-embedding",
-      "version": "0.3.10",
+      "version": "0.3.11",
       "transport": {
         "type": "stdio"
       },
