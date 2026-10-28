@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added a `runtime-snapshot` renderer: a SingleFile-style serialization of the live DOM with authored/CSSOM stylesheets inlined, adoptedStyleSheets, open shadow roots as declarative shadow DOM, canvas pixels, form state, and localized image/font/stylesheet assets. Self-verify tries it first and skips scaffold renderers (and the Next build) when it is ready.
+- Replaced the fixed post-load sleep with readiness signals: load event, network quiet, a lazy-load scroll pass, `document.fonts.ready`, and image decode. `wait_seconds` is now an upper bound.
+- Scoped script-written pixel geometry (masonry, equal-height, slider widths) to the capture viewport so breakpoint renders fall back to authored layout.
+- Captured breakpoint variants in parallel.
+- Added a numpy/Pillow fast path for screenshot fingerprints (~80x faster on full-page screenshots, identical results; pure-Python fallback kept) and reported block SSIM / pixel-diff ratio alongside the existing screenshot score.
+
 ## 0.3.10
 
 - Fixed hosted Apps SDK review readiness for direct iframe reuse so public pages without frame blockers report exact/embed reuse instead of forcing rebuild routing.

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import math
+import os
 import re
 import struct
 import zlib
@@ -12,6 +15,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+# Optional accelerators. The engine stays stdlib-only: when numpy/Pillow are
+# missing (or WEB_EMBEDDING_PURE_PYTHON_IMAGES=1), the pure-Python decoder and
+# fingerprint loops below are used unchanged.
+try:  # pragma: no cover - depends on the local environment
+    import numpy as _np
+except Exception:  # pragma: no cover
+    _np = None
+try:  # pragma: no cover - depends on the local environment
+    from PIL import Image as _PILImage
+except Exception:  # pragma: no cover
+    _PILImage = None
 
 
 CORE_ARTIFACTS = (
@@ -39,6 +54,12 @@ SCREENSHOT_PIXEL_DIFF_GRID_SIZE = 24
 SCREENSHOT_PIXEL_LUMA_SCALE = 34.0
 SCREENSHOT_PIXEL_RGB_SCALE = 42.0
 SCREENSHOT_PIXEL_MISMATCH_SCALE = 0.34
+SCREENSHOT_STRUCTURE_WIDTH = 360
+SCREENSHOT_STRUCTURE_BLOCK = 8
+SCREENSHOT_STRUCTURE_DIFF_THRESHOLD = 24.0
+SCREENSHOT_METRIC_VERSION = 2
+PURE_PYTHON_IMAGES_ENV = "WEB_EMBEDDING_PURE_PYTHON_IMAGES"
+_FAST_DECODE_CHUNK_ROWS = 1024
 
 
 @dataclass
@@ -312,12 +333,47 @@ def _png_metadata(path: Path) -> dict[str, Any]:
     return {"byteLength": path.stat().st_size if path.exists() else None}
 
 
-def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
+def _fast_images_enabled() -> bool:
+    if _np is None or _PILImage is None:
+        return False
+    flag = os.environ.get(PURE_PYTHON_IMAGES_ENV, "").strip().lower()
+    return flag not in {"1", "true", "yes", "on"}
+
+
+def _image_cache_key(path: str | Path | None) -> tuple[str, int, int] | None:
     if not path:
         return None
-    png_path = Path(path)
-    if not png_path.exists():
+    try:
+        png_path = Path(path).resolve()
+        stat = png_path.stat()
+    except OSError:
         return None
+    return (str(png_path), int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _png_fingerprint(path: str | Path | None) -> dict[str, Any] | None:
+    key = _image_cache_key(path)
+    if key is None:
+        return None
+    fingerprint = _cached_png_fingerprint(key[0], key[1], key[2], _fast_images_enabled())
+    # Callers get a private copy so the cached entry cannot be mutated.
+    return copy.deepcopy(fingerprint) if fingerprint is not None else None
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_png_fingerprint(path: str, _mtime_ns: int, _size: int, fast: bool) -> dict[str, Any] | None:
+    png_path = Path(path)
+    if fast:
+        try:
+            decoded_array = _decode_png_rgba_array(png_path)
+            if decoded_array is not None:
+                return _png_fingerprint_numpy(decoded_array)
+        except Exception:
+            pass  # fall back to the pure-Python decoder below
+    return _png_fingerprint_pure(png_path)
+
+
+def _png_fingerprint_pure(png_path: Path) -> dict[str, Any] | None:
     try:
         decoded = _decode_png_rgba(png_path)
     except Exception:
@@ -485,6 +541,281 @@ def _pixel_downsample_signature(decoded: dict[str, Any], grid_size: int) -> dict
         "pixel_luma_grid": [round(value, 2) for value in luma_grid],
         "pixel_rgb_grid": rgb_grid,
     }
+
+
+def _png_header_layout(path: Path) -> tuple[int, int, int, int, int] | None:
+    with path.open("rb") as handle:
+        header = handle.read(33)
+    if len(header) < 33 or not header.startswith(b"\x89PNG\r\n\x1a\n") or header[12:16] != b"IHDR":
+        return None
+    width, height, bit_depth, color_type, _compression, _filter_method, interlace = struct.unpack(
+        ">IIBBBBB", header[16:29]
+    )
+    return width, height, bit_depth, color_type, interlace
+
+
+def _decode_png_rgba_array(path: Path) -> dict[str, Any] | None:
+    """Pillow/numpy decode restricted to the layouts `_decode_png_rgba` accepts.
+
+    Returns None for layouts the pure decoder rejects so both engines agree on
+    which screenshots get a fingerprint. Alpha/tRNS handling matches the pure
+    decoder: only color type 6 carries alpha; tRNS chunks are ignored.
+    """
+    layout = _png_header_layout(path)
+    if layout is None:
+        return None
+    width, height, bit_depth, color_type, interlace = layout
+    if bit_depth != 8 or interlace != 0 or color_type not in {0, 2, 6}:
+        return None
+    with _PILImage.open(path) as image:
+        image.load()
+        if color_type == 6:
+            if image.mode != "RGBA":
+                return None
+            pixels = _np.asarray(image)
+        else:
+            pixels = _np.asarray(image if image.mode == "RGB" else image.convert("RGB"))
+    if pixels.ndim != 3 or pixels.shape[0] != height or pixels.shape[1] != width or pixels.dtype != _np.uint8:
+        return None
+    return {"width": width, "height": height, "pixels": pixels, "has_alpha": color_type == 6}
+
+
+def _one_hot_buckets(length: int, buckets: int) -> Any:
+    # Same bucket rule as the pure loops: index = min(buckets - 1, (i * buckets) // length).
+    indices = _np.minimum(buckets - 1, (_np.arange(length, dtype=_np.int64) * buckets) // length)
+    matrix = _np.zeros((length, buckets), dtype=_np.float64)
+    matrix[_np.arange(length), indices] = 1.0
+    return matrix
+
+
+def _safe_cell_means(sums: Any, counts: Any) -> Any:
+    return _np.where(counts > 0, sums / _np.where(counts > 0, counts, 1.0), 0.0)
+
+
+def _png_fingerprint_numpy(decoded: dict[str, Any]) -> dict[str, Any] | None:
+    """Vectorized equivalent of `_png_fingerprint_pure` + `_pixel_downsample_signature`.
+
+    Bucket membership is identical to the pure loops; only float summation
+    order differs (deviations ~1e-9 before rounding). The 8x8 hash grid,
+    quadrants and bands are exact aggregations of the 16x16 / 24x24 grids
+    because floor(floor(k*y/H)/m) == floor((k/m)*y/H).
+    """
+    np = _np
+    width = int(decoded["width"])
+    height = int(decoded["height"])
+    pixels = decoded["pixels"]
+    has_alpha = bool(decoded.get("has_alpha"))
+    grid = SCREENSHOT_GRID_SIZE
+    hash_grid = SCREENSHOT_HASH_GRID_SIZE
+    pixel_grid = SCREENSHOT_PIXEL_DIFF_GRID_SIZE
+    if width <= 0 or height <= 0:
+        return None
+    if grid % hash_grid or grid % 2 or pixel_grid % SCREENSHOT_BAND_COUNT or SCREENSHOT_QUADRANT_COUNT != 4:
+        raise ValueError("grid constants are not nested; use the pure path")
+
+    col_grid = _one_hot_buckets(width, grid)
+    col_pixel = _one_hot_buckets(width, pixel_grid)
+    row_grid = _one_hot_buckets(height, grid)
+    row_pixel = _one_hot_buckets(height, pixel_grid)
+
+    grid_sums = np.zeros((2, grid, grid), dtype=np.float64)  # luma, count
+    pixel_sums = np.zeros((5, pixel_grid, pixel_grid), dtype=np.float64)  # luma, r, g, b, count
+    histogram = np.zeros(SCREENSHOT_HISTOGRAM_BINS, dtype=np.int64)
+    # aHash bits are a hard threshold, so near-flat pages would flip on float
+    # noise. Reproduce the pure loop's sequential (row-major) summation order per
+    # hash bucket with cumsum (sequential, unlike pairwise .sum()).
+    hash_row_index = _np.minimum(hash_grid - 1, (np.arange(height, dtype=np.int64) * hash_grid) // height)
+    hash_col_index = _np.minimum(hash_grid - 1, (np.arange(width, dtype=np.int64) * hash_grid) // width)
+    hash_col_bounds = [
+        (int(np.searchsorted(hash_col_index, bucket, "left")), int(np.searchsorted(hash_col_index, bucket, "right")))
+        for bucket in range(hash_grid)
+    ]
+    hash_sequential_sums = [0.0] * (hash_grid * hash_grid)
+    luma_total = 0.0
+    luma_squared_total = 0.0
+    rgb_totals = [0.0, 0.0, 0.0]
+    opaque_pixels = 0
+
+    for y0 in range(0, height, _FAST_DECODE_CHUNK_ROWS):
+        y1 = min(height, y0 + _FAST_DECODE_CHUNK_ROWS)
+        chunk = pixels[y0:y1]
+        red = chunk[..., 0].astype(np.float64)
+        green = chunk[..., 1].astype(np.float64)
+        blue = chunk[..., 2].astype(np.float64)
+        luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        bins = np.minimum(SCREENSHOT_HISTOGRAM_BINS - 1, ((luma / 256.0) * SCREENSHOT_HISTOGRAM_BINS).astype(np.int64))
+        if has_alpha:
+            mask = chunk[..., 3] != 0
+            weight = mask.astype(np.float64)
+            luma = luma * weight
+            red = red * weight
+            green = green * weight
+            blue = blue * weight
+            histogram += np.bincount(bins[mask], minlength=SCREENSHOT_HISTOGRAM_BINS)
+            opaque_pixels += int(mask.sum())
+        else:
+            weight = np.ones(luma.shape, dtype=np.float64)
+            histogram += np.bincount(bins.ravel(), minlength=SCREENSHOT_HISTOGRAM_BINS)
+            opaque_pixels += int(luma.size)
+        luma_total += float(luma.sum())
+        luma_squared_total += float((luma * luma).sum())
+        rgb_totals[0] += float(red.sum())
+        rgb_totals[1] += float(green.sum())
+        rgb_totals[2] += float(blue.sum())
+
+        chunk_rows = hash_row_index[y0:y1]
+        for bucket_y in range(int(chunk_rows[0]), int(chunk_rows[-1]) + 1):
+            r0 = int(np.searchsorted(chunk_rows, bucket_y, "left"))
+            r1 = int(np.searchsorted(chunk_rows, bucket_y, "right"))
+            if r0 == r1:
+                continue
+            for bucket_x, (c0, c1) in enumerate(hash_col_bounds):
+                if c0 == c1:
+                    continue
+                cell = bucket_y * hash_grid + bucket_x
+                block = luma[r0:r1, c0:c1].ravel()
+                hash_sequential_sums[cell] = float(np.cumsum(np.concatenate(([hash_sequential_sums[cell]], block)))[-1])
+
+        rows_grid = row_grid[y0:y1].T
+        rows_pixel = row_pixel[y0:y1].T
+        for index, values in enumerate((luma, weight)):
+            grid_sums[index] += rows_grid @ (values @ col_grid)
+        for index, values in enumerate((luma, red, green, blue, weight)):
+            pixel_sums[index] += rows_pixel @ (values @ col_pixel)
+
+    if opaque_pixels == 0:
+        return None
+
+    grid_values = [float(value) for value in _safe_cell_means(grid_sums[0], grid_sums[1]).ravel()]
+    factor = grid // hash_grid
+    hash_sums = grid_sums.reshape(2, hash_grid, factor, hash_grid, factor).sum(axis=(2, 4))
+    hash_counts = [int(count) for count in hash_sums[1].ravel()]
+    hash_bucket_values = [
+        (hash_sequential_sums[index] / hash_counts[index]) if hash_counts[index] else 0.0
+        for index in range(hash_grid * hash_grid)
+    ]
+    half = grid // 2
+    quadrant_sums = grid_sums.reshape(2, 2, half, 2, half).sum(axis=(2, 4))
+    quadrant_values = [float(value) for value in _safe_cell_means(quadrant_sums[0], quadrant_sums[1]).ravel()]
+    band_rows = pixel_grid // SCREENSHOT_BAND_COUNT
+    band_sums = pixel_sums[[0, 4]].reshape(2, SCREENSHOT_BAND_COUNT, band_rows * pixel_grid).sum(axis=2)
+    band_values = [float(value) for value in _safe_cell_means(band_sums[0], band_sums[1])]
+
+    average = sum(hash_bucket_values) / len(hash_bucket_values)
+    bits = "".join("1" if value >= average else "0" for value in hash_bucket_values)
+    mean_luma = luma_total / opaque_pixels
+    variance = max(0.0, (luma_squared_total / opaque_pixels) - (mean_luma * mean_luma))
+
+    pixel_counts = pixel_sums[4].ravel()
+    pixel_signature: dict[str, Any] = {}
+    if int((pixel_counts > 0).sum()):
+        luma_grid = _safe_cell_means(pixel_sums[0], pixel_sums[4]).ravel()
+        channel_grids = [_safe_cell_means(pixel_sums[channel], pixel_sums[4]).ravel() for channel in (1, 2, 3)]
+        rgb_grid: list[float] = []
+        for index in range(pixel_grid * pixel_grid):
+            if not pixel_counts[index]:
+                rgb_grid.extend([0.0, 0.0, 0.0])
+                continue
+            rgb_grid.extend(round(float(channel_grid[index]), 2) for channel_grid in channel_grids)
+        pixel_signature = {
+            "pixel_grid_size": pixel_grid,
+            "pixel_luma_grid": [round(float(value), 2) for value in luma_grid],
+            "pixel_rgb_grid": rgb_grid,
+        }
+
+    return {
+        "width": width,
+        "height": height,
+        "mean_luma": round(mean_luma, 4),
+        "contrast": round(math.sqrt(variance), 4),
+        "aspect_ratio": round(width / height, 4),
+        "opaque_ratio": round(opaque_pixels / (width * height), 4),
+        "rgb_mean": [round(total / opaque_pixels, 2) for total in rgb_totals],
+        "histogram": [round(int(count) / opaque_pixels, 4) for count in histogram],
+        "grid_luma": [round(value, 2) for value in grid_values],
+        "quadrant_luma": [round(value, 2) for value in quadrant_values],
+        "band_luma": [round(value, 2) for value in band_values],
+        "edge_density": round(_grid_edge_density(grid_values, grid), 4),
+        "ahash": f"{int(bits, 2):016x}",
+        **pixel_signature,
+    }
+
+
+@functools.lru_cache(maxsize=32)
+def _cached_structure_luma(path: str, _mtime_ns: int, _size: int) -> Any:
+    """Luma plane resized (BOX/area-average) to SCREENSHOT_STRUCTURE_WIDTH, aspect preserved."""
+    with _PILImage.open(path) as image:
+        image.load()
+        rgb = image.convert("RGB")
+    width, height = rgb.size
+    if width <= 0 or height <= 0:
+        return None
+    target_width = SCREENSHOT_STRUCTURE_WIDTH
+    target_height = max(1, int(round(height * target_width / width)))
+    resized = _np.asarray(rgb.resize((target_width, target_height), resample=_PILImage.BOX), dtype=_np.float64)
+    luma = (0.2126 * resized[..., 0]) + (0.7152 * resized[..., 1]) + (0.0722 * resized[..., 2])
+    luma.setflags(write=False)
+    return luma
+
+
+def _structural_metrics(ref_path: str | Path | None, cand_path: str | Path | None) -> dict[str, Any]:
+    """Block-SSIM + pixel diff ratio on top-aligned, width-normalized luma planes.
+
+    Reported only; it does not feed the screenshot similarity score. Null when
+    numpy/Pillow are unavailable or disabled (pure-Python mode).
+    """
+    result: dict[str, Any] = {
+        "metric_version": SCREENSHOT_METRIC_VERSION,
+        "engine": "numpy" if _fast_images_enabled() else "pure-python",
+        "method": f"block{SCREENSHOT_STRUCTURE_BLOCK}-ssim@{SCREENSHOT_STRUCTURE_WIDTH}w-top-aligned",
+        "score_blend": "none",
+        "ssim": None,
+        "pixel_diff_ratio": None,
+        "compared_height_ratio": None,
+    }
+    if result["engine"] != "numpy":
+        return result
+    ref_key = _image_cache_key(ref_path)
+    cand_key = _image_cache_key(cand_path)
+    if ref_key is None or cand_key is None:
+        return result
+    try:
+        reference = _cached_structure_luma(*ref_key)
+        candidate = _cached_structure_luma(*cand_key)
+    except Exception:
+        return result
+    if reference is None or candidate is None:
+        return result
+    common_height = min(reference.shape[0], candidate.shape[0])
+    common_width = min(reference.shape[1], candidate.shape[1])
+    if common_height <= 0 or common_width <= 0:
+        return result
+    ref_crop = reference[:common_height, :common_width]
+    cand_crop = candidate[:common_height, :common_width]
+    result["compared_height_ratio"] = round(common_height / max(reference.shape[0], candidate.shape[0]), 4)
+    result["pixel_diff_ratio"] = round(
+        float((_np.abs(ref_crop - cand_crop) > SCREENSHOT_STRUCTURE_DIFF_THRESHOLD).mean()), 4
+    )
+    block = SCREENSHOT_STRUCTURE_BLOCK
+    rows = (common_height // block) * block
+    cols = (common_width // block) * block
+    if rows < block or cols < block:
+        return result
+    shape = (rows // block, block, cols // block, block)
+    x = ref_crop[:rows, :cols].reshape(shape)
+    y = cand_crop[:rows, :cols].reshape(shape)
+    mu_x = x.mean(axis=(1, 3))
+    mu_y = y.mean(axis=(1, 3))
+    var_x = _np.maximum(0.0, (x * x).mean(axis=(1, 3)) - mu_x * mu_x)
+    var_y = _np.maximum(0.0, (y * y).mean(axis=(1, 3)) - mu_y * mu_y)
+    covariance = (x * y).mean(axis=(1, 3)) - mu_x * mu_y
+    c1 = (0.01 * 255.0) ** 2
+    c2 = (0.03 * 255.0) ** 2
+    ssim_map = ((2.0 * mu_x * mu_y + c1) * (2.0 * covariance + c2)) / (
+        (mu_x * mu_x + mu_y * mu_y + c1) * (var_x + var_y + c2)
+    )
+    result["ssim"] = round(float(ssim_map.mean()), 4)
+    return result
 
 
 def _decode_png_rgba(path: Path) -> dict[str, Any]:
@@ -889,6 +1220,14 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
             detail.append(f"pixel-rgb delta {pixel_metrics['pixel_mean_abs_rgb_delta']:.1f}")
             detail.append(f"pixel mismatch {pixel_metrics['pixel_mismatch_ratio']:.2f}")
             metrics.update(pixel_metrics)
+    structure = _structural_metrics(ref_path, cand_path) if ref_fingerprint and cand_fingerprint else None
+    if structure is not None:
+        # Reported alongside the existing metrics; unweighted, so the score is unchanged.
+        if isinstance(structure.get("ssim"), (int, float)):
+            detail.append(f"ssim {structure['ssim']:.2f}")
+            metrics["ssim"] = structure["ssim"]
+        if isinstance(structure.get("pixel_diff_ratio"), (int, float)):
+            metrics["pixel_diff_ratio"] = structure["pixel_diff_ratio"]
     summary = "screenshot parity present" if status == "present" else "screenshot parity missing"
     if detail:
         summary = f"{summary} ({'; '.join(detail)})"
@@ -929,6 +1268,9 @@ def _screenshot_check(reference: dict[str, Any], candidate: dict[str, Any]) -> d
             "drift_flags": drift_flags,
             "reference_fingerprint": _signature_summary(ref_fingerprint),
             "candidate_fingerprint": _signature_summary(cand_fingerprint),
+            "structure": structure,
+            "ssim": structure.get("ssim") if structure else None,
+            "pixel_diff_ratio": structure.get("pixel_diff_ratio") if structure else None,
         },
     }
 
