@@ -1,7 +1,7 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.9",
-  "description": "Source-first URL clone, capture, bounded rebuild, and fidelity verification workflow.",
+  "version": "0.3.10",
+  "description": "Clone any web page from its URL into a verified offline HTML copy, embed, or rebuild: real-browser capture plus desktop/tablet/mobile visual verification.",
   "author": {
     "name": "Jongho"
   },
@@ -9,8 +9,13 @@
   "repository": "https://github.com/jongko54/webEmbedding",
   "license": "MIT",
   "keywords": [
-    "source-first",
+    "clone-website",
     "website-cloning",
+    "web-page-clone",
+    "offline-html-snapshot",
+    "embed",
+    "visual-regression",
+    "source-first",
     "mcp",
     "playwright",
     "fidelity"

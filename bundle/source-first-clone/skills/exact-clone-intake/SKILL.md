@@ -1,6 +1,6 @@
 ---
 name: "exact-clone-intake"
-description: "Use when a user gives a URL and wants the page copied, cloned, embedded, captured, source-routed, or reconstructed with high fidelity. Trigger on Korean requests like 그대로 가져와줘 or 완전 똑같이. Prefer exact reuse when possible; otherwise capture structured evidence, build a bounded frontend scaffold, and verify the result."
+description: "Use when a user gives a URL and wants the page cloned, copied, recreated, mirrored, saved as a faithful offline copy, embedded, or rebuilt with high fidelity (e.g. \"clone this website\", \"make it look exactly like this page\", \"copy this landing page\", 그대로 가져와줘, 완전 똑같이). Prefer exact reuse when possible; otherwise produce a self-contained offline HTML snapshot or bounded rebuild from real-browser capture, and verify it against desktop/tablet/mobile screenshots."
 ---
 
 # Exact Clone Intake

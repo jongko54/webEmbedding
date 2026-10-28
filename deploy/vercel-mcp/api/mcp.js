@@ -1,5 +1,13 @@
 const SERVER_NAME = "webembedding-remote-intake";
 const SERVER_VERSION = "0.3.10";
+// Surfaced to the model by MCP clients; it decides whether an agent reaches for these tools.
+const SERVER_INSTRUCTIONS = [
+  "webEmbedding hosted intake: read-only checks for cloning or embedding a web page from its URL.",
+  "Use when the user gives a URL and wants it cloned, copied, recreated, embedded, or checked for whether it can be framed.",
+  "Start with inspect_url (frame policy, platform, reuse route) and discover_embed_candidates; use generate_embed_snippet when the page allows framing.",
+  "Full browser capture, offline HTML snapshots, rebuilds, and fidelity verification run in the local MCP: `npx web-embedding mcp` (tool clone_reference_url).",
+  "Do not use for scraping/summarizing content or bypassing logins, paywalls, captchas, or licenses."
+].join("\n");
 const RESOURCE_URI = "ui://webembedding/intake.html";
 const LOCAL_MCP_COMMAND = "npx -y web-embedding@latest mcp";
 const MAX_BODY_BYTES = 512 * 1024;
@@ -687,7 +695,8 @@ async function handleRequest(message) {
         result: {
           protocolVersion: "2025-03-26",
           capabilities: { tools: {}, resources: {} },
-          serverInfo: { name: SERVER_NAME, version: SERVER_VERSION }
+          serverInfo: { name: SERVER_NAME, title: "webEmbedding", version: SERVER_VERSION },
+          instructions: SERVER_INSTRUCTIONS
         }
       };
     }

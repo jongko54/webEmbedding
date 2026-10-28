@@ -1,7 +1,7 @@
 {
   "name": "source-first-clone",
-  "version": "0.3.9",
-  "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
+  "version": "0.3.10",
+  "description": "Clone any web page from its URL into a verified offline HTML copy, embed, or rebuild: real-browser capture plus desktop/tablet/mobile visual verification.",
   "author": {
     "name": "Jongho",
     "email": "hello@example.com",
