@@ -546,6 +546,74 @@ TOOLS = [
 ]
 
 
+# Agents fill arguments from these descriptions, so every schema property gets one.
+# Shared names are described once; ARG_DESCRIPTION_OVERRIDES covers tool-specific meanings.
+ARG_DESCRIPTIONS: dict[str, str] = {
+    "url": "Public http(s) URL of the page to inspect, capture, or clone.",
+    "timeout_seconds": "Timeout in seconds for the static HTTP fetch of the page.",
+    "wait_seconds": "Upper bound in seconds for each browser readiness wait (load, network quiet, lazy-load scroll); capture continues as soon as the page settles.",
+    "include_runtime_trace": "Launch a real browser for runtime capture (default true). False limits the result to static HTML inspection.",
+    "user_data_dir": "Path to an existing Chrome profile directory, to capture a page behind a login the user owns. Omit for a clean session.",
+    "storage_state_path": "Path to a Playwright storage-state JSON (cookies, localStorage) to load before capture, for pages behind a login the user owns.",
+    "storage_state_output_path": "Path to write the browser storage state after capture, so the session can be reused.",
+    "capture_html": "Include the rendered runtime HTML in the capture.",
+    "capture_screenshot": "Take a full-page PNG screenshot (needed for visual verification).",
+    "viewport_width": "Primary browser viewport width in CSS pixels (default 1440).",
+    "viewport_height": "Primary browser viewport height in CSS pixels (default 1200).",
+    "breakpoint_profiles": "Extra viewports to capture and verify: desktop (1440x1200), tablet (768x1024), mobile (390x844). Example: [\"tablet\", \"mobile\"].",
+    "output_dir": "Directory to write capture artifacts, generated files, and reports into; created if missing.",
+    "exact_requested": "True (default) when the user wants an exact, faithful clone; false when an approximate rebuild is acceptable.",
+    "license_text": "License or permission text that allows reusing the page, from the user or the site; informs the reuse/rebuild policy.",
+    "source_signals": "Extra hints about the page's origin, e.g. [\"framer\", \"spline\", \"export\"]; merged with signals detected from the page.",
+    "candidates": "Embed/source candidates as returned by discover_embed_candidates (objects with kind and url).",
+    "site_profile": "The site_profile object returned by inspect_url.",
+    "capture_bundle": "Capture bundle object returned by capture_reference_bundle.",
+    "reference_bundle": "Capture bundle of the reference page, from capture_reference_bundle.",
+    "candidate_bundle": "Capture bundle of the implementation to compare against the reference.",
+    "reference_url": "URL of the reference page, recorded in the report.",
+    "candidate_url": "URL of the candidate implementation, recorded in the report.",
+    "pattern": "Case-insensitive regex for network/HTML URLs to report as embed or source hits (default spline|preview|embed|viewer|scene|iframe).",
+    "framework": "Snippet flavor: html (plain iframe) or nextjs (React component).",
+    "title": "Accessible title attribute for the iframe.",
+    "queue_root": "Directory holding the filesystem job queue; created if missing.",
+    "clone_args": "Additional clone_reference_url arguments stored with the job (same names as that tool, e.g. wait_seconds, breakpoint_profiles).",
+    "metadata": "Free-form JSON stored with the job, e.g. a ticket id.",
+    "max_attempts": "Maximum run attempts before the job is marked failed (1-10, default 2).",
+    "retry_delay_seconds": "Seconds to wait before retrying a failed attempt (default 30).",
+    "states": "Only return jobs in these states: queued, retry_wait, running, succeeded, failed, blocked, needs_session, manual_review, cancelled.",
+    "job_id": "Job id returned by enqueue_clone_job.",
+    "reason": "Optional note recorded on the cancelled job.",
+    "worker_id": "Optional identifier recorded as the worker that ran the job.",
+    "har_path": "Path to a HAR file, near-HAR JSON, or webEmbedding network/manifest.json to replay from.",
+    "requests": "Requests to match against the archive: objects with url and optional method, id, postData. Omit to only summarize the archive.",
+    "output_path": "Optional path to write the replay report JSON.",
+    "consume": "When true (default), each recorded response is used once, so repeated identical requests step through the recorded responses in order.",
+}
+
+ARG_DESCRIPTION_OVERRIDES: dict[tuple[str, str], str] = {
+    ("generate_embed_snippet", "url"): "URL to embed. It must allow framing; check with inspect_url first.",
+    ("enqueue_clone_job", "url"): "Public http(s) URL to clone when the job runs.",
+    ("enqueue_clone_job", "output_dir"): "Directory the job writes its clone and reports into.",
+    ("run_clone_job", "job_id"): "Job to run; omit to run the next due queued or retry_wait job.",
+    ("trace_runtime_sources", "capture_html"): "Return the rendered runtime HTML.",
+    ("clone_reference_url", "output_dir"): "Directory for the clone and its evidence; the offline copy is written to snapshot/index.html (serve it over HTTP).",
+    ("clone_reference_url", "capture_html"): "Capture rendered HTML; with output_dir this also writes the offline snapshot.",
+}
+
+
+def _describe_properties(tool_name: str, properties: dict[str, Any]) -> None:
+    for arg_name, schema in properties.items():
+        if not isinstance(schema, dict) or schema.get("description"):
+            continue
+        description = ARG_DESCRIPTION_OVERRIDES.get((tool_name, arg_name)) or ARG_DESCRIPTIONS.get(arg_name)
+        if description:
+            schema["description"] = description
+
+
+for tool in TOOLS:
+    _describe_properties(str(tool.get("name") or ""), tool["inputSchema"].get("properties", {}))
+
+
 TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "detect_runtime_capabilities": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False, "idempotentHint": True},
     "inspect_url": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True, "idempotentHint": True},

@@ -15,6 +15,11 @@ from .tools import TOOLS, handle_call
 
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
+SERVER_ICONS = [
+    {"src": "https://webembedding-jongkos-mcp.vercel.app/icon.png", "mimeType": "image/png", "sizes": ["1024x1024"]},
+    {"src": "https://webembedding-jongkos-mcp.vercel.app/icon.svg", "mimeType": "image/svg+xml", "sizes": ["any"]},
+]
+
 # Returned in `initialize`; MCP clients surface this to the model as server-level guidance,
 # which is what decides whether an agent reaches for these tools at all.
 SERVER_INSTRUCTIONS = """\
@@ -104,7 +109,7 @@ def serve() -> int:
                 result: dict[str, Any] = {
                     "protocolVersion": _negotiate_protocol_version(params),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": SERVER_NAME, "title": "webEmbedding", "version": SERVER_VERSION},
+                    "serverInfo": {"name": SERVER_NAME, "title": "webEmbedding", "version": SERVER_VERSION, "icons": SERVER_ICONS},
                     "instructions": SERVER_INSTRUCTIONS,
                 }
             elif method == "ping":
