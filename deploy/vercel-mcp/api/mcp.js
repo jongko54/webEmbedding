@@ -1,5 +1,9 @@
 const SERVER_NAME = "webembedding-remote-intake";
-const SERVER_VERSION = "0.3.12";
+const SERVER_VERSION = "0.3.13";
+const SERVER_ICONS = [
+  { src: "https://webembedding-jongkos-mcp.vercel.app/icon.png", mimeType: "image/png", sizes: ["1024x1024"] },
+  { src: "https://webembedding-jongkos-mcp.vercel.app/icon.svg", mimeType: "image/svg+xml", sizes: ["any"] }
+];
 // Surfaced to the model by MCP clients; it decides whether an agent reaches for these tools.
 const SERVER_INSTRUCTIONS = [
   "webEmbedding hosted intake: read-only checks for cloning or embedding a web page from its URL.",
@@ -617,6 +621,31 @@ const TOOLS = [
   }
 ];
 
+// Agents fill arguments from these descriptions, so every schema property gets one.
+const ARG_DESCRIPTIONS = {
+  url: "Public or user-authorized http(s) URL of the page to inspect.",
+  timeout_seconds: "Timeout in seconds for fetching the page (1-30).",
+  exact_requested: "True (default) when the user wants an exact, faithful clone; false when an approximate rebuild is acceptable.",
+  license_text: "License or permission text that allows reusing the page, from the user or the site; informs the reuse/rebuild policy.",
+  candidates: "Embed/source candidates as returned by discover_embed_candidates (objects with kind and url).",
+  source_signals: "Extra hints about the page's origin, e.g. [\"framer\", \"spline\", \"export\"]; merged with signals detected from the page.",
+  site_profile: "The site_profile object returned by inspect_url.",
+  capture_bundle: "Capture bundle from the local MCP's capture_reference_bundle, if one exists.",
+  title: "Accessible title attribute for the iframe.",
+  framework: "Snippet flavor: html (plain iframe) or nextjs (React component)."
+};
+const ARG_DESCRIPTION_OVERRIDES = {
+  "generate_embed_snippet.url": "URL to embed. It must allow framing; check with inspect_url first."
+};
+for (const tool of TOOLS) {
+  for (const [argName, schema] of Object.entries(tool.inputSchema.properties || {})) {
+    if (!schema.description) {
+      const description = ARG_DESCRIPTION_OVERRIDES[`${tool.name}.${argName}`] || ARG_DESCRIPTIONS[argName];
+      if (description) schema.description = description;
+    }
+  }
+}
+
 function appResource() {
   return {
     uri: RESOURCE_URI,
@@ -695,7 +724,7 @@ async function handleRequest(message) {
         result: {
           protocolVersion: "2025-03-26",
           capabilities: { tools: {}, resources: {} },
-          serverInfo: { name: SERVER_NAME, title: "webEmbedding", version: SERVER_VERSION },
+          serverInfo: { name: SERVER_NAME, title: "webEmbedding", version: SERVER_VERSION, icons: SERVER_ICONS },
           instructions: SERVER_INSTRUCTIONS
         }
       };

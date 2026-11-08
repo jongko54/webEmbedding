@@ -3,8 +3,20 @@
   "name": "io.github.jongko54/web-embedding",
   "title": "webEmbedding",
   "description": "Clone any web page from a URL into a verified offline HTML copy, embed, or rebuild.",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "websiteUrl": "https://github.com/jongko54/webEmbedding#readme",
+  "icons": [
+    {
+      "src": "https://webembedding-jongkos-mcp.vercel.app/icon.png",
+      "mimeType": "image/png",
+      "sizes": ["1024x1024"]
+    },
+    {
+      "src": "https://webembedding-jongkos-mcp.vercel.app/icon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "repository": {
     "url": "https://github.com/jongko54/webEmbedding",
     "source": "github"
@@ -13,7 +25,7 @@
     {
       "registryType": "npm",
       "identifier": "web-embedding",
-      "version": "0.3.12",
+      "version": "0.3.13",
       "transport": {
         "type": "stdio"
       },

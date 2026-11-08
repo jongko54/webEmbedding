@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.13
+
+- Described every tool argument in the local (94) and hosted (18) MCP input schemas, from one shared description table with per-tool overrides, so agents know what to pass (e.g. `breakpoint_profiles` sizes, `output_dir` snapshot location, queue states).
+- Added server icons (PNG 1024x1024 and SVG) to `server.json` for the MCP Registry and to `serverInfo` in the local and hosted `initialize` responses.
+
 ## 0.3.12
 
 - Fixed site-profile false positives from page prose: framework detection now needs markup/asset markers (Spanish "vuelve" no longer marks python.org as a Vue app shell; "Shopify." or "readymag" in copy no longer selects those platforms).
