@@ -1,5 +1,7 @@
 # webEmbedding
 
+[![mcp.market](https://mcp.market/badge/jongko54-web-embedding.svg)](https://mcp.market/server/jongko54-web-embedding)
+
 <!-- mcp-name: io.github.jongko54/web-embedding -->
 
 **webEmbedding clones any web page from its URL for AI coding agents.** Give Claude Code, Codex, Cursor, or any MCP client a URL and it returns a verified clone: the original embed when the page allows it, otherwise a self-contained offline HTML snapshot (inlined CSS, shadow DOM, localized fonts and images) or a bounded rebuild, scored against desktop, tablet, and mobile screenshots of the live page.
