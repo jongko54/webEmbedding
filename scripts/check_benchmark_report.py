@@ -37,6 +37,21 @@ def _validate_exact(payload: Any, expectations: dict[str, Any], label: str) -> l
     return failures
 
 
+def _validate_any_of(payload: Any, expectations: dict[str, list[Any]], label: str) -> list[str]:
+    failures: list[str] = []
+    for dotted_path, allowed in expectations.items():
+        try:
+            actual = _get_path(payload, dotted_path)
+        except KeyError:
+            failures.append(f"{label}: missing `{dotted_path}` (expected one of `{allowed}`)")
+            continue
+        if not isinstance(allowed, list) or actual not in allowed:
+            failures.append(
+                f"{label}: `{dotted_path}` expected one of `{allowed}` but got `{actual}`"
+            )
+    return failures
+
+
 def _validate_absent_or_zero(payload: Any, paths: list[str], label: str) -> list[str]:
     failures: list[str] = []
     for dotted_path in paths:
@@ -132,6 +147,7 @@ def validate_report(report: dict[str, Any], expectations: dict[str, Any]) -> lis
         if not isinstance(item, dict):
             continue
         exact = item_expectations.get("exact", {}) if isinstance(item_expectations, dict) else {}
+        any_of = item_expectations.get("any_of", {}) if isinstance(item_expectations, dict) else {}
         absent_or_zero = (
             item_expectations.get("absent_or_zero", [])
             if isinstance(item_expectations, dict)
@@ -140,6 +156,7 @@ def validate_report(report: dict[str, Any], expectations: dict[str, Any]) -> lis
         minimum = item_expectations.get("minimum", {}) if isinstance(item_expectations, dict) else {}
         contains = item_expectations.get("contains", {}) if isinstance(item_expectations, dict) else {}
         failures.extend(_validate_exact(item, exact, url))
+        failures.extend(_validate_any_of(item, any_of, url))
         failures.extend(_validate_absent_or_zero(item, absent_or_zero, url))
         failures.extend(_validate_minimum(item, minimum, url))
         failures.extend(_validate_contains(item, contains, url))

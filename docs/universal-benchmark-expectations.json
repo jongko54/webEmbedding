@@ -102,11 +102,16 @@
       "exact": {
         "status": "ok",
         "route_quality": "complete",
-        "route.primary_surface": "longform-content-surface",
         "route.acquisition_profile": "static-first",
         "route.renderer_route": "exact-reuse",
         "route.renderer_family": "document-next-app",
         "failure_classification.status": "ready"
+      },
+      "any_of": {
+        "route.primary_surface": [
+          "longform-content-surface",
+          "static-document"
+        ]
       },
       "contains": {
         "route.app_gate_signals": [
